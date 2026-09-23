@@ -60,7 +60,8 @@ multi-device fan-out, web UI, database storage, speaker *identification*
 ## 5. Implementation constraints
 
 - Python 3.10.12 system; uv-managed CPython 3.12.14 already installed locally
-  (`~/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu`).
+  (`~/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu`). All four uv environments and the
+  orchestrator now run on 3.12.
 - whisperx 3.8.6 requires `>=3.10,<3.14`, `torch~=2.8.0` → pin Python 3.12 in
   ML environments.
 - CUDA 12.5 driver (555.42.06) with RTX 4090; torch 2.8 cu128 wheels run under
@@ -73,7 +74,7 @@ multi-device fan-out, web UI, database storage, speaker *identification*
 ## 6. Machine evidence (gathered 2026-09-23)
 
 ```
-repository root   /data/home/raulagent/miscosas/repos/storytel-pipeline (git init, branch master, 0 commits)
+repository root   /data/home/raulagent/miscosas/repos/storytel-pipeline (git init, branch master)
 OS                Ubuntu 22.04.5 LTS, Linux 5.15.0-168-generic, x86_64, host asterion.inf.um.es
 CPU               AMD Ryzen 9 7900X3D 12c/24t
 RAM               62 GiB (57 GiB available), swap 8 GiB
@@ -138,93 +139,185 @@ Progress legend: `[ ]` pending · `[~]` in progress · `[x]` done (evidence reco
 - [x] Python, uv, GPU/CUDA, ffmpeg, OpenPose binary+models, versions recorded
 - [x] Upstream dependency compatibility verified against PyPI + official docs
 
-### TG2 Foundation
-- [ ] `pyproject.toml` + `src/multimodal_pipeline/` package + console script
-- [ ] Typed config (pydantic) + YAML load + env interpolation + secret masking
-- [ ] Discovery (ext filter, recursive flag, deterministic sort, stable IDs + hash collision suffix)
-- [ ] Stage base interface, DAG, topological order, only/force/from/to selection
-- [ ] Atomic `status.json` state machine (pending/running/completed/failed/skipped)
-- [ ] Artifact registry + manifest writer
-- [ ] Subprocess utils (argv, capture, timeout, log streaming, masked provenance)
-- [ ] Logging (console + per-stage log files) + provenance framework (config/tools/processing)
-- [ ] Config hashing + invalidation rules
-- [ ] CLI: run/resume/retry-failed/status/process-video/validate/inspect-environment
-- [ ] Unit tests for all of the above
+### TG2 Foundation — DONE
+- [x] `pyproject.toml` + `src/multimodal_pipeline/` package + console script
+- [x] Typed config (pydantic, `extra="forbid"`) + YAML load + env interpolation + secret masking
+- [x] Discovery (ext filter, recursive flag, deterministic sort, stable IDs + hash collision suffix)
+- [x] Stage base interface, DAG, topological order, only/force/from/to selection
+- [x] Atomic `status.json` state machine (pending/running/completed/failed/skipped)
+- [x] Artifact registry + manifest writer
+- [x] Subprocess utils (argv, capture, timeout watchdog, bounded tails, masked provenance)
+- [x] Logging (console + per-stage log files) + provenance framework (config/tools/processing)
+- [x] Config hashing + invalidation rules (config hash + monotonic per-video run sequence)
+- [x] CLI: run/resume/retry-failed/status/process-video/validate/inspect-environment
+- [x] Unit tests (config 25, discovery 28, state 19, artifacts/manifest/report 48,
+      subprocess 37, uv_worker 22)
 
-### TG3 Media
-- [ ] ffprobe metadata (rational FPS 24000/1001 etc., streams, creation tags) + SHA256
-- [ ] ffmpeg audio extraction (16 kHz mono PCM s16le for WhisperX/Pyannote/Parselmouth, timeline-exact)
-- [ ] Frame PTS mapping via ffprobe for precise timestamps
-- [ ] Validation + unit tests
+### TG3 Media — DONE
+- [x] ffprobe metadata (rational FPS, streams, creation tags) + SHA256
+- [x] ffmpeg audio extraction (16 kHz mono PCM s16le, timeline-exact)
+- [x] Frame PTS mapping via ffprobe (`source/frame_index.parquet`, 249 rows on the demo)
+- [x] Validation + unit tests against real ffmpeg (NTSC 30000/1001 case included)
 
-### TG4 WhisperX
-- [ ] `environments/whisperx` uv project (py3.12, whisperx 3.8.6, cu128 torch) + CUDA smoke
-- [ ] `workers/whisperx_worker.py` — detect language, transcribe, segment, align, JSON dump
-- [ ] Raw preservation + Parquet normalization (segments, words) + validation
-- [ ] Real short-video test
+### TG4 WhisperX — DONE
+- [x] `environments/whisperx` (whisperx 3.8.6, torch 2.8.0+**cu126**) + CUDA verified
+- [x] `workers/whisperx_worker.py` — language detect, transcribe, segment, align, JSON dump
+- [x] Raw preserved byte-identical + Parquet normalization (segments, words) + validation
+- [x] Real GPU test: large-v3 transcribed the demo, 23/23 words aligned, `en` auto-detected
 
-### TG5 Pyannote
-- [ ] `environments/diarization` uv project (py3.12, pyannote.audio 4.0.7, cu128 torch)
-- [ ] `workers/diarization_worker.py` — community-1, HF_TOKEN, GPU, exclusive diarization, RTTM/JSON raw
-- [ ] Normalized `speaker_turns.parquet` + validation
+### TG5 Pyannote — DONE (env verified; live inference needs a token)
+- [x] `environments/diarization` (pyannote.audio 4.0.7, torch 2.8.0, torchcodec 0.7.0 pinned)
+- [x] `workers/diarization_worker.py` — community-1, HF_TOKEN, GPU, exclusive diarization, RTTM+JSON
+- [x] Normalized `speaker_turns.parquet` + validation
+- [x] Without `HF_TOKEN` the stage reports `skipped: missing credential HF_TOKEN` and every
+      downstream stage degrades cleanly instead of failing (verified on the 4-video batch)
+- [ ] Live diarization run — **blocked on a user-supplied `HF_TOKEN`**
 
-### TG6 Speaker assignment
-- [ ] Interval-overlap assignment (segments + words), overlap seconds/ratio, method field
-- [ ] Unit tests: inside-one-turn, straddling two turns, multi-turn segment, gaps, overlapped speech, exact boundaries
+### TG6 Speaker assignment — DONE
+- [x] Interval-overlap assignment (segments + words), overlap seconds/ratio, method field
+- [x] 38 unit tests: inside-one-turn, straddling two turns, multi-turn segment, gaps,
+      overlapped speech, exact boundaries
 
-### TG7 Translation
-- [ ] OpenAI-compatible client, contextual batching, structured JSON keyed by segment_id
-- [ ] exactly-one-translation validation, retries/backoff, batch cache, raw responses
-- [ ] Mock-server tests (real endpoint gated on credentials)
+### TG7 Translation — DONE (client verified; live endpoint needs credentials)
+- [x] OpenAI-compatible client, contextual batching, structured JSON keyed by `segment_id`
+- [x] exactly-one-translation validation, retries/backoff, batch cache, raw responses
+- [x] 52 tests against a real threaded `HTTPServer` (status codes, timeouts, retry timing)
+- [ ] Live LiteLLM run — **blocked on `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `LITELLM_MODEL`**
 
-### TG8/TG9 spaCy
-- [ ] `environments/spacy` uv project + model install script (multilingual set)
-- [ ] Model resolver + multilingual fallback + capability recording
-- [ ] source tokens/sentences with WhisperX-word timestamp alignment + alignment status/confidence
-- [ ] english tokens/sentences linked to source segments
+### TG8/TG9 spaCy — DONE
+- [x] `environments/spacy` + `scripts/install_spacy_models.sh` (multilingual set)
+- [x] Model resolver + multilingual fallback (`blank` + sentencizer) + capability recording
+- [x] source tokens/sentences with WhisperX-word timestamp alignment + status/confidence
+- [x] english tokens/sentences linked to source segments (27 worker tests)
 
-### TG10 Acoustic
-- [ ] `environments/acoustic` uv project (parselmouth) + worker
-- [ ] frame_features.parquet (f0, intensity, voiced, F1-F3), segment_features.parquet (aggregates, pauses)
-- [ ] NaN semantics + validation + tests
+### TG10 Acoustic — DONE
+- [x] `environments/acoustic` (praat-parselmouth 0.4.7 / Praat 6.1.38) + worker
+- [x] frame_features.parquet (f0, intensity, voiced, F1-F3) + segment_features.parquet
+- [x] NaN semantics + validation + 62 tests; real run measured 1001 frames, f0 median 147.6 Hz
 
-### TG11 OpenPose
-- [ ] Installation discovery under /opt/openpose (binary/models/version)
-- [ ] Command construction (`BODY_25` + hands + face, GPU configurable, `--display 0 --render 0`)
-- [ ] Streaming/chunked raw JSON → body/hands/face Parquet with frame timestamps
-- [ ] Validation + tests on synthetic raw JSON
+### TG11 OpenPose — DONE
+- [x] Installation discovery under /opt/openpose (binary/models/version)
+- [x] Command construction (`BODY_25` + hands + face, `--display 0 --render 0`)
+- [x] Streaming raw JSON → body/hands/face Parquet with frame timestamps
+- [x] Golden-frame test + real 205-frame run (37 857 body / 56 054 hands / 37 768 face rows)
 
-### TG12 Finalization
-- [ ] Per-video final validation, manifest from registry, batch_report.json + terminal summary
+### TG12 Finalization — DONE
+- [x] Cross-modal validation (timeline bounds, unresolvable segment/speaker ids)
+- [x] Manifest generated from the registry, batch_report.json + terminal summary
+- [x] 21 tests, mutation-verified
 
-### TG13 End-to-end verification
-- [ ] Synthetic real-content fixture video (flite TTS + person footage) through every stage
-- [ ] Inspect dir layout, schemas, row counts, temporal ranges, manifest, status, logs, provenance
+### TG13 End-to-end verification — DONE
+- [x] 28 CLI-driven e2e tests (`tests/e2e/test_cli_smoke.py`) running the real command
+- [x] Synthetic flite fixtures + real-person OpenPose clip through every stage
+- [x] Layout, schemas, row counts, temporal ranges, manifest, status, logs, provenance inspected
 
-### TG14 Resume / failure tests
-- [ ] Interrupt + resume, failed stage retry, forced stage, config/model change invalidation, raw-reuse normalization
+### TG14 Resume / failure tests — DONE
+- [x] 24 resume/DAG tests + e2e kill-mid-run/resume test
+- [x] failed stage retry, forced stage, config-change invalidation, artifact truncation detected
 
-### TG15 Small sequential batch
-- [ ] Several videos, one dataset each, correct state + batch report, bounded memory
+### TG15 Small sequential batch — DONE
+- [x] 4 videos → 4 datasets, 0 failed, 2m01s, correct status + batch report
+- [x] Second run reuses everything (0 s); third run confirms it
 
-### TG16 Final check / ODD close
-- [ ] Acceptance criteria 1-26 verified, README, docs schemas, clean reproducible repo, Engram close
+### TG16 Final check / ODD close — DONE
+- [x] README written; acceptance criteria mapped to evidence in §10
+- [x] Repo reproducible: 74 tracked files, generated datasets and third-party media excluded
+- [x] Engram session summary saved
 
 ## 9. Acceptance criteria
 
-See project prompt §41 (26 criteria). Tracked in §10 evidence table as they are demonstrated.
+Mapped to observable evidence in §10. Two criteria (live diarization, live
+translation) are gated on credentials this machine does not have; their code
+paths are tested against a real HTTP server and a real uv worker contract, and
+the stages degrade to `skipped` with an actionable reason rather than failing.
 
 ## 10. Evidence
 
-| Criterion | Evidence | Status |
-|---|---|---|
-| (populated as tasks close) | | |
+Test suite: **481 unit + 28 e2e tests, all passing**
+(`timeout 300 uv run --with pytest pytest tests/unit -q` → 481 passed in ~23 s;
+`pytest tests/e2e` → 28 passed in ~108 s).
+
+Real batch (`uv run multimodal-pipeline run -c config/config.local.yaml`, clean
+output, 4 videos, sequential):
+
+```
+Videos discovered: 4   Completed: 4   Partial: 0   Failed: 0   Total time: 02m 01s
+person_demo          completed 59.1s   pose+acoustic+whisperx+spacy_source completed
+pipeline_demo        completed 21.8s
+pipeline_demo_ntsc   completed 23.0s
+pipeline_silent      completed 15.9s
+```
+
+| # | Criterion | Evidence | Status |
+|---|---|---|---|
+| 1 | One output dataset dir per video | 4 dirs under `data/processed/`, one per fixture | ✅ |
+| 2 | Configurable input/output dirs | `input.directory` / `output.directory` in YAML; e2e fixture uses tmp dirs | ✅ |
+| 3 | Sequential execution, one stage at a time | `execution.mode` accepts only `sequential` (validated); stage loop is serial | ✅ |
+| 4 | ffprobe metadata incl. rational frame rate | `frame_rate_rational "30000/1001"` on the NTSC fixture; `test_media.py` uses real ffprobe | ✅ |
+| 5 | Source SHA256 + size | `source.SHA256` in metadata and manifest | ✅ |
+| 6 | 16 kHz mono PCM audio | `audio/audio.wav`; `test_media.py` asserts rate/channels/sample width | ✅ |
+| 7 | Frame index with true PTS | `source/frame_index.parquet`, 249 rows for the demo | ✅ |
+| 8 | WhisperX transcription + word alignment | GPU run: 1 segment, 23 words, 100 % `alignment_status=aligned`, `language=en` | ✅ |
+| 9 | Language auto-detection | `language="auto"` resolved to `en`, surfaced in manifest `source.detected_language` | ✅ |
+| 10 | Pyannote community-1 diarization | worker + env verified; stage skips with `missing credential HF_TOKEN` | ⏸ credential |
+| 11 | Speaker-assigned transcript + overlap metrics | 38 unit tests on real interval arithmetic; `speaker_overlap_ratio`, `speaker_assignment_method` columns present | ✅ (code) |
+| 12 | English translation via LiteLLM | 52 tests vs a real HTTP server incl. retries and malformed JSON | ⏸ credential |
+| 13 | spaCy linguistics, source language | 26 tokens × 32 columns, POS/lemma/dep/NER + per-token timestamps | ✅ |
+| 14 | spaCy linguistics, English | same schema under `linguistic/english/`, runs when translation exists | ✅ (code) |
+| 15 | Acoustics via Parselmouth | 1001 frames (`f0_hz`, `intensity_db`, `voiced`, `f1..f3_hz`) + 1 segment row | ✅ |
+| 16 | OpenPose BODY_25 + hands + face | real run on `person_demo.avi`: 37 857 / 56 054 / 37 768 rows over 205 frames | ✅ |
+| 17 | Single normalized timeline | `temporal_model` declared in every manifest; finalization rejects timestamps < 0 or > duration | ✅ |
+| 18 | Raw tool output preserved | `speech/raw/whisperx.json`, `pose/raw/*.json`, `acoustic/raw/*.jsonl` stay byte-identical (sidecar provenance) | ✅ |
+| 19 | Normalization independently rerunnable | `--only-stage` + raw-preserving workers; raw reuse covered in resume tests | ✅ |
+| 20 | Parquet with explicit schemas + version | every table carries `schema_version` and `video_id` | ✅ |
+| 21 | Per-video manifest describing the dataset | `manifest.json`, generated from the registry; `validate` proves each promise exists | ✅ |
+| 22 | `status.json` + per-stage logs | 13 log files + atomic state per dataset | ✅ |
+| 23 | Provenance (config/tools/processing) with secrets masked | `provenance/config.json` shows `api_key: ***masked***`, keeps `hf_token_env: HF_TOKEN`; e2e greps every written file | ✅ |
+| 24 | Resume after interruption | e2e kills a real run mid-stage, asserts the in-flight stage is not `completed`, then `resume` finishes it | ✅ |
+| 25 | Idempotent rerun | run 2 and run 3 reuse all 28 stage results (0 s); artifact row-count fingerprint catches hand-truncated Parquet | ✅ |
+| 26 | Batch report + honest per-video status | `batch_report.json` with counts and per-stage outcomes; a video whose first stage failed is `failed`, not `partial` | ✅ |
 
 ## 11. Accepted changes during implementation
 
-- (none yet)
+Deviation from the original spec, each with the reason:
 
-## 12. Next step
+1. **cu126 torch wheels, not cu128.** The driver is 555.42.06 (CUDA 12.5); cu126
+   wheels verified working on the RTX 4090.
+2. **`torchcodec==0.7.0` pinned** in the diarization env — the latest release pulls a
+   CUDA-13 build that fails with `libnvrtc.so.13`.
+3. **WhisperX worker written against the installed 3.8.6 API**, not the README
+   (`transcribe()` has no `vad=`/`beam_size=`; beam size lives in `asr_options`).
+4. **Sidecar provenance files** (`*.provenance.json`) instead of stamping raw artifacts,
+   so raw tool output stays byte-identical as required.
+5. **`en_core_web_lg` as the default spaCy model** rather than `_trf`: a router model
+   with vectors and no torch dependency, so it never fights the CUDA-pinned envs.
+   `scripts/install_spacy_models.sh` still installs `_trf` on request.
+6. **Artifact layout uses `linguistic/`** (not `linguistics/`) and
+   `speech/{segments,words}.parquet` (not `transcript_*`).
+7. **`speaker_assignment` degrades instead of cascading** when diarization is absent, so
+   a missing HF token still yields transcript + linguistics + acoustics + pose.
 
-TG2 Foundation: scaffold package, config, discovery, DAG, state, subprocess,
-manifest/provenance, CLI, with unit tests, committed as work units.
+## 12. Real defects found and fixed while verifying
+
+Each of these was surfaced by a test or a real run, not by reading the code, and each
+has a regression test verified by mutation (restoring the defect fails the test):
+
+| Defect | Impact | Fix |
+|---|---|---|
+| `finalization` fingerprint included the sizes of files finalization itself wrote | every run called it stale and rewrote the whole summary, forever | fingerprint only what it does not write; dependency hash still covers content changes |
+| Registry treated an empty directory as an artifact | manifest promised `translation_raw` with 0 files (observed on `pipeline_demo`) | an empty directory is not a dataset |
+| No artifact integrity check | truncating `frame_index.parquet` passed `validate` | Parquet row-count fingerprint recorded at completion, checked by reuse and validate |
+| Cross-check ordering | speaker/segment consistency never validated without a translation table | three independent cross-checks |
+| `overall_status` counted skips as usable | a video whose first stage failed was `partial` | `failed` means nothing usable was produced |
+| Worker errors reported only an exit code | the worker's own diagnosis was buried in stderr | the worker's reported status/error is the headline |
+| Invalidation used mtimes | this filesystem rounds mtimes to ~16 ms, so a fast rerun looked unchanged | monotonic per-video `run_sequence` |
+| Machine output printed to stderr | `--json \| jq` got nothing | JSON on stdout, human tables on stderr |
+| Unknown YAML key raised a pydantic traceback | the actionable message was invisible | names the offending key and the valid ones |
+| `config.example.yaml` did not load | shipped template was unusable (`no:` parsed as boolean; misplaced key) | fixed, and a test now loads it |
+
+## 13. Remaining work (user decisions)
+
+1. **Live diarization** — needs `HF_TOKEN` (plus the pyannote community-1 EULA).
+2. **Live translation + `spacy_english`** — needs `LITELLM_BASE_URL`, `LITELLM_API_KEY`,
+   `LITELLM_MODEL`.
+3. `push` / pull-request remain the user's call; 12 work-unit commits exist on `master`.
