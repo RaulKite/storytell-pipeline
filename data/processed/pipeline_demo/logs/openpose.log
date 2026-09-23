@@ -9815,3 +9815,5 @@ OpenPose demo successfully finished. Total time: 10.060535 seconds.
 [exit=0 timed_out=False duration=10.5s]
 2026-09-23 17:57:23,742 INFO    OpenPose normalisation: 249 frames -> body=0 rows, hands=0 rows, face=0 rows
 2026-09-23 17:57:23,932 INFO    completed
+2026-09-23 18:05:41,570 INFO    reuse: valid previous result
+2026-09-23 18:06:06,901 INFO    reuse: valid previous result

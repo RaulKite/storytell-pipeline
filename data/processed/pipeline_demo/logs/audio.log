@@ -36,3 +36,5 @@ Output #0, wav, to '/data/home/raulagent/miscosas/repos/storytel-pipeline/data/p
 size=     314KiB time=00:00:10.04 bitrate= 256.1kbits/s speed=3.47e+03x    
 [exit=0 timed_out=False duration=0.1s]
 2026-09-23 17:57:02,959 INFO    completed
+2026-09-23 18:05:41,136 INFO    reuse: valid previous result
+2026-09-23 18:06:06,474 INFO    reuse: valid previous result

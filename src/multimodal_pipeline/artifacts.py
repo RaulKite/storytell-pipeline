@@ -162,6 +162,11 @@ class ArtifactRegistry:
                 continue
             if path.is_dir():
                 entries = [p for p in path.rglob("*") if p.is_file()]
+                # An empty directory is not an artifact. ``ensure_dirs`` pre-creates
+                # ``pose/raw`` and ``translation/raw``, so reporting them would make
+                # the manifest promise a pose dataset that was never produced.
+                if not entries:
+                    continue
                 self.present[name] = {
                     "path": str(path.relative_to(self.paths.dataset_dir)),
                     "kind": "directory",

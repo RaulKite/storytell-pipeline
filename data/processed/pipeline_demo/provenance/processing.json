@@ -2,9 +2,9 @@
   "schema_version": "1.0",
   "video_id": "pipeline_demo",
   "pipeline_version": "0.1.0",
-  "pipeline_git_commit": "132ac93cd5a14329abb60906c54c6fadeb0ffd81",
-  "run_started_at": "2026-09-23T15:57:02Z",
-  "recorded_at": "2026-09-23T15:57:24Z",
+  "pipeline_git_commit": "d4628cd6e8fc643b6501b0c1826c55a11916ff39",
+  "run_started_at": "2026-09-23T16:06:06Z",
+  "recorded_at": "2026-09-23T16:06:07Z",
   "status": "completed",
   "stages": {
     "metadata": {
@@ -31,7 +31,7 @@
         "height": 480
       },
       "error": null,
-      "reuse_count": 0,
+      "reuse_count": 2,
       "run_sequence": 1
     },
     "audio": {
@@ -63,7 +63,7 @@
         "duration_drift_seconds": 0.063
       },
       "error": null,
-      "reuse_count": 0,
+      "reuse_count": 2,
       "run_sequence": 2
     },
     "whisperx": {
@@ -133,13 +133,13 @@
         "alignment_coverage": 1.0
       },
       "error": null,
-      "reuse_count": 0,
+      "reuse_count": 2,
       "run_sequence": 3
     },
     "diarization": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:57:10Z",
+      "completed_at": "2026-09-23T16:06:06Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -161,7 +161,7 @@
     "speaker_assignment": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:57:10Z",
+      "completed_at": "2026-09-23T16:06:06Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -183,7 +183,7 @@
     "translation": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:57:10Z",
+      "completed_at": "2026-09-23T16:06:06Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -257,13 +257,13 @@
         "sentences": 1
       },
       "error": null,
-      "reuse_count": 0,
+      "reuse_count": 2,
       "run_sequence": 4
     },
     "spacy_english": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:57:12Z",
+      "completed_at": "2026-09-23T16:06:06Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -339,7 +339,7 @@
         "segment_rows": 1
       },
       "error": null,
-      "reuse_count": 0,
+      "reuse_count": 2,
       "run_sequence": 5
     },
     "openpose": {
@@ -394,15 +394,15 @@
         "pose_face_rows": 0
       },
       "error": null,
-      "reuse_count": 0,
+      "reuse_count": 2,
       "run_sequence": 6
     },
     "finalization": {
       "status": "completed",
-      "started_at": "2026-09-23T15:57:23Z",
-      "completed_at": "2026-09-23T15:57:24Z",
+      "started_at": "2026-09-23T16:06:06Z",
+      "completed_at": "2026-09-23T16:06:07Z",
       "duration_seconds": 1.0,
-      "config_hash": "bf62d5ea412181e2",
+      "config_hash": "973845d352d940dd",
       "dependency_hash": "d8892687175aaea7",
       "input_artifacts": [
         "metadata"
@@ -419,13 +419,13 @@
       "model_version": null,
       "exit_code": null,
       "validation_result": {
-        "artifacts": 17,
+        "artifacts": 19,
         "timed_tables_checked": 7,
         "status": "running"
       },
       "error": null,
       "reuse_count": 0,
-      "run_sequence": 7
+      "run_sequence": 9
     }
   },
   "artifacts": {
@@ -457,7 +457,7 @@
     "manifest": {
       "path": "manifest.json",
       "kind": "file",
-      "size_bytes": 4286
+      "size_bytes": 4529
     },
     "metadata": {
       "path": "source/metadata.json",
@@ -467,7 +467,7 @@
     "pipeline_log": {
       "path": "logs/pipeline.log",
       "kind": "file",
-      "size_bytes": 1665
+      "size_bytes": 2771
     },
     "pose_body": {
       "path": "pose/body.parquet",
@@ -498,7 +498,7 @@
     "provenance_processing": {
       "path": "provenance/processing.json",
       "kind": "file",
-      "size_bytes": 14665
+      "size_bytes": 15257
     },
     "provenance_tools": {
       "path": "provenance/tools.json",
@@ -534,12 +534,6 @@
       "path": "status.json",
       "kind": "file",
       "size_bytes": 12936
-    },
-    "translation_raw": {
-      "path": "translation/raw",
-      "kind": "directory",
-      "file_count": 0,
-      "size_bytes": 0
     },
     "whisperx_raw": {
       "path": "speech/raw/whisperx.json",

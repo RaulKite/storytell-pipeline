@@ -57,7 +57,6 @@
     "whisperx_raw": "speech/raw/whisperx.json",
     "speech_segments": "speech/segments.parquet",
     "speech_words": "speech/words.parquet",
-    "translation_raw": "translation/raw",
     "spacy_source_raw": "linguistic/source/raw/spacy_source.json",
     "spacy_source_tokens": "linguistic/source/tokens.parquet",
     "spacy_source_sentences": "linguistic/source/sentences.parquet",
@@ -77,6 +76,7 @@
     "diarization_rttm": "not_generated",
     "exclusive_diarization_raw": "not_generated",
     "speaker_turns": "not_generated",
+    "translation_raw": "not_generated",
     "translation_segments": "not_generated",
     "spacy_english_raw": "not_generated",
     "spacy_english_tokens": "not_generated",
@@ -105,7 +105,7 @@
     },
     "manifest": {
       "kind": "file",
-      "size_bytes": 4286
+      "size_bytes": 4529
     },
     "metadata": {
       "kind": "file",
@@ -113,7 +113,7 @@
     },
     "pipeline_log": {
       "kind": "file",
-      "size_bytes": 1665
+      "size_bytes": 2771
     },
     "pose_body": {
       "kind": "file",
@@ -138,7 +138,7 @@
     },
     "provenance_processing": {
       "kind": "file",
-      "size_bytes": 14665
+      "size_bytes": 15257
     },
     "provenance_tools": {
       "kind": "file",
@@ -167,11 +167,6 @@
     "status": {
       "kind": "file",
       "size_bytes": 12936
-    },
-    "translation_raw": {
-      "kind": "directory",
-      "file_count": 0,
-      "size_bytes": 0
     },
     "whisperx_raw": {
       "kind": "file",

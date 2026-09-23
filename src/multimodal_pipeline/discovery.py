@@ -86,8 +86,18 @@ def discover_videos(config: PipelineConfig, root: Path | None = None) -> list[Vi
 
 
 def discover_single(path: Path | str, config: PipelineConfig | None = None) -> VideoSource:
-    """Build a :class:`VideoSource` for one explicit file (``process-video``)."""
-    video_path = Path(path).expanduser().resolve()
+    """Build a :class:`VideoSource` for one explicit file (``process-video``).
+
+    A bare filename is also looked up in the configured input directory, so
+    ``--video clip.mp4`` works from anywhere instead of forcing the user to
+    reconstruct an absolute path they already typed once in the config.
+    """
+    video_path = Path(path).expanduser()
+    if not video_path.is_file():
+        candidate = _in_input_directory(video_path, config)
+        if candidate is not None:
+            video_path = candidate
+    video_path = video_path.resolve()
     if not video_path.is_file():
         raise FileNotFoundError(f"video file not found: {video_path}")
     base = video_path.parent
@@ -99,6 +109,28 @@ def discover_single(path: Path | str, config: PipelineConfig | None = None) -> V
     if len(same_stem) > 1:
         video_id = f"{video_id}-{path_hash(relative)}"
     return VideoSource(path=video_path, relative_path=relative, video_id=video_id)
+
+
+def _in_input_directory(requested: Path, config: PipelineConfig | None) -> Path | None:
+    """Resolve a bare filename against the configured input directory."""
+    if config is None or requested.parent != Path("."):
+        return None  # a path with directories was intentional; do not second-guess it
+    directory = Path(config.input.directory)
+    if not directory.is_dir():
+        return None
+    direct = directory / requested.name
+    if direct.is_file():
+        return direct
+    # Tolerate a dropped extension, then a recursive search when configured.
+    for extension in config.input.extensions:
+        match = directory / f"{requested.name}{extension}"
+        if match.is_file():
+            return match
+    if config.input.recursive:
+        matches = sorted(p for p in directory.rglob(requested.name) if p.is_file())
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def find_video_by_id(config: PipelineConfig, video_id: str) -> VideoSource | None:

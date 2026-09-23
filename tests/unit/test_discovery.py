@@ -175,3 +175,66 @@ class TestDiscoverSingle:
         config = config_for(tmp_path, tmp_path / "videos")
         source = discover_single(target, config)
         assert source.video_id != "take"
+
+
+class TestSingleFileLookup:
+    """``--video clip.mp4`` must work without retyping the input directory."""
+
+    def test_bare_name_resolves_against_the_input_directory(self, tmp_path: Path) -> None:
+        video_dir = tmp_path / "videos"
+        expected = touch(video_dir / "clip.mp4")
+        config = config_for(tmp_path, video_dir)
+        assert discover_single("clip.mp4", config).path == expected.resolve()
+
+    def test_extension_may_be_dropped(self, tmp_path: Path) -> None:
+        video_dir = tmp_path / "videos"
+        expected = touch(video_dir / "clip.mp4")
+        config = config_for(tmp_path, video_dir)
+        assert discover_single("clip", config).path == expected.resolve()
+
+    def test_recursive_lookup_when_configured(self, tmp_path: Path) -> None:
+        video_dir = tmp_path / "videos"
+        expected = touch(video_dir / "season1" / "episode.mp4")
+        config = config_for(tmp_path, video_dir, recursive=True)
+        assert discover_single("episode.mp4", config).path == expected.resolve()
+
+    def test_an_ambiguous_recursive_match_is_not_guessed(self, tmp_path: Path) -> None:
+        video_dir = tmp_path / "videos"
+        touch(video_dir / "a" / "take.mp4")
+        touch(video_dir / "b" / "take.mp4")
+        config = config_for(tmp_path, video_dir, recursive=True)
+        with pytest.raises(FileNotFoundError):
+            discover_single("take.mp4", config)
+
+    def test_a_path_with_directories_is_never_reinterpreted(self, tmp_path: Path) -> None:
+        """An explicit relative path is intentional; do not search the input dir."""
+        touch(tmp_path / "videos" / "clip.mp4")
+        config = config_for(tmp_path, tmp_path / "videos")
+        with pytest.raises(FileNotFoundError):
+            discover_single("elsewhere/clip.mp4", config)
+
+    def test_dataset_identity_matches_the_full_path_form(self, tmp_path: Path) -> None:
+        """The short and long forms must point at the same dataset directory."""
+        video_dir = tmp_path / "videos"
+        touch(video_dir / "clip.mp4")
+        config = config_for(tmp_path, video_dir)
+        by_name = discover_single("clip.mp4", config)
+        by_path = discover_single(video_dir / "clip.mp4", config)
+        assert by_name.video_id == by_path.video_id
+
+    def test_missing_file_still_reports_the_attempted_path(self, tmp_path: Path) -> None:
+        config = config_for(tmp_path, tmp_path / "videos")
+        with pytest.raises(FileNotFoundError, match="nope.mp4"):
+            discover_single("nope.mp4", config)
+
+    def test_no_config_means_no_lookup(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            discover_single("clip.mp4", None)
+
+    def test_a_non_video_suffix_is_still_found_by_exact_name(self, tmp_path: Path) -> None:
+        """The input extension filter selects batch members, not explicit requests."""
+        video_dir = tmp_path / "videos"
+        expected = touch(video_dir / "clip.avi")
+        config = config_for(tmp_path, video_dir, extensions=[".mp4"])
+        assert discover_single("clip.avi", config).path == expected.resolve()
+

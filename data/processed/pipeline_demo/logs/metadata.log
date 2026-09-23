@@ -2,3 +2,5 @@
 2026-09-23 17:57:02,451 INFO    hashing pipeline_demo.mp4
 2026-09-23 17:57:02,542 INFO    metadata: 640x480 @ 25/1 fps, 9.98s
 2026-09-23 17:57:02,726 INFO    completed
+2026-09-23 18:05:41,093 INFO    reuse: valid previous result
+2026-09-23 18:06:06,432 INFO    reuse: valid previous result
