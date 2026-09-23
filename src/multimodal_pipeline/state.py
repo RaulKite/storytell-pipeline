@@ -62,6 +62,10 @@ class StageRecord:
     validation_result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     reuse_count: int = 0
+    #: Row count of each Parquet output as recorded when the stage completed.
+    #: Lets ``validate`` notice an artifact someone truncated or replaced by hand,
+    #: which "the file exists" and "the file parses" both miss.
+    output_row_counts: dict[str, int] | None = None
     #: Position in this video's monotonic stage-execution sequence. A dependant is
     #: stale when a dependency's sequence moved past the one it was built from,
     #: which catches a rerun whose configuration did not change (--force-stage, a
@@ -92,6 +96,7 @@ class StageRecord:
             "error": self.error,
             "reuse_count": self.reuse_count,
             "run_sequence": self.run_sequence,
+            "output_row_counts": self.output_row_counts,
         }
         return payload
 
@@ -164,18 +169,25 @@ class VideoState:
 
     @property
     def overall_status(self) -> str:
-        """completed | partial | failed | running | pending for the batch report."""
+        """completed | partial | failed | running | pending for the batch report.
+
+        ``failed`` means *nothing usable was produced*: a video whose first stage
+        failed and whose dependants were therefore blocked is not a partial result
+        someone can consume, it is a failure. Reporting it as partial would hide a
+        broken file in a folder full of ``partial`` entries.
+        """
         statuses = [self.stage(name).status for name in self.stage_order if name in self.stages]
         if not statuses:
             return STATUS_PENDING
         if STATUS_RUNNING in statuses:
             return STATUS_RUNNING
-        settled = [status for status in statuses if status in {STATUS_COMPLETED, STATUS_SKIPPED}]
+        usable = STATUS_COMPLETED in statuses
         if STATUS_FAILED in statuses:
-            return "partial" if settled else STATUS_FAILED
+            return "partial" if usable else STATUS_FAILED
+        settled = [status for status in statuses if status in {STATUS_COMPLETED, STATUS_SKIPPED}]
         if len(settled) == len(statuses):
             return STATUS_COMPLETED
-        return "partial" if settled else STATUS_PENDING
+        return "partial" if usable else STATUS_PENDING
 
     # ---------------------------------------------------------------- mutation
 
@@ -204,6 +216,7 @@ class VideoState:
         exit_code: int | None = None,
         validation_result: dict[str, Any] | None = None,
         run_sequence: int | None = None,
+        output_row_counts: dict[str, int] | None = None,
     ) -> StageRecord:
         record = self.stage(name)
         record.status = STATUS_COMPLETED

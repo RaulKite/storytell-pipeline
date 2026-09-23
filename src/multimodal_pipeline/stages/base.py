@@ -162,6 +162,33 @@ class Stage(abc.ABC):
                 return False
         return True
 
+    def output_row_counts(self, ctx: StageContext) -> dict[str, int]:
+        """Row count of every readable Parquet output, as a cheap integrity fingerprint.
+
+        Recorded at completion so ``validate`` can notice an artifact that was
+        truncated, replaced or rewritten by something other than the pipeline.
+        Counting rows reads only Parquet metadata, so it stays cheap even for a
+        million-row pose table.
+
+        Artifacts that cannot be counted are simply left out: recording a
+        "could not read" sentinel would guarantee a mismatch on the next check and
+        turn a completed stage into a permanently rerunnable one. An unreadable
+        output is reported by :meth:`validate`, which is the stage that knows what
+        its own files should contain.
+        """
+        counts: dict[str, int] = {}
+        for name in self.outputs:
+            path = ctx.paths.get(name)
+            if path is None or path.suffix != ".parquet" or not path.is_file():
+                continue
+            try:
+                import pyarrow.parquet as pq
+
+                counts[name] = int(pq.ParquetFile(path).metadata.num_rows)
+            except Exception:  # noqa: BLE001 - not countable today, nothing to promise
+                continue
+        return counts
+
 
 def dependency_chain(stage: str) -> list[str]:
     """Stages that must exist for ``stage``, in canonical order."""
@@ -223,6 +250,56 @@ def stage_selection(
     return list(order[start : end + 1])
 
 
+def artifact_owners(state: Any) -> dict[str, str]:
+    """Which completed stage most recently wrote each output artifact.
+
+    ``speaker_assignment`` deliberately rewrites ``speech/segments.parquet`` and
+    ``speech/words.parquet`` in place, so those files belong to whichever of the
+    two completed last. An integrity fingerprint must be read from that writer,
+    otherwise every dataset with speakers assigned looks corrupted.
+    """
+    owners: dict[str, str] = {}
+    for name in STAGE_ORDER:
+        record = state.stage(name)
+        if record.status != STATUS_COMPLETED:
+            continue
+        for artifact in record.output_artifacts or []:
+            owners[artifact] = name
+    return owners
+
+
+def integrity_problems(ctx: StageContext, stage: Stage, *, owners: dict[str, str] | None = None) -> list[str]:
+    """Report Parquet outputs that changed shape since the stage completed them.
+
+    "The file exists" and "the file parses" both miss an artifact someone
+    truncated, replaced with an older copy, or rewrote by hand. The row count
+    recorded at completion catches that, and reading Parquet metadata keeps the
+    check cheap even for a million-row pose table.
+
+    ``owners`` suppresses artifacts a later stage legitimately rewrote in place;
+    without it a completed speaker assignment would flag the transcript stage.
+    """
+    recorded = (ctx.state.stage(stage.name).output_row_counts or {})
+    if not recorded:
+        return []
+    import pyarrow.parquet as pq
+
+    problems: list[str] = []
+    for artifact, expected in sorted(recorded.items()):
+        if owners is not None and owners.get(artifact) != stage.name:
+            continue
+        path = ctx.paths.get(artifact)
+        if path is None or not path.is_file():
+            continue  # reported as a missing output elsewhere
+        try:
+            actual = int(pq.ParquetFile(path).metadata.num_rows)
+        except Exception:  # noqa: BLE001 - validate() reports an unreadable output properly
+            continue
+        if actual != expected:
+            problems.append(f"{artifact} has {actual} rows, {expected} when validated")
+    return problems
+
+
 def should_reuse(
     stage: Stage,
     ctx: StageContext,
@@ -243,6 +320,9 @@ def should_reuse(
         return False, "upstream dependency changed"
     if not stage.outputs_present(ctx):
         return False, "output artifacts missing"
+    problems = integrity_problems(ctx, stage, owners=artifact_owners(ctx.state))
+    if problems:
+        return False, f"outputs changed: {problems[0]}"
     try:
         stage.validate(ctx)
     except ValidationError as exc:

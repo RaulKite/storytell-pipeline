@@ -380,6 +380,7 @@ class VideoRunner:
         if extras.get("exit_code") is not None:
             record.exit_code = extras["exit_code"]
         record.run_sequence = run_sequence
+        record.output_row_counts = stage.output_row_counts(context)
         record.validation_result = outcome.detail.get("validation")
         if record.status != STATUS_COMPLETED:
             # ``execute`` may have run outside mark_running (rare); settle it now.
@@ -396,6 +397,7 @@ class VideoRunner:
                 executable=extras.get("executable"),
                 exit_code=extras.get("exit_code"),
                 run_sequence=run_sequence,
+                output_row_counts=record.output_row_counts,
             )
         else:
             self.state.save()

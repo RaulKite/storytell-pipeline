@@ -369,3 +369,118 @@ class TestInterruption:
         payload = json.loads(runner.paths.status.read_text())
         assert payload["stages"]["report"]["status"] == STATUS_FAILED
         assert payload["stages"]["metadata"]["status"] == STATUS_COMPLETED
+
+
+
+def _write_rows(path: Path, rows: int) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"segment_id": [f"s{i}" for i in range(rows)]}), path)
+
+
+def read_parquet_rows(path: Path) -> int:
+    import pyarrow.parquet as pq
+
+    return int(pq.ParquetFile(path).metadata.num_rows)
+
+
+def _source_for(config):
+    from multimodal_pipeline.discovery import VideoSource
+
+    source = VideoSource(path=config.input.directory / "clip.mp4", relative_path=Path("clip.mp4"),
+                         video_id="clip")
+    source.path.write_bytes(b"video-bytes")
+    return source
+
+
+class ParquetStage(Stage):
+    """A stage whose output is a real Parquet table, so integrity is measurable.
+
+    ``FakeStage`` writes JSON into artifact slots, which is enough for reuse
+    tests; artifact integrity needs the real format because the fingerprint is
+    the row count.
+    """
+
+    executions: dict[str, int] = {}
+
+    def __init__(self, name: str, artifact: str, *, depends_on: tuple[str, ...] = (),
+                 rows: int = 5) -> None:
+        self.name = name
+        self.artifact = artifact
+        self.rows = rows
+        self.inputs = tuple(dep_artifact[dep] for dep in depends_on)
+        self.outputs = (artifact,)
+
+    def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
+        return {"stage": self.name, "rows": self.rows}
+
+    def execute(self, ctx: StageContext) -> dict[str, Any]:
+        type(self).executions[self.name] = type(self).executions.get(self.name, 0) + 1
+        _write_rows(ctx.artifact(self.artifact), self.rows)
+        return {}
+
+    def validate(self, ctx: StageContext) -> dict[str, Any]:
+        path = ctx.artifact(self.artifact)
+        if not path.is_file():
+            from multimodal_pipeline.exceptions import ValidationError
+
+            raise ValidationError(self.name, [f"missing {path.name}"])
+        return {"rows": read_parquet_rows(path)}
+
+
+#: Both stages write the same slot, the way speaker_assignment rewrites the
+#: transcript tables that whisperx produced.
+TRANSCRIPT = "speech_segments"
+dep_artifact = {"asr": TRANSCRIPT}
+
+
+@pytest.fixture
+def parquet_dag(monkeypatch, config):
+    ParquetStage.executions = {}
+    stages = [ParquetStage("asr", TRANSCRIPT, rows=5),
+              ParquetStage("post", TRANSCRIPT, depends_on=("asr",), rows=2)]
+    monkeypatch.setattr("multimodal_pipeline.orchestrator.build_stages", lambda: list(stages))
+    monkeypatch.setattr("multimodal_pipeline.stages.base.STAGE_ORDER", ("asr", "post"))
+    monkeypatch.setattr("multimodal_pipeline.orchestrator.STAGE_ORDER", ("asr", "post"))
+    monkeypatch.setattr("multimodal_pipeline.stages.base.STAGE_DEPENDENCIES",
+                        {"asr": (), "post": ("asr",)})
+    return VideoRunner(config, _source_for(config), tools={"schema_version": "1.0"})
+
+
+class TestArtifactIntegrity:
+    def test_completion_records_a_row_count_fingerprint(self, parquet_dag) -> None:
+        parquet_dag.run()
+        record = type(parquet_dag.state).load(parquet_dag.paths, "clip").stage("post")
+        assert record.status == STATUS_COMPLETED
+        assert record.output_row_counts == {TRANSCRIPT: 2}
+
+    def test_a_truncated_output_forces_a_recompute(self, parquet_dag) -> None:
+        """An artifact that exists and parses but lost rows must not be trusted."""
+        parquet_dag.run()
+        baseline = dict(ParquetStage.executions)
+        _write_rows(parquet_dag.paths.artifact(TRANSCRIPT), 1)
+        plan = {item.name: item for item in parquet_dag.plan()}
+        assert plan["post"].will_run
+        assert "outputs changed" in plan["post"].reason
+        assert "1 rows, 2 when validated" in plan["post"].reason
+        parquet_dag.run()
+        assert ParquetStage.executions["post"] == baseline["post"] + 1
+
+    def test_an_untouched_dataset_is_never_recomputed(self, parquet_dag) -> None:
+        parquet_dag.run()
+        baseline = dict(ParquetStage.executions)
+        parquet_dag.run()
+        assert ParquetStage.executions == baseline
+
+    def test_a_later_stages_rewrite_of_the_same_file_is_not_corruption(
+        self, parquet_dag
+    ) -> None:
+        """``post`` owns the slot now; judging it against ``asr``'s fingerprint
+        would flag every healthy dataset."""
+        parquet_dag.run()
+        _write_rows(parquet_dag.paths.artifact(TRANSCRIPT), 1)
+        plan = {item.name: item for item in parquet_dag.plan()}
+        assert plan["asr"].reason == "valid previous result"
+        assert plan["post"].will_run

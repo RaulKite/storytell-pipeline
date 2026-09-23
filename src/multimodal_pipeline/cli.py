@@ -25,6 +25,7 @@ from .config import PipelineConfig, load_config
 from .discovery import VideoSource, discover_single, discover_videos
 from .log import configure, get_logger
 from .orchestrator import VideoRunner, build_stages, enabled_stage_names
+from .stages.base import artifact_owners, integrity_problems
 from .provenance import system_report, tools_report
 from .report import BatchReport, collect_report, write_batch_report
 from .state import STATUS_COMPLETED, STATUS_PENDING, STATUS_SKIPPED, VideoState
@@ -32,6 +33,9 @@ from .state import STATUS_COMPLETED, STATUS_PENDING, STATUS_SKIPPED, VideoState
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Sequential multimodal video-processing pipeline.")
 console = Console(stderr=True)
+# Machine-readable output goes to stdout so `--json | jq` and CI capture work;
+# the human tables stay on stderr, where diagnostics belong.
+out_console = Console(stderr=False)
 log = get_logger("cli")
 
 def _stage_list(value: Optional[str]) -> list[str] | None:
@@ -51,6 +55,62 @@ def _check_stage(name: Optional[str], flag: str) -> None:
 
     if name and name not in STAGE_ORDER:
         raise typer.BadParameter(f"{flag}: unknown stage '{name}'. Known: {', '.join(STAGE_ORDER)}")
+
+
+def load_config_or_exit(path: Optional[Path]) -> PipelineConfig:
+    """Load a config, turning every expected failure into one readable line.
+
+    A typo in a YAML key is the single most common way to break a run, and the
+    default pydantic traceback hides the one sentence that matters (which key,
+    in which file) behind 60 lines of internals. Anything that is not a config
+    error is re-raised untouched: a real bug must still show its stack.
+    """
+    import yaml as _yaml
+    from pydantic import ValidationError as _ValidationError
+
+    try:
+        return load_config(path)
+    except FileNotFoundError as exc:
+        _fail(str(exc))
+    except _yaml.YAMLError as exc:
+        _fail(f"config is not valid YAML ({path}): {_one_line(str(exc).replace(chr(10), ' '))}")
+    except _ValidationError as exc:
+        _fail(f"invalid configuration ({path}):\n{_config_problems(exc)}")
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _config_problems(exc: BaseException) -> str:
+    lines = []
+    for error in exc.errors():  # type: ignore[attr-defined]
+        location = ".".join(str(part) for part in error.get("loc", ())) or "config"
+        detail = _one_line(error.get("msg", "invalid"))
+        if error.get("type") == "extra_forbidden":
+            detail = f"unknown setting (known: {_known_settings(location)})"
+        lines.append(f"  {location}: {detail}")
+    return "\n".join(lines[:12])
+
+
+def _known_settings(location: str) -> str:
+    """Name the valid keys of the section that got a typo."""
+    from .config import PipelineConfig
+
+    node: Any = PipelineConfig
+    for part in location.split("."):
+        children = getattr(node, "model_fields", {})
+        if part not in children:
+            return ", ".join(sorted(children)) or "none"
+        annotation = children[part].annotation
+        node = annotation if isinstance(annotation, type) else object
+    return ", ".join(sorted(getattr(node, "model_fields", {}))) or "none"
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text).split())[:300]
+
+
+def _fail(message: str) -> None:
+    console.print(f"[red]error:[/] {message}")
+    raise typer.Exit(code=2)
 
 
 def _sources(config: PipelineConfig, video: Optional[Path]) -> list[VideoSource]:
@@ -133,7 +193,7 @@ def run(
 ) -> None:
     """Process every discovered video, sequentially, one stage at a time."""
     configure("INFO", console=not quiet)
-    pipeline_config = load_config(config, overrides=None)
+    pipeline_config = load_config_or_exit(config)
     sources = _sources(pipeline_config, video)
     if not sources:
         console.print(f"[yellow]No videos found in {config.input.directory}[/]")
@@ -164,7 +224,7 @@ def retry_failed(
 ) -> None:
     """Force-recompute exactly the stages that failed, then their dependants."""
     configure("INFO", console=not quiet)
-    pipeline_config = load_config(config)
+    pipeline_config = load_config_or_exit(config)
     sources = _sources(pipeline_config, video)
     forced: list[str] = []
     targets: list[VideoSource] = []
@@ -219,7 +279,7 @@ def status(
     Use ``--plan`` for the wordy version and ``--json`` for scripting.
     """
     configure("WARNING", console=False)
-    pipeline_config = load_config(config)
+    pipeline_config = load_config_or_exit(config)
     sources = discover_videos(pipeline_config)
     if video:
         sources = [source for source in sources if source.video_id == video]
@@ -234,7 +294,7 @@ def status(
         rows.append((source.video_id, [state.status_of(name) for name in names], state.overall_status))
 
     if as_json:
-        console.print_json(json.dumps({
+        out_console.print_json(json.dumps({
             "output_directory": str(pipeline_config.output.directory),
             "stages": names,
             "videos": [{"video_id": vid, "stages": dict(zip(names, cells)), "overall": overall}
@@ -298,6 +358,7 @@ def _stage_initials(name: str) -> str:
 def validate(
     config: Path = typer.Option(..., "--config", "-c"),
     video: Optional[Path] = typer.Option(None, "--video"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable report on stdout."),
 ) -> None:
     """Re-run semantic validation over artifacts already on disk (no processing).
 
@@ -307,9 +368,10 @@ def validate(
     broken and hide the problems that are real.
     """
     configure("WARNING", console=False)
-    pipeline_config = load_config(config)
+    pipeline_config = load_config_or_exit(config)
     sources = _sources(pipeline_config, video)
     failures = 0
+    results: list[dict[str, Any]] = []
     for source in sources:
         runner = VideoRunner(pipeline_config, source, tools=_tools(pipeline_config))
         context = runner.stage_context()
@@ -319,6 +381,9 @@ def validate(
         context.log = logger
         problems: dict[str, str] = {}
         skipped: list[str] = []
+        # Artifacts a later stage rewrote in place must not be judged against the
+        # earlier stage's fingerprint.
+        owners = artifact_owners(context.state)
         for stage in build_stages():
             status = context.state.stage(stage.name).status
             if status == STATUS_SKIPPED:
@@ -331,11 +396,17 @@ def validate(
             if not stage.outputs_present(context):
                 problems[stage.name] = "outputs missing"
                 continue
+            changed = integrity_problems(context, stage, owners=owners)
+            if changed:
+                problems[stage.name] = "; ".join(changed[:3])
+                continue
             try:
                 stage.validate(context)
             except Exception as exc:  # noqa: BLE001 - aggregated into the report
                 problems[stage.name] = str(exc)[:300]
         logger.close()
+        results.append({"video_id": source.video_id, "ok": not problems,
+                        "problems": problems, "skipped": skipped})
         if problems:
             failures += 1
             console.print(f"[red]FAIL[/] {source.video_id}")
@@ -345,6 +416,12 @@ def validate(
             console.print(f"[green]OK[/]   {source.video_id}")
         for item in skipped:
             console.print(f"    [dim]skipped:[/] {item}")
+    if as_json:
+        out_console.print_json(json.dumps({
+            "output_directory": str(pipeline_config.output.directory),
+            "ok": not failures,
+            "results": results,
+        }))
     raise typer.Exit(code=1 if failures else 0)
 
 
@@ -354,12 +431,13 @@ def inspect_environment(config: Optional[Path] = typer.Option(None, "--config", 
     configure("WARNING", console=False)
     payload: dict[str, Any] = {"system": system_report()}
     if config is not None:
-        pipeline_config = load_config(config)
+        pipeline_config = load_config_or_exit(config)
         payload["tools"] = tools_report(pipeline_config)
         payload["environment_warnings"] = _environment_warnings(pipeline_config)
     else:
         payload["note"] = "pass --config for the full tool/OpenPose inventory"
-    console.print_json(json.dumps(payload, ensure_ascii=False))
+    out_console.print_json(json.dumps(payload, ensure_ascii=False))
+    return payload
 
 
 def _environment_warnings(config: PipelineConfig) -> list[str]:

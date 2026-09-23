@@ -24,7 +24,7 @@ execution:
   mode: sequential               # only 'sequential': one GPU, one stage at a time
   gpu: 0
   stop_on_video_error: false     # keep going after a video fails
-  progress_interval_seconds: 10
+  keep_temp_files: false
 
 ffmpeg:
   executable: ffmpeg
@@ -105,7 +105,7 @@ spacy:
     hr: hr_core_news_lg
     ja: ja_core_news_trf
     ko: ko_core_news_lg
-    no: nb_core_news_lg
+    "no": nb_core_news_lg
     pl: pl_core_news_lg
     pt-br: pt_core_news_lg
     ro: ro_core_news_lg
@@ -161,3 +161,5 @@ openpose:
 logging:
   level: INFO
   console: true
+  # Seconds between terminal progress refreshes for long-running stages.
+  progress_interval_seconds: 10
