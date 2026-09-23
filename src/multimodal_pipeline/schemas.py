@@ -292,9 +292,11 @@ def write_table(path, table: pa.Table, schema: pa.schema, *, extra_metadata: dic
 
 def _coerce(table: pa.Table, schema: pa.schema) -> pa.Table:
     missing = [field.name for field in schema if field.name not in table.column_names]
-    if missing:
-        arrays = [pa.nulls(len(table), type=schema.field(name).type) for name in missing]
-        table = table.append_columns(pa.schema([schema.field(name) for name in missing]), arrays)
+    for name in missing:
+        # pyarrow has append_column (singular); there is no append_columns, so the
+        # plural call raised AttributeError and every "optional column absent"
+        # write died instead of writing nulls.
+        table = table.append_column(schema.field(name), pa.nulls(len(table), type=schema.field(name).type))
     table = table.select([field.name for field in schema])
     return table.cast(schema, safe=False)
 

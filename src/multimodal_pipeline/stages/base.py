@@ -504,9 +504,17 @@ class WorkerStage(Stage):
         if not raw_path.is_file():
             raise ValidationError(self.name, [f"raw artifact missing: {raw_path.name}"])
         try:
-            return read_json(raw_path)
+            payload = read_json(raw_path)
         except (OSError, ValueError) as exc:
             raise ValidationError(self.name, [f"raw artifact unreadable ({raw_path.name}): {exc}"]) from exc
+        if not isinstance(payload, dict):
+            # Name the actual problem. "raw artifact missing keys" about a JSON array
+            # would send someone looking for a renamed field, not the wrong top-level
+            # type -- which is what a truncated or hand-edited raw file looks like.
+            raise ValidationError(self.name,
+                                  [f"raw artifact is a JSON {type(payload).__name__}, "
+                                   f"expected an object ({raw_path.name})"])
+        return payload
 
 
 def worker_code_digest(script_path: Path) -> str | None:

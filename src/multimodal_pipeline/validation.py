@@ -7,8 +7,6 @@ duration, and that cross-table identifiers actually reference each other.
 
 from __future__ import annotations
 
-import json
-import math
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -20,36 +18,10 @@ __all__ = [
     "ValidationIssue",
     "ValidationError",
     "check_intervals",
-    "check_json_readable",
     "check_parquet",
     "check_reference_values",
-    "expect_columns",
-    "expect_finite",
-    "table_row_count",
+    "validate_metadata_payload",
 ]
-
-
-def expect_finite(value: Any) -> bool:
-    """True for a usable real number: not None, not NaN, not infinite."""
-    if value is None or isinstance(value, bool):
-        return False
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return not (math.isnan(number) or math.isinf(number))
-
-
-def expect_columns(path: Path, expected: Sequence[str], *, stage: str) -> list[str]:
-    names = [field.name for field in pq.read_schema(path)]
-    missing = [name for name in expected if name not in names]
-    if missing:
-        raise ValidationIssue(stage, [f"missing columns: {', '.join(missing)}"])
-    return names
-
-
-def table_row_count(path: Path) -> int:
-    return pq.read_metadata(path).num_rows
 
 
 def check_parquet(path: Path, expected_columns: Sequence[str], *, stage: str,
@@ -88,17 +60,6 @@ def check_parquet(path: Path, expected_columns: Sequence[str], *, stage: str,
     return {"rows": rows, "columns": names}
 
 
-def check_json_readable(path: Path, *, stage: str, required_keys: Iterable[str] = ()) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValidationIssue(stage, [f"unreadable JSON {path.name}: {exc}"]) from exc
-    missing = [key for key in required_keys if key not in payload]
-    if missing:
-        raise ValidationIssue(stage, [f"{path.name} missing keys: {', '.join(missing)}"])
-    return payload
-
-
 def check_intervals(starts: Sequence[float | None], ends: Sequence[float | None], *, stage: str,
                     label: str, max_time: float | None = None,
                     tolerance: float = 1e-6) -> list[dict[str, float]]:
@@ -124,10 +85,6 @@ def check_reference_values(values: Sequence[Any], known: set[Any], *, stage: str
     if unknown:
         sample = ", ".join(sorted(str(value) for value in unknown)[:8])
         raise ValidationIssue(stage, [f"{label} references unknown values: {sample}"])
-
-
-def finite(value: Any) -> bool:
-    return value is not None and not (isinstance(value, float) and math.isnan(value))
 
 
 def validate_metadata_payload(payload: dict[str, Any], *, stage: str = "metadata") -> dict[str, Any]:

@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from multimodal_pipeline.exceptions import WorkerError
+from multimodal_pipeline.exceptions import ValidationError, WorkerError
+from multimodal_pipeline.stages.base import WorkerStage
 from multimodal_pipeline.uv_worker import (
     request_hash,
     run_worker,
@@ -210,3 +211,61 @@ class TestRequestRecords:
     def test_result_path_helper(self, tmp_path: Path) -> None:
         assert worker_result_path(tmp_path) == tmp_path / "worker_result.json"
         assert worker_result_path(tmp_path, "x.json") == tmp_path / "x.json"
+
+
+class _RawStage(WorkerStage):
+    """A concrete worker stage: WorkerStage is abstract until validate() exists."""
+
+    name = "asr"
+    raw_artifact = "whisperx_raw"
+
+    def validate(self, ctx):  # noqa: D401 - unused by validate_raw
+        return {}
+
+
+class TestRawArtifactContract:
+    """The raw artifact is the one thing a rerun of normalization depends on."""
+
+    stage = _RawStage()
+
+    @pytest.fixture
+    def ctx(self, tmp_path: Path):
+        from multimodal_pipeline.artifacts import VideoPaths
+
+        resolved = VideoPaths(tmp_path / "dataset")
+        resolved.ensure_dirs()
+
+        class _Ctx:
+            def artifact(self, name: str) -> Path:
+                return resolved.artifact(name)
+
+        return _Ctx()
+
+    def write_raw(self, ctx, text: str) -> None:
+        path = ctx.artifact("whisperx_raw")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def test_a_dict_payload_is_returned(self, ctx) -> None:
+        self.write_raw(ctx, '{"segments": []}')
+        assert self.stage.validate_raw(ctx) == {"segments": []}
+
+    def test_a_missing_raw_file_is_named(self, ctx) -> None:
+        with pytest.raises(ValidationError, match="raw artifact missing: whisperx.json"):
+            self.stage.validate_raw(ctx)
+
+    def test_malformed_json_is_reported_as_unreadable(self, ctx) -> None:
+        self.write_raw(ctx, "{ not json")
+        with pytest.raises(ValidationError, match="raw artifact unreadable"):
+            self.stage.validate_raw(ctx)
+
+    def test_a_json_array_names_the_wrong_type(self, ctx) -> None:
+        """"missing keys" about an array implies a rename; the real problem is the type."""
+        self.write_raw(ctx, "[1, 2, 3]")
+        with pytest.raises(ValidationError, match="is a JSON list, expected an object"):
+            self.stage.validate_raw(ctx)
+
+    def test_a_truncated_object_is_still_caught(self, ctx) -> None:
+        self.write_raw(ctx, '{"segments": [{"start": 0}')
+        with pytest.raises(ValidationError, match="unreadable"):
+            self.stage.validate_raw(ctx)
