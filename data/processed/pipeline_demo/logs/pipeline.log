@@ -22,3 +22,10 @@
 2026-09-23 17:26:31,053 INFO    OpenPose normalisation: 249 frames -> body=0 rows, hands=0 rows, face=0 rows
 2026-09-23 17:26:31,268 INFO    completed
 2026-09-23 17:26:31,319 INFO    blocked: upstream stage failed: acoustic, spacy_source
+2026-09-23 17:30:00,802 INFO    reuse: valid previous result
+2026-09-23 17:30:00,844 INFO    reuse: valid previous result
+2026-09-23 17:30:00,902 INFO    reuse: valid previous result
+2026-09-23 17:30:01,039 INFO    start (status is failed)
+2026-09-23 17:30:01,080 INFO    running spacy_source worker
+2026-09-23 17:30:03,316 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
+2026-09-23 17:30:03,362 INFO    completed

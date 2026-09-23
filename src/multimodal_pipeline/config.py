@@ -210,10 +210,12 @@ class SpacyConfig(_Model):
     worker: Path = Path("workers/spacy_worker.py")
     process_source: bool = True
     process_english: bool = True
-    english_model: str = "en_core_web_trf"
+    # en_core_web_lg is the installed default: a router model with word vectors
+    # and no torch dependency, so it never fights the CUDA-pinned ML environments.
+    english_model: str = "en_core_web_lg"
     source_models: dict[str, str] = Field(
         default_factory=lambda: {
-            "en": "en_core_web_trf",
+            "en": "en_core_web_lg",
             "es": "es_dep_news_trf",
             "de": "de_dep_news_trf",
             "fr": "fr_dep_news_trf",

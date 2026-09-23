@@ -87,11 +87,11 @@ spacy:
   worker: workers/spacy_worker.py
   process_source: true
   process_english: true
-  english_model: en_core_web_trf
+  english_model: en_core_web_lg
   # Official spaCy pipelines per detected language. Only installed models are
   # used; a missing model falls back to the family, then to `fallback_model`.
   source_models:
-    en: en_core_web_trf
+    en: en_core_web_lg
     es: es_dep_news_trf
     de: de_dep_news_trf
     fr: fr_dep_news_trf

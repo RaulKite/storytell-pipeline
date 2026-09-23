@@ -1,0 +1,13 @@
+[project]
+name = "mp-spacy-env"
+version = "0.1.0"
+description = "Isolated spaCy linguistics environment for the multimodal pipeline (worker-only)"
+requires-python = ">=3.10,<3.14"
+# Resolved 2026-09-23. Language models are *not* declared here: the stage probes
+# which models are installed and falls back to a blank pipeline, so a missing
+# model degrades linguistics quality instead of failing the video. Install the
+# models you need with scripts/install_spacy_models.sh.
+dependencies = [
+    "spacy==3.8.16",
+    "pyarrow>=17",
+]

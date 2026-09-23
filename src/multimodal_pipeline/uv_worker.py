@@ -14,18 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .exceptions import WorkerError
 from .artifacts import atomic_write_json
 from .config import mask_command, stable_hash
+from .exceptions import WorkerError
 from .subprocess_utils import CommandError, require_executable, run_command
-
-
-class WorkerError(RuntimeError):
-    """An isolated uv worker reported failure or produced no usable result."""
-
-    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.details = details or {}
 
 
 @dataclass
