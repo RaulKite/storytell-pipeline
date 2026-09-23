@@ -66,10 +66,10 @@
       "char_end": 11,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 0.594,
+      "token_end_time": 0.974,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -97,8 +97,8 @@
       "char_end": 12,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": 1.155,
-      "token_end_time": 1.295,
+      "token_start_time": 0.594,
+      "token_end_time": 0.974,
       "timestamp_alignment_status": "approximate",
       "timestamp_alignment_confidence": 0.2
     },
@@ -130,8 +130,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 1.155,
       "token_end_time": 1.295,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -161,8 +161,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 1.415,
       "token_end_time": 1.515,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -192,8 +192,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 1.555,
       "token_end_time": 1.575,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -223,8 +223,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 1.615,
       "token_end_time": 1.896,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -254,8 +254,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 1.936,
       "token_end_time": 1.996,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -285,8 +285,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 2.036,
       "token_end_time": 2.096,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -316,8 +316,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 2.136,
       "token_end_time": 2.657,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -347,8 +347,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 2.677,
       "token_end_time": 3.038,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -378,8 +378,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 3.078,
       "token_end_time": 3.619,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -409,8 +409,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 3.679,
       "token_end_time": 4.3,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -440,8 +440,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 4.32,
       "token_end_time": 4.36,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -471,8 +471,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 4.66,
       "token_end_time": 5.522,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.7
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -500,10 +500,10 @@
       "char_end": 93,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 5.622,
+      "token_end_time": 6.083,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -531,8 +531,8 @@
       "char_end": 94,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": 6.744,
-      "token_end_time": 7.205,
+      "token_start_time": 5.622,
+      "token_end_time": 6.083,
       "timestamp_alignment_status": "approximate",
       "timestamp_alignment_confidence": 0.2
     },
@@ -564,8 +564,8 @@
       "segment_end_time": 9.689,
       "token_start_time": 6.223,
       "token_end_time": 6.644,
-      "timestamp_alignment_status": "approximate",
-      "timestamp_alignment_confidence": 0.4
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -593,10 +593,10 @@
       "char_end": 111,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 6.744,
+      "token_end_time": 7.205,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -624,8 +624,8 @@
       "char_end": 112,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": 8.246,
-      "token_end_time": 8.827,
+      "token_start_time": 6.744,
+      "token_end_time": 7.205,
       "timestamp_alignment_status": "approximate",
       "timestamp_alignment_confidence": 0.2
     },
@@ -655,8 +655,8 @@
       "char_end": 116,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": 8.867,
-      "token_end_time": 8.968,
+      "token_start_time": 7.405,
+      "token_end_time": 7.485,
       "timestamp_alignment_status": "aligned",
       "timestamp_alignment_confidence": 1.0
     },
@@ -686,10 +686,10 @@
       "char_end": 125,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 7.605,
+      "token_end_time": 8.166,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -717,10 +717,10 @@
       "char_end": 134,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 8.246,
+      "token_end_time": 8.827,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -748,10 +748,10 @@
       "char_end": 138,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 8.867,
+      "token_end_time": 8.968,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -779,10 +779,10 @@
       "char_end": 143,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 9.008,
+      "token_end_time": 9.248,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     },
     {
       "segment_id": "seg000001",
@@ -810,10 +810,10 @@
       "char_end": 152,
       "segment_start_time": 0.233,
       "segment_end_time": 9.689,
-      "token_start_time": null,
-      "token_end_time": null,
-      "timestamp_alignment_status": "unmatched",
-      "timestamp_alignment_confidence": 0.0
+      "token_start_time": 9.288,
+      "token_end_time": 9.689,
+      "timestamp_alignment_status": "aligned",
+      "timestamp_alignment_confidence": 1.0
     }
   ],
   "sentences": [

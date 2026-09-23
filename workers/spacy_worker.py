@@ -24,7 +24,7 @@ import sys
 import time
 import traceback
 import unicodedata
-from typing import Any
+from typing import Any, Sequence
 
 FALLBACK_CAPABILITIES = ("tokenization", "sentencizer")
 
@@ -33,6 +33,16 @@ ALIGNED = "aligned"
 APPROXIMATE = "approximate"
 UNMATCHED = "unmatched"
 NO_TIMING = "no_timing"
+
+#: Stripped when comparing a spaCy token against a WhisperX word. WhisperX emits
+#: "world," where spaCy emits "world" and ","; without this the two never match.
+#: A character set for str.strip(): spaces and ASCII punctuation plus the
+#: quotation, dash and inversion marks this corpus's languages actually use.
+PUNCTUATION = (
+    " \t\n\r\f\v"
+    "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+    "\u00a1\u00bf\u2013\u2014\u2018\u2019\u201c\u201d\u2026\u00ab\u00bb"
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -246,8 +256,16 @@ def build_document(*, variant: str, video_id, segments: list[dict], segment_word
         if not (text or "").strip():
             continue
         doc = analyse(nlp, text)
+        sentences = list(doc.sents)
         words = words_by_segment.get(segment_id, [])
-        for sentence_index, sent in enumerate(doc.sents):
+        # Align over the whole segment at once: monotonic matching needs the
+        # sequence of tokens, and a sentence boundary must not reset the cursor.
+        timings = align_token_texts([token.text for token in doc], words) if variant == "source" \
+            else [{"token_start_time": None, "token_end_time": None,
+                   "timestamp_alignment_status": NO_TIMING, "timestamp_alignment_confidence": 0.0}
+                  for _ in doc]
+
+        for sentence_index, sent in enumerate(sentences):
             sentence_id = f"{segment_id}-s{sentence_index + 1:03d}"
             sentences_out.append({
                 "segment_id": segment_id,
@@ -291,7 +309,7 @@ def build_document(*, variant: str, video_id, segments: list[dict], segment_word
                     "char_end": token.idx + len(token.text),
                     "segment_start_time": segment.get("start_time"),
                     "segment_end_time": segment.get("end_time"),
-                    **token_timing(token, words),
+                    **timings[token.i],
                 })
     return {
         "schema_version": "1.0",
@@ -366,58 +384,156 @@ def shape_of(text: str, max_length: int = 12) -> str:
     return "".join(out) + "…" if len(text) > max_length else "".join(out)
 
 
-def normalise_token(text: str) -> str:
-    return unicodedata.normalize("NFKC", (text or "")).strip().lower()
+def core_text(text: str) -> str:
+    """Comparison key: NFKC, casefolded, with surrounding punctuation stripped.
+
+    WhisperX returns ``world,`` where spaCy returns ``world``. Comparing on the
+    word core is what makes those two the same word. Only the *edges* are
+    stripped: an apostrophe inside ``don't`` is part of the word.
+    """
+    normalised = unicodedata.normalize("NFKC", text or "").strip().casefold()
+    return normalised.strip(PUNCTUATION)
 
 
-def token_timing(token, segment_words: list[dict]) -> dict[str, Any]:
-    """Map a spaCy token onto WhisperX word timing by deterministic matching.
+def has_core(text: str) -> bool:
+    """True when a token carries lexical content (not just punctuation/space)."""
+    return bool(core_text(text))
 
-    spaCy and WhisperX split text differently (clitics, punctuation, merged
-    tokens), so positional equality is tried first and reported as ``aligned``;
-    a bounded ±2-word search is allowed and reported as ``approximate`` with a
-    reduced confidence. Anything else is ``unmatched`` with null timestamps
-    rather than a silent guess.
+
+def raw_key(text: str) -> str:
+    """Comparison key that keeps punctuation: for matching an ASR punctuation word."""
+    return unicodedata.normalize("NFKC", text or "").strip().casefold()
+
+
+def _is_fragment(core: str, word_core: str) -> bool:
+    """True when a token is a proper piece of a word the cursor is sitting on.
+
+    spaCy splits ``l'homme`` into ``l'`` + ``homme`` while the ASR kept one token.
+    Requiring containment is what separates that real case from a word that is
+    simply not in the recording, which must stay ``unmatched`` instead of being
+    handed the timestamp of whatever word came next.
+    """
+    return bool(core) and len(word_core) > len(core) and core in word_core
+
+
+def align_token_texts(token_texts: Sequence[str], segment_words: list[dict]) -> list[dict[str, Any]]:
+    """Align spaCy tokens to WhisperX word timings in a single monotonic pass.
+
+    The two tokenisers disagree constantly: WhisperX attaches punctuation to the
+    preceding word (``world,``) while spaCy emits ``world`` and ``,`` separately.
+    Matching token *i* to word *i* therefore drifts by one after the first comma
+    and mislabels almost every timestamp — which is worse than admitting there is
+    no timestamp. Word order is identical in both sequences, so this walks them
+    together with a single forward cursor:
+
+    * a token whose core equals the word the cursor is on is ``aligned`` (1.0);
+    * an exact core match a few words ahead is ``approximate``: the timestamp is
+      right but the 1:1 pairing is not provable when a word repeats;
+    * a token that is a proper fragment of the current word (``l'`` + ``homme``)
+      borrows that word's span *without consuming it*, so the next token can
+      still match the same word;
+    * punctuation borrows the span of the word it accompanies (0.2), unless the
+      ASR timed that mark as its own word, in which case that timing is used;
+    * anything else gets null timestamps and ``unmatched``. Only an exact match
+      against the cursor is ever reported as ``aligned``.
+
+    The pass never reorders and never invents a timestamp for a word it could not
+    name. When there are no word timings at all every token is ``no_timing``.
     """
     if not segment_words:
-        return {"token_start_time": None, "token_end_time": None,
-                "timestamp_alignment_status": NO_TIMING, "timestamp_alignment_confidence": 0.0}
-    match = find_word_for_token(token.text, segment_words, token.i)
-    if match is None:
-        return {"token_start_time": None, "token_end_time": None,
-                "timestamp_alignment_status": UNMATCHED, "timestamp_alignment_confidence": 0.0}
-    word = match["word"]
-    start, end = word.get("start_time"), word.get("end_time")
-    if start is None or end is None:
-        return {"token_start_time": None, "token_end_time": None,
-                "timestamp_alignment_status": word.get("alignment_status") or UNMATCHED,
-                "timestamp_alignment_confidence": 0.0}
-    return {"token_start_time": round(float(start), 6), "token_end_time": round(float(end), 6),
-            "timestamp_alignment_status": match["status"],
-            "timestamp_alignment_confidence": match["confidence"]}
+        return [{"token_start_time": None, "token_end_time": None,
+                 "timestamp_alignment_status": NO_TIMING, "timestamp_alignment_confidence": 0.0}
+                for _ in token_texts]
+
+    timings: list[dict[str, Any]] = []
+    cursor = 0
+    last_matched: dict[str, Any] | None = None
+    total = len(segment_words)
+
+    for text in token_texts:
+        core = core_text(text)
+
+        if not core:
+            # Punctuation/whitespace: the ASR sometimes times it as its own word.
+            punct = _match_raw(segment_words, cursor, text, window=1)
+            if punct is not None:
+                index, distance = punct
+                word = segment_words[index]
+                last_matched = word
+                cursor = index + 1
+                timings.append(_timing_from_word(
+                    word, ALIGNED if distance == 0 else APPROXIMATE,
+                    1.0 if distance == 0 else 0.5, fallback=UNMATCHED))
+                continue
+            borrowed = last_matched
+            if borrowed is None and cursor < total:
+                borrowed = segment_words[cursor]  # leading mark: belongs to what follows
+            timings.append(_timing_from_word(borrowed, APPROXIMATE, 0.2, fallback=UNMATCHED))
+            continue
+
+        exact = _match_word(segment_words, cursor, core)
+        if exact is not None:
+            index, distance = exact
+            word = segment_words[index]
+            last_matched = word
+            cursor = index + 1
+            timings.append(_timing_from_word(
+                word, ALIGNED if distance == 0 else APPROXIMATE,
+                1.0 if distance == 0 else round(max(0.3, 1.0 - distance * 0.25), 3),
+                fallback=UNMATCHED))
+            continue
+
+        current_core = core_text(segment_words[cursor].get("word") or "") if cursor < total else ""
+        if _is_fragment(core, current_core):
+            # Do not advance: the sibling fragment must still match this word.
+            timings.append(_timing_from_word(segment_words[cursor], APPROXIMATE, 0.3, fallback=UNMATCHED))
+            continue
+
+        timings.append({"token_start_time": None, "token_end_time": None,
+                        "timestamp_alignment_status": UNMATCHED, "timestamp_alignment_confidence": 0.0})
+    return timings
 
 
-def find_word_for_token(token_text: str, segment_words: list[dict],
-                        token_index: int) -> dict[str, Any] | None:
-    target = normalise_token(token_text)
+def _match_word(segment_words: list[dict], cursor: int, core: str,
+                window: int = 3) -> tuple[int, int] | None:
+    """Nearest core match at or after ``cursor`` within ``window`` words."""
+    for distance in range(0, window + 1):
+        index = cursor + distance
+        if index >= len(segment_words):
+            break
+        if core_text(segment_words[index].get("word") or "") == core:
+            return index, distance
+    return None
+
+
+def _match_raw(segment_words: list[dict], cursor: int, text: str,
+               window: int = 1) -> tuple[int, int] | None:
+    """Exact (punctuation-included) match for a mark the ASR timed on its own."""
+    target = raw_key(text)
     if not target:
         return None
-    if token_index < len(segment_words):
-        candidate = segment_words[token_index]
-        if normalise_token(candidate.get("word") or "") == target:
-            return {"word": candidate, "status": ALIGNED, "confidence": 1.0}
-    for offset in range(-2, 3):
-        index = token_index + offset
-        if 0 <= index < len(segment_words):
-            candidate = segment_words[index]
-            if normalise_token(candidate.get("word") or "") == target:
-                return {"word": candidate, "status": APPROXIMATE,
-                        "confidence": round(max(0.2, 1.0 - abs(offset) * 0.3), 3)}
-    # Punctuation-only token: inherit the neighbouring word's span, flagged.
-    if not normalise_token(token_text).strip(".,;:!?¡¿\"'()[]{}—–-…"):
-        return {"word": segment_words[min(token_index, len(segment_words) - 1)],
-                "status": APPROXIMATE, "confidence": 0.2}
+    for distance in range(0, window + 1):
+        index = cursor + distance
+        if index >= len(segment_words):
+            break
+        if raw_key(segment_words[index].get("word") or "") == target:
+            return index, distance
     return None
+
+
+def _timing_from_word(word: dict | None, status: str, confidence: float,
+                      *, fallback: str) -> dict[str, Any]:
+    if word is None:
+        return {"token_start_time": None, "token_end_time": None,
+                "timestamp_alignment_status": fallback, "timestamp_alignment_confidence": 0.0}
+    start, end = word.get("start_time"), word.get("end_time")
+    if start is None or end is None:
+        # The word exists but its own timing is unknown (unaligned or truncated).
+        return {"token_start_time": None, "token_end_time": None,
+                "timestamp_alignment_status": word.get("alignment_status") or fallback,
+                "timestamp_alignment_confidence": 0.0}
+    return {"token_start_time": round(float(start), 6), "token_end_time": round(float(end), 6),
+            "timestamp_alignment_status": status, "timestamp_alignment_confidence": round(confidence, 3)}
 
 
 if __name__ == "__main__":

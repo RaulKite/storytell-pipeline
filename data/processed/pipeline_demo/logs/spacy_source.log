@@ -10,3 +10,25 @@ warning: `VIRTUAL_ENV=.venv` does not match the project environment path `enviro
 [exit=0 timed_out=False duration=2.2s]
 2026-09-23 17:30:03,316 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
 2026-09-23 17:30:03,362 INFO    completed
+2026-09-23 17:40:11,230 INFO    start (forced recomputation)
+2026-09-23 17:40:11,272 INFO    reusing existing raw output for request 064f983ec8583b39 (no model run)
+2026-09-23 17:40:11,276 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
+2026-09-23 17:40:11,347 INFO    completed
+2026-09-23 17:41:09,891 INFO    start (forced recomputation)
+2026-09-23 17:41:09,934 INFO    running spacy_source worker
+
+$ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/spacy_worker.py --variant source --video-id pipeline_demo --segments /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/segments.parquet --words /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/words.parquet --raw-output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/linguistic/source/raw/spacy_source.json --source-models {"en": "en_core_web_lg", "es": "es_dep_news_trf", "de": "de_dep_news_trf", "fr": "fr_dep_news_trf", "it": "it_core_news_lg", "pt": "pt_core_news_lg", "nl": "nl_core_news_lg"} --english-model en_core_web_lg --fallback-model blank --max-length 1000000 --request-hash 43c40ecc6c12e526
+(cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
+warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/spacy/.venv` and will be ignored; use `--active` to target the active environment instead
+[exit=0 timed_out=False duration=2.3s]
+2026-09-23 17:41:12,227 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
+2026-09-23 17:41:12,275 INFO    completed
+2026-09-23 17:43:45,569 INFO    start (forced recomputation)
+2026-09-23 17:43:45,604 INFO    running spacy_source worker
+
+$ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/spacy_worker.py --variant source --video-id pipeline_demo --segments /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/segments.parquet --words /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/words.parquet --raw-output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/linguistic/source/raw/spacy_source.json --source-models {"en": "en_core_web_lg", "es": "es_dep_news_trf", "de": "de_dep_news_trf", "fr": "fr_dep_news_trf", "it": "it_core_news_lg", "pt": "pt_core_news_lg", "nl": "nl_core_news_lg"} --english-model en_core_web_lg --fallback-model blank --max-length 1000000 --request-hash 35bfe9f6c88884f9
+(cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
+warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/spacy/.venv` and will be ignored; use `--active` to target the active environment instead
+[exit=0 timed_out=False duration=2.1s]
+2026-09-23 17:43:47,755 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
+2026-09-23 17:43:47,802 INFO    completed

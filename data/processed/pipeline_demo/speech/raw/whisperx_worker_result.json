@@ -1,7 +1,7 @@
 {
   "stage": "whisperx",
   "status": "ok",
-  "request_hash": "71d98a0254c01f48",
+  "request_hash": "74018cca77c915bf",
   "tool_version": "3.8.6",
   "model_version": "large-v3",
   "detected_language": "en",
@@ -12,5 +12,5 @@
     "align_model": null,
     "language": "en"
   },
-  "duration_seconds": 54.905
+  "duration_seconds": 9.12
 }

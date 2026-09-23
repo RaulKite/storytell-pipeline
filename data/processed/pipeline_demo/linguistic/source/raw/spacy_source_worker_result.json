@@ -1,12 +1,12 @@
 {
   "stage": "spacy_source",
   "status": "ok",
-  "request_hash": "064f983ec8583b39",
+  "request_hash": "35bfe9f6c88884f9",
   "tool_version": "3.8.16",
   "model_version": "3.8.0",
   "selected_model": "en_core_web_lg",
   "model_selection_status": "configured",
   "tokens": 26,
   "sentences": 1,
-  "duration_seconds": 2.032
+  "duration_seconds": 1.953
 }

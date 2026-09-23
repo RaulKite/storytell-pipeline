@@ -29,3 +29,27 @@
 2026-09-23 17:30:01,080 INFO    running spacy_source worker
 2026-09-23 17:30:03,316 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
 2026-09-23 17:30:03,362 INFO    completed
+2026-09-23 17:40:10,979 INFO    reuse: valid previous result
+2026-09-23 17:40:11,021 INFO    reuse: valid previous result
+2026-09-23 17:40:11,063 INFO    reuse: valid previous result
+2026-09-23 17:40:11,230 INFO    start (forced recomputation)
+2026-09-23 17:40:11,272 INFO    reusing existing raw output for request 064f983ec8583b39 (no model run)
+2026-09-23 17:40:11,276 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
+2026-09-23 17:40:11,347 INFO    completed
+2026-09-23 17:40:59,392 INFO    reuse: valid previous result
+2026-09-23 17:40:59,433 INFO    reuse: valid previous result
+2026-09-23 17:40:59,438 INFO    start (configuration changed)
+2026-09-23 17:40:59,485 INFO    running whisperx worker
+2026-09-23 17:41:09,675 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
+2026-09-23 17:41:09,724 INFO    completed
+2026-09-23 17:41:09,891 INFO    start (forced recomputation)
+2026-09-23 17:41:09,934 INFO    running spacy_source worker
+2026-09-23 17:41:12,227 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
+2026-09-23 17:41:12,275 INFO    completed
+2026-09-23 17:43:45,326 INFO    reuse: valid previous result
+2026-09-23 17:43:45,369 INFO    reuse: valid previous result
+2026-09-23 17:43:45,410 INFO    reuse: valid previous result
+2026-09-23 17:43:45,569 INFO    start (forced recomputation)
+2026-09-23 17:43:45,604 INFO    running spacy_source worker
+2026-09-23 17:43:47,755 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
+2026-09-23 17:43:47,802 INFO    completed

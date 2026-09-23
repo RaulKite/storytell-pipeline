@@ -318,12 +318,24 @@ class WorkerStage(Stage):
     # ------------------------------------------------------------------ plumbing
 
     def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
-        return self.request(ctx)
+        return self.digest_payload(ctx)
+
+    def digest_payload(self, ctx: StageContext) -> dict[str, Any]:
+        """What the preserved raw output is a function of.
+
+        The worker's own source is part of it. Caching raw output on request
+        parameters alone means a bug fix in a worker is never picked up: the same
+        parameters produce the same digest, the stale raw file is reused, and the
+        fix silently does nothing until someone deletes the artifact by hand.
+        """
+        payload = dict(self.request(ctx))
+        payload["_worker_code_sha256"] = worker_code_digest(self.worker_script(ctx))
+        return payload
 
     def request_digest(self, ctx: StageContext) -> str:
         from ..config import stable_hash
 
-        return stable_hash(self.request(ctx), length=16)
+        return stable_hash(self.digest_payload(ctx), length=16)
 
     def uv_project(self, ctx: StageContext) -> Path:
         raise NotImplementedError
@@ -347,7 +359,7 @@ class WorkerStage(Stage):
         from ..config import stable_hash
 
         request = self.request(ctx)
-        digest = stable_hash(request, length=16)
+        digest = stable_hash(self.digest_payload(ctx), length=16)
         raw_path = ctx.artifact(self.raw_artifact)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -411,6 +423,18 @@ class WorkerStage(Stage):
             return read_json(raw_path)
         except (OSError, ValueError) as exc:
             raise ValidationError(self.name, [f"raw artifact unreadable ({raw_path.name}): {exc}"]) from exc
+
+
+def worker_code_digest(script_path: Path) -> str | None:
+    """SHA256 of a worker script, or None when it is not readable yet.
+
+    Mixed into the raw-request digest so a change to worker code always
+    invalidates the cached raw output of that worker.
+    """
+    try:
+        return _sha256(Path(script_path))
+    except OSError:  # pragma: no cover - defensive: _sha256 already swallows this
+        return None
 
 
 def raw_sidecar_path(raw_path: Path) -> Path:
