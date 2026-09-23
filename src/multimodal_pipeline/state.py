@@ -62,6 +62,11 @@ class StageRecord:
     validation_result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     reuse_count: int = 0
+    #: Position in this video's monotonic stage-execution sequence. A dependant is
+    #: stale when a dependency's sequence moved past the one it was built from,
+    #: which catches a rerun whose configuration did not change (--force-stage, a
+    #: crash mid-write) — the case configuration hashes cannot see.
+    run_sequence: int | None = None
 
     @property
     def last_config_hash(self) -> str | None:
@@ -86,6 +91,7 @@ class StageRecord:
             "validation_result": self.validation_result,
             "error": self.error,
             "reuse_count": self.reuse_count,
+            "run_sequence": self.run_sequence,
         }
         return payload
 
@@ -106,6 +112,8 @@ class VideoState:
         self.stage_order: list[str] = []
         self.created_at: str | None = None
         self.updated_at: str | None = None
+        #: Highest stage-execution sequence recorded so far for this video.
+        self.sequence: int = 0
 
     # ---------------------------------------------------------------- loading
 
@@ -116,11 +124,19 @@ class VideoState:
             payload = read_json(paths.status)
             state.created_at = payload.get("created_at")
             state.updated_at = payload.get("updated_at")
+            state.sequence = int(payload.get("sequence") or 0)
             state.source_path = payload.get("source", {}).get("path", source_path)
             for name, record in (payload.get("stages") or {}).items():
                 state.stages[name] = StageRecord.from_dict(name, record or {})
             state.stage_order = list(payload.get("stage_order") or state.stages.keys())
+        # Resume-safe: never restart the counter below a sequence already recorded.
+        state.sequence = max([state.sequence] + [record.run_sequence or 0 for record in state.stages.values()])
         return state
+
+    def next_sequence(self) -> int:
+        """Allocate the next execution sequence number for this video."""
+        self.sequence += 1
+        return self.sequence
 
     def bind_stages(self, order: Iterable[str]) -> None:
         """Declare the canonical stage list, preserving any recorded history."""
@@ -187,6 +203,7 @@ class VideoState:
         model_version: str | None = None,
         exit_code: int | None = None,
         validation_result: dict[str, Any] | None = None,
+        run_sequence: int | None = None,
     ) -> StageRecord:
         record = self.stage(name)
         record.status = STATUS_COMPLETED
@@ -203,6 +220,7 @@ class VideoState:
         record.model_version = model_version
         record.exit_code = exit_code
         record.validation_result = validation_result
+        record.run_sequence = run_sequence
         record.error = None
         self.save()
         return record
@@ -274,6 +292,7 @@ class VideoState:
             "created_at": self.created_at or utc_now(),
             "updated_at": utc_now(),
             "overall_status": self.overall_status,
+            "sequence": self.sequence,
             "stage_order": self.stage_order,
             "stages": {name: self.stages[name].to_dict() for name in self.stage_order if name in self.stages},
         }

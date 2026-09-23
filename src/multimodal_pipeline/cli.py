@@ -153,7 +153,7 @@ def resume(
 ) -> None:
     """Continue an interrupted run, reusing every stage whose result is still valid."""
     run(config=config, video=video, only_stage=None, force_stage=None, from_stage=None,
-        to_stage="finalization", quiet=quiet)
+        to_stage=None, quiet=quiet)
 
 
 @app.command("retry-failed")
@@ -186,7 +186,7 @@ def retry_failed(
     console.print(f"[bold]Retrying[/] {len(forced)} stage(s) across {len(targets)} video(s): "
                   f"{', '.join(forced)}")
     report = _execute_batch(pipeline_config, targets, only_stage=forced, force_stages=forced,
-                            from_stage=None, to_stage="finalization", quiet=quiet)
+                            from_stage=None, to_stage=None, quiet=quiet)
     _finish(report, pipeline_config)
 
 
@@ -210,8 +210,14 @@ def status(
     config: Path = typer.Option(..., "--config", "-c"),
     video: Optional[str] = typer.Option(None, "--video-id", help="Limit to one video id."),
     plan: bool = typer.Option(False, "--plan", help="Explain why each stage would or would not rerun."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
-    """Show per-video, per-stage processing state."""
+    """Show per-video, per-stage processing state.
+
+    Statuses are rendered as single letters with a legend: eleven stage names in
+    full cannot fit a terminal, and a table nobody can read tells nobody anything.
+    Use ``--plan`` for the wordy version and ``--json`` for scripting.
+    """
     configure("WARNING", console=False)
     pipeline_config = load_config(config)
     sources = discover_videos(pipeline_config)
@@ -220,24 +226,72 @@ def status(
         if not sources:
             console.print(f"[red]No video with id {video}[/]")
             raise typer.Exit(code=1)
-    table = Table(title=f"Pipeline status — {pipeline_config.output.directory}")
-    table.add_column("video_id")
-    for name in enabled_stage_names(pipeline_config):
-        table.add_column(name.replace("_", "\n"), justify="center", overflow="fold")
-    table.add_column("overall", justify="center")
+    names = enabled_stage_names(pipeline_config)
+    rows = []
     for source in sources:
         paths = VideoPaths(pipeline_config.output.directory / source.video_id)
         state = VideoState.load(paths, source.video_id, str(source.path))
-        cells = [state.status_of(name) for name in enabled_stage_names(pipeline_config)]
-        table.add_row(source.video_id, *cells, state.overall_status)
+        rows.append((source.video_id, [state.status_of(name) for name in names], state.overall_status))
+
+    if as_json:
+        console.print_json(json.dumps({
+            "output_directory": str(pipeline_config.output.directory),
+            "stages": names,
+            "videos": [{"video_id": vid, "stages": dict(zip(names, cells)), "overall": overall}
+                       for vid, cells, overall in rows],
+        }))
+        return
+
+    table = Table(title=f"Pipeline status — {pipeline_config.output.directory}", expand=False)
+    table.add_column("video_id", overflow="fold")
+    for name in names:
+        table.add_column(_stage_initials(name), justify="center", width=max(2, len(_stage_initials(name))))
+    table.add_column("overall", justify="center")
+    for vid, cells, overall in rows:
+        table.add_row(vid, *[_STATUS_MARKS.get(cell, cell[:3]) for cell in cells],
+                      _STATUS_MARKS.get(overall, overall[:3]))
     console.print(table)
+    console.print("  " + "  ".join(f"{code}={word}" for word, code in sorted(_STATUS_MARKS.items())))
+    console.print("  stages: " + " ".join(f"{i+1}={name}" for i, name in enumerate(names)))
     if plan:
         for source in sources:
             runner = VideoRunner(pipeline_config, source, tools=_tools(pipeline_config))
             console.print(f"\n[bold]{source.video_id}[/]")
-            for item in runner.plan(only_stage=None, from_stage=None, to_stage="finalization"):
+            for item in runner.plan(only_stage=None, from_stage=None, to_stage=None):
                 marker = "run " if item.will_run else "keep"
                 console.print(f"  [{marker}] {item.name:<20} {item.reason}")
+
+
+#: One letter per status keeps an eleven-stage table inside a terminal width.
+_STATUS_MARKS = {
+    "completed": "c",
+    "skipped": "s",
+    "failed": "F",
+    "running": "r",
+    "pending": ".",
+    "partial": "P",
+}
+
+
+_SHORT_STAGE_NAMES = {
+    "metadata": "meta",
+    "audio": "audio",
+    "whisperx": "asr",
+    "diarization": "diar",
+    "speaker_assignment": "spk",
+    "translation": "trans",
+    "spacy_source": "nlp_src",
+    "spacy_english": "nlp_en",
+    "acoustic": "acou",
+    "openpose": "pose",
+    "finalization": "final",
+}
+
+
+def _stage_initials(name: str) -> str:
+    """Short, readable column headers for an eleven-stage table."""
+    return _SHORT_STAGE_NAMES.get(name, name[:6])
+
 
 
 @app.command()
@@ -335,7 +389,7 @@ def _environment_warnings(config: PipelineConfig) -> list[str]:
 
 
 def _execute_batch(config: PipelineConfig, sources: list[VideoSource], *, only_stage=None,
-                   force_stages=None, from_stage=None, to_stage="finalization",
+                   force_stages=None, from_stage=None, to_stage=None,
                    quiet: bool = False) -> BatchReport:
     tools = _tools(config)
     tools["schema_version"] = "1.0"

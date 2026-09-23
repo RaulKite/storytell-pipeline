@@ -49,17 +49,6 @@ from .stages.whisperx import WhisperXStage
 
 log = get_logger("orchestrator")
 
-#: Timestamps are second-precision across process boundaries; a dependency that
-#: finished within this window of its dependant is treated as simultaneous.
-_STALENESS_SLACK_SECONDS = 2.0
-
-
-def _parse_timestamp(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-
 STAGE_CLASSES: dict[str, type[Stage]] = {
     cls.name: cls
     for cls in (
@@ -143,69 +132,74 @@ class VideoRunner:
     # ------------------------------------------------------------------ planning
 
     def plan(self, *, only_stage: Sequence[str] | None = None, from_stage: str | None = None,
-             to_stage: str = "finalization", force_stages: Sequence[str] = ()) -> list[StagePlan]:
-        """Decide, per stage, whether it runs — and say why (used by ``status``)."""
+             to_stage: str | None = None, force_stages: Sequence[str] = ()) -> list[StagePlan]:
+        """Decide, per stage, whether it runs — and say why (used by ``status``).
+
+        ``_hash_reason`` names why a previous result is *not* reusable, which is
+        precisely why the stage must run; only an explicit disable or an outside-
+        range selection prevents it. Keeping that straight matters because ``status``
+        is how an operator decides whether to intervene.
+        """
         context = self.stage_context()
         stages = build_stages()
         context.state.bind_stages(STAGE_ORDER)
         selected = set(stage_selection(STAGE_ORDER, only_stage=only_stage, from_stage=from_stage, to_stage=to_stage))
         planned: list[StagePlan] = []
+        blocked: set[str] = set()
+        # Stages decided so far in this same pass. A dependant's dependency hash
+        # must be evaluated against them, otherwise ``status`` promises "valid
+        # previous result" for a stage the very next ``run`` recomputes.
+        pending: dict[str, tuple[str | None, int | None]] = {}
+        counter = context.state.sequence
         for stage in stages:
             config_hash = self.config_hash_for(stage, context)
-            dependency_hash = self.dependency_hash_for(stage, context)
+            dependency_hash = self.dependency_hash_for(stage, context, pending)
             forced = stage.name in set(force_stages)
             if stage.name not in selected:
                 planned.append(StagePlan(stage.name, False, "outside requested stage range",
                                          config_hash, dependency_hash, forced))
                 continue
-            hash_reason = self._hash_reason(context, stage, config_hash, dependency_hash)
+            upstream_failed = sorted(blocked & set(dependency_chain(stage.name)))
+            if upstream_failed:
+                blocked.add(stage.name)
+                planned.append(StagePlan(stage.name, False,
+                                         f"blocked by failed upstream: {', '.join(upstream_failed)}",
+                                         config_hash, dependency_hash, forced))
+                continue
+            enabled, why_disabled = stage.enabled(context)
+            if not enabled:
+                planned.append(StagePlan(stage.name, False, f"disabled: {why_disabled}",
+                                         config_hash, dependency_hash, forced))
+                continue
             if forced:
                 reason = "forced recomputation"
-            elif hash_reason:
-                reason = hash_reason
             else:
-                enabled, why = stage.enabled(context)
-                reason = "" if enabled else f"disabled: {why}"
-            planned.append(StagePlan(stage.name, not reason, reason or "valid previous result",
-                                     config_hash, dependency_hash, forced))
+                reason = self._hash_reason(context, stage, config_hash, dependency_hash)
+            if context.state.stage(stage.name).status == STATUS_FAILED:
+                reason = reason or "previous run failed"
+            if reason:
+                counter += 1
+                pending[stage.name] = (config_hash, counter)
+                if context.state.stage(stage.name).status == STATUS_FAILED:
+                    blocked.add(stage.name)
+                planned.append(StagePlan(stage.name, True, reason, config_hash, dependency_hash, forced))
+            else:
+                planned.append(StagePlan(stage.name, False, "valid previous result",
+                                         config_hash, dependency_hash, forced))
         return planned
 
     def _hash_reason(self, context: StageContext, stage: Stage, config_hash: str,
                      dependency_hash: str) -> str:
-        record = context.state.stage(stage.name)
-        if record.status != STATUS_COMPLETED:
-            return f"status is {record.status}"
-        if record.config_hash != config_hash:
-            return "configuration changed"
-        if record.dependency_hash != dependency_hash:
-            return "upstream dependency changed"
-        stale = self._stale_dependency(context, stage)
-        if stale:
-            # Make-style staleness: a dependency was recomputed after this stage ran
-            # (with identical configuration, so dependency_hash alone misses it).
-            return f"recomputed upstream dependency: {', '.join(stale)}"
-        if not stage.outputs_present(context):
-            return "output artifacts missing"
-        return ""
+        """Why this stage cannot reuse its previous result, or "" if it can.
 
-    @staticmethod
-    def _stale_dependency(context: StageContext, stage: Stage) -> list[str]:
-        """Dependencies that finished after this stage's last completed run."""
-        record = context.state.stage(stage.name)
-        if not record.completed_at:
-            return []
-        finished = _parse_timestamp(record.completed_at)
-        if finished is None:
-            return []
-        stale: list[str] = []
-        for name in dependency_chain(stage.name):
-            upstream = context.state.stage(name)
-            if upstream.status != STATUS_COMPLETED or not upstream.completed_at:
-                continue
-            upstream_finished = _parse_timestamp(upstream.completed_at)
-            if upstream_finished is not None and upstream_finished > finished + _STALENESS_SLACK_SECONDS:
-                stale.append(name)
-        return sorted(stale)
+        Delegates to :func:`should_reuse` so ``status`` reports exactly what a
+        following ``run`` will do. A plan that ignored semantic validation would
+        tell an operator "valid previous result" about a dataset the next run
+        recomputes anyway.
+        """
+        reusable, reason = should_reuse(stage, context, config_hash=config_hash,
+                                        dependency_hash=dependency_hash, force=False)
+        return "" if reusable else reason
 
     def config_hash_for(self, stage: Stage, context: StageContext) -> str:
         return stable_hash(self.config_payload_for(stage, context), length=16)
@@ -217,15 +211,33 @@ class VideoRunner:
         payload.setdefault("schema_version", self.tools.get("schema_version"))
         return payload
 
-    def dependency_hash_for(self, stage: Stage, context: StageContext) -> str:
-        payload = {dep: context.state.stage(dep).config_hash for dep in dependency_chain(stage.name)}
-        payload["schema_version"] = self.tools.get("schema_version")
+    def dependency_hash_for(self, stage: Stage, context: StageContext,
+                            pending: dict[str, tuple[str | None, int | None]] | None = None) -> str:
+        """Fingerprint of everything this stage consumes upstream.
+
+        For each transitive dependency this combines the configuration that
+        produced it *and that stage's execution sequence number*. Configuration
+        alone misses the resume case that matters most: a stage rerun with
+        identical settings (``--force-stage``, or a crash mid-write) whose outputs
+        really did change, so its dependants must follow. A sequence counter is
+        used rather than artifact mtimes because this filesystem rounds mtimes to
+        roughly 16 ms: a rerun finishing inside one tick would otherwise look
+        unchanged and leave stale Parquet on disk.
+
+        ``pending`` carries the (config, sequence) a planning pass has already
+        decided to assign to upstream stages, so a plan reflects the cascade.
+        """
+        payload: dict[str, Any] = {"schema_version": self.tools.get("schema_version")}
+        for name in dependency_chain(stage.name):
+            record = context.state.stage(name)
+            override = (pending or {}).get(name)
+            payload[name] = list(override) if override else [record.config_hash, record.run_sequence]
         return stable_hash(payload, length=16)
 
     # ----------------------------------------------------------------- execution
 
     def run(self, *, only_stage: Sequence[str] | None = None, from_stage: str | None = None,
-            to_stage: str = "finalization", force_stages: Sequence[str] = ()) -> VideoResult:
+            to_stage: str | None = None, force_stages: Sequence[str] = ()) -> VideoResult:
         self.paths.ensure_dirs()
         self.registry.refresh()
         logger = self.stage_logger_factory or _default_logger_factory(self.paths)
@@ -351,6 +363,9 @@ class VideoRunner:
             return StageOutcome(executed=True, status="failed", message=str(exc))
 
         record = self.state.stage(name)
+        # Allocated per real execution, so a dependant's dependency hash moves even
+        # when the rerun used identical configuration.
+        run_sequence = self.state.next_sequence()
         record.config_hash = config_hash
         record.dependency_hash = dependency_hash
         record.input_artifacts = list(stage.inputs)
@@ -364,6 +379,7 @@ class VideoRunner:
             record.executable = extras["executable"]
         if extras.get("exit_code") is not None:
             record.exit_code = extras["exit_code"]
+        record.run_sequence = run_sequence
         record.validation_result = outcome.detail.get("validation")
         if record.status != STATUS_COMPLETED:
             # ``execute`` may have run outside mark_running (rare); settle it now.
@@ -379,6 +395,7 @@ class VideoRunner:
                 command=extras.get("command"),
                 executable=extras.get("executable"),
                 exit_code=extras.get("exit_code"),
+                run_sequence=run_sequence,
             )
         else:
             self.state.save()

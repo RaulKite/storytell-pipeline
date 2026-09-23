@@ -194,12 +194,16 @@ def stage_selection(
     *,
     only_stage: Iterable[str] | None = None,
     from_stage: str | None = None,
-    to_stage: str = "finalization",
+    to_stage: str | None = None,
 ) -> list[str]:
     """Resolve CLI stage controls into an explicit ordered allow-list.
 
     ``--only-stage`` wins over ``--from-stage/--to-stage``; a range always
-    includes its endpoints and stays inside the canonical order.
+    includes its endpoints and stays inside the canonical order. ``to_stage``
+    applies on its own too: ``--to-stage whisperx`` must stop after whisperx even
+    when no ``--from-stage`` was given. A name that is not a stage is an error,
+    never a silent "no limit" — a typo on the command line must not quietly run
+    the whole pipeline.
     """
     only = [s for s in order if s in set(only_stage or ())]
     if only:
@@ -208,15 +212,15 @@ def stage_selection(
         for name in only:
             keep.update(dependency_chain(name))
         return [s for s in order if s in keep]
-    if from_stage:
-        if from_stage not in order:
-            raise StageError(f"unknown --from-stage: {from_stage}")
-        start = order.index(from_stage)
-        end = order.index(to_stage) if to_stage in order else len(order) - 1
-        if end < start:
-            raise StageError(f"--to-stage {to_stage} precedes --from-stage {from_stage}")
-        return list(order[start : end + 1])
-    return list(order)
+    if from_stage and from_stage not in order:
+        raise StageError(f"unknown --from-stage: {from_stage}")
+    if to_stage and to_stage not in order:
+        raise StageError(f"unknown --to-stage: {to_stage}")
+    start = order.index(from_stage) if from_stage else 0
+    end = order.index(to_stage) if to_stage else len(order) - 1
+    if end < start:
+        raise StageError(f"--to-stage {to_stage} precedes --from-stage {from_stage}")
+    return list(order[start : end + 1])
 
 
 def should_reuse(
