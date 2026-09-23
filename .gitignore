@@ -1,0 +1,28 @@
+# Local Pi runtime state
+.atl/
+
+# Local configuration may carry credentials
+config/config.local.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# uv environments keep their lockfiles, never their virtualenvs
+environments/*/.venv/
+
+# Pipeline outputs are data, not source
+/output/
+
+# Tool scratch
+.pytest-tmp/
+
+# OS
+.DS_Store

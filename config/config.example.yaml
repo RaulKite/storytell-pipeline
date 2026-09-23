@@ -1,0 +1,163 @@
+# Multimodal video-processing pipeline — example configuration.
+#
+# Copy to config/config.local.yaml and adjust the machine-specific values.
+# config.local.yaml is git-ignored because it may carry credentials.
+#
+# Environment-variable interpolation is supported anywhere as ${VAR} or
+# ${VAR:-default}; that is the recommended way to keep secrets out of the file.
+
+input:
+  directory: /data/videos
+  recursive: false
+  extensions:
+    - .mp4
+    - .mov
+    - .mkv
+    - .avi
+    - .webm
+
+output:
+  directory: /data/processed
+  # temp_directory: /data/tmp     # defaults to the OS temp directory
+
+execution:
+  mode: sequential               # only 'sequential': one GPU, one stage at a time
+  gpu: 0
+  stop_on_video_error: false     # keep going after a video fails
+  progress_interval_seconds: 10
+
+ffmpeg:
+  executable: ffmpeg
+  ffprobe: ffprobe
+
+whisperx:
+  enabled: true
+  uv_project: environments/whisperx
+  worker: workers/whisperx_worker.py
+  model: large-v3
+  language: auto                 # 'auto' lets Whisper detect per video
+  device: cuda
+  device_index: 0
+  compute_type: float16
+  batch_size: auto               # scales with VRAM: 16 on a 24 GB card
+  beam_size: 5
+  vad_method: pyannote           # pyannote | silero (VAD is always applied)
+  vad_merge_chunk_seconds: 30
+  # align_model: null            # override the per-language wav2vec2 alignment model
+  python_version: "3.12"
+
+diarization:
+  enabled: true
+  uv_project: environments/diarization
+  worker: workers/diarization_worker.py
+  provider: pyannote
+  pipeline: pyannote/speaker-diarization-community-1
+  hf_token_env: HF_TOKEN         # read from the environment, never from this file
+  device: cuda
+  device_index: 0
+  # Community-1 also returns an *exclusive* timeline (one speaker per instant);
+  # preferring it makes transcript/speaker reconciliation well-defined.
+  use_exclusive_diarization_for_alignment: true
+  # min_speakers: 1
+  # max_speakers: 8
+  # num_speakers: 2              # set only when the count is genuinely known
+  python_version: "3.12"
+
+translation:
+  enabled: true
+  provider: openai-compatible    # openai-compatible | mock (offline testing)
+  base_url: http://LITELLM_HOST:PORT/v1
+  # Prefer the environment variable over a literal key:
+  api_key: ${LITELLM_API_KEY:-}
+  model: claude-sonnet-4-5
+  temperature: 0.0
+  timeout_seconds: 120
+  max_retries: 3
+  backoff_base_seconds: 1.0
+  batch_size: 10                 # segments per request
+  context_segments: 2            # neighbouring segments sent as context only
+  prompt_version: v1
+  # max_output_tokens: 4000
+  cache: true                    # completed batches are reused across runs
+  # extra_body: {}               # gateway-specific request fields
+
+spacy:
+  enabled: true
+  uv_project: environments/spacy
+  worker: workers/spacy_worker.py
+  process_source: true
+  process_english: true
+  english_model: en_core_web_trf
+  # Official spaCy pipelines per detected language. Only installed models are
+  # used; a missing model falls back to the family, then to `fallback_model`.
+  source_models:
+    en: en_core_web_trf
+    es: es_dep_news_trf
+    de: de_dep_news_trf
+    fr: fr_dep_news_trf
+    it: it_core_news_lg
+    pt: pt_core_news_lg
+    nl: nl_core_news_lg
+    ca: ca_core_news_lg
+    da: da_core_news_lg
+    el: el_core_news_lg
+    fi: fi_core_news_lg
+    hr: hr_core_news_lg
+    ja: ja_core_news_trf
+    ko: ko_core_news_lg
+    no: nb_core_news_lg
+    pl: pl_core_news_lg
+    pt-br: pt_core_news_lg
+    ro: ro_core_news_lg
+    ru: ru_core_news_lg
+    sv: sv_core_news_lg
+    zh: zh_core_web_trf
+  # 'blank' keeps tokenisation + sentence boundaries for any language, with the
+  # reduced capability set recorded in provenance instead of silently assumed.
+  fallback_model: blank
+  max_length: 1000000
+  python_version: "3.12"
+
+acoustic:
+  enabled: true
+  uv_project: environments/acoustic
+  worker: workers/acoustic_worker.py
+  backend: parselmouth
+  # Frame step: 10 ms matches Praat's default pitch analysis granularity and
+  # keeps an hour-long recording near 360k frames.
+  time_step: 0.01
+  # 75–500 Hz covers adult male and female speech; raise the floor for
+  # child/voice-over material, lower the ceiling for very low voices.
+  pitch_floor: 75
+  pitch_ceiling: 500
+  number_of_formants: 5          # F1-F3 are reported, 5 tracks improve F1/F2 stability
+  formant_ceiling: 5500          # formants above this are treated as tracker error
+  # null = derive pauses from voicing. Set e.g. -35.0 to use an intensity gate,
+  # which distinguishes quiet-but-voiced background from a real pause.
+  silence_threshold_db: null
+  minimum_pause_duration: 0.2
+  chunk_seconds: 120             # bounds Praat object size / memory
+  python_version: "3.12"
+
+openpose:
+  enabled: true
+  root: /opt/openpose
+  # 'auto' searches <root>/build/examples/openpose/openpose.bin and <root>/models.
+  executable: auto
+  model_folder: auto
+  gpu: 0
+  body:
+    enabled: true
+    model: BODY_25
+  hands:
+    enabled: true
+  face:
+    enabled: true
+  # Keeps RAM flat on long recordings at a modest throughput cost.
+  disable_multi_thread: true
+  # timeout_seconds: null        # kill a wedged run after N seconds
+  # extra_args: []               # e.g. ["--hand_size", "1.0"]
+
+logging:
+  level: INFO
+  console: true

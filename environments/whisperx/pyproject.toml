@@ -1,0 +1,25 @@
+[project]
+name = "mp-whisperx-env"
+version = "0.1.0"
+description = "Isolated WhisperX environment for the multimodal pipeline (worker-only, never imported by the orchestrator)"
+requires-python = ">=3.10,<3.14"
+# Versions resolved on 2026-09-23 against this machine (RTX 4090, driver 555.42.06
+# = CUDA 12.5). torch 2.8.x + cu126 wheels are used because the local driver
+# supports CUDA 12.5, and cu126 is the highest official wheel train guaranteed
+# to run on a 12.5 driver.
+dependencies = [
+    "whisperx==3.8.6",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "torchvision==0.23.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
