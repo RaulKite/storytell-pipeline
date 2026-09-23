@@ -233,8 +233,8 @@ the stages degrade to `skipped` with an actionable reason rather than failing.
 
 ## 10. Evidence
 
-Test suite: **481 unit + 28 e2e tests, all passing**
-(`timeout 300 uv run --with pytest pytest tests/unit -q` → 481 passed in ~23 s;
+Test suite: **561 unit + 28 e2e tests, all passing**
+(`timeout 300 uv run --with pytest pytest tests/unit -q` → 561 passed in ~25 s;
 `pytest tests/e2e` → 28 passed in ~108 s).
 
 Real batch (`uv run multimodal-pipeline run -c config/config.local.yaml`, clean
@@ -313,6 +313,7 @@ has a regression test verified by mutation (restoring the defect fails the test)
 | Invalidation used mtimes | this filesystem rounds mtimes to ~16 ms, so a fast rerun looked unchanged | monotonic per-video `run_sequence` |
 | Machine output printed to stderr | `--json \| jq` got nothing | JSON on stdout, human tables on stderr |
 | Unknown YAML key raised a pydantic traceback | the actionable message was invisible | names the offending key and the valid ones |
+| `schemas._coerce` called `table.append_columns` (plural) | a table missing a declared column raised AttributeError instead of writing nulls (latent: no stage hits it today) | use pyarrow's singular `append_column`; 100 % coverage on `schemas.py` |
 | `config.example.yaml` did not load | shipped template was unusable (`no:` parsed as boolean; misplaced key) | fixed, and a test now loads it |
 
 ## 13. Remaining work (user decisions)

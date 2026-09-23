@@ -325,7 +325,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 481 tests, ~25 s
+uv run --with pytest pytest tests/unit -q     # 561 tests, ~25 s
 uv run --with pytest pytest tests/e2e -q      # 28 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -372,7 +372,7 @@ src/multimodal_pipeline/   orchestrator: config, discovery, DAG, state, CLI, nor
 workers/                   heavy ML entry points, run inside the isolated envs
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                481 tests
+tests/unit/                561 tests
 tests/e2e/                 28 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
