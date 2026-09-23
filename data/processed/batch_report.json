@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "pipeline_version": "0.1.0",
+  "generated_at": "2026-09-23T15:26:31Z",
+  "output_directory": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed",
+  "summary": {
+    "videos_discovered": 1,
+    "completed": 0,
+    "partial": 1,
+    "failed": 0,
+    "processed_in_this_run": 1,
+    "elapsed_seconds": 12.22
+  },
+  "videos": [
+    {
+      "video_id": "pipeline_demo",
+      "source_path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo.mp4",
+      "dataset_dir": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo",
+      "status": "partial",
+      "stages": {
+        "metadata": "completed",
+        "audio": "completed",
+        "whisperx": "completed",
+        "diarization": "skipped",
+        "speaker_assignment": "skipped",
+        "translation": "skipped",
+        "spacy_source": "failed",
+        "spacy_english": "skipped",
+        "acoustic": "failed",
+        "openpose": "completed",
+        "finalization": "skipped"
+      },
+      "duration_seconds": 12.22,
+      "stage_durations": {
+        "metadata": 0.0,
+        "audio": 0.0,
+        "whisperx": 56.0,
+        "diarization": 0.0,
+        "speaker_assignment": 0.0,
+        "translation": 0.0,
+        "spacy_source": 0.0,
+        "spacy_english": 0.0,
+        "acoustic": 0.0,
+        "openpose": 12.0,
+        "finalization": 0.0
+      },
+      "errors": {
+        "spacy_source": {
+          "type": "StageError",
+          "message": "spacy_source worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy. Create it and run `uv sync` there first.",
+          "details": {
+            "request": {
+              "stage": "spacy_source",
+              "variant": "source",
+              "source_models": {
+                "en": "en_core_web_trf",
+                "es": "es_dep_news_trf",
+                "de": "de_dep_news_trf",
+                "fr": "fr_dep_news_trf",
+                "it": "it_core_news_lg",
+                "pt": "pt_core_news_lg",
+                "nl": "nl_core_news_lg"
+              },
+              "english_model": "en_core_web_trf",
+              "fallback_model": "blank",
+              "max_length": 1000000,
+              "uv_project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy",
+              "worker": "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/spacy_worker.py",
+              "segments_digest": "8708347eed207f69212d143601ce5131635a91953ceb673d4adb8f792ddf41e5",
+              "words_digest": "0e54a25db2eeab58edb5e68c19e92156dee5d8eb41181f76ca33fbafd0aa7e42"
+            }
+          },
+          "stderr_tail": "",
+          "log_file": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/logs/spacy_source.log",
+          "traceback": "Traceback (most recent call last):\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 380, in run_model\n    worker = run_worker(\n             ^^^^^^^^^^^\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/uv_worker.py\", line 76, in run_worker\n    raise WorkerError(\nmultimodal_pipeline.uv_worker.WorkerError: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy. Create it and run `uv sync` there first.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/orchestrator.py\", line 314, in _run_stage\n    outcome = stage.run(context)\n              ^^^^^^^^^^^^^^^^^^\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 154, in run\n    extras = self.execute(ctx) or {}\n             ^^^^^^^^^^^^^^^^^\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 358, in execute\n    self.run_model(ctx, request, raw_path, digest)\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 394, in run_model\n    raise StageError(f\"{self.name} worker failed: {exc}\", details=details) from exc\nmultimodal_pipeline.exceptions.StageError: spacy_source worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy. Create it and run `uv sync` there first.\n"
+        },
+        "acoustic": {
+          "type": "StageError",
+          "message": "acoustic worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic. Create it and run `uv sync` there first.",
+          "details": {
+            "request": {
+              "stage": "acoustic",
+              "backend": "parselmouth",
+              "time_step": 0.01,
+              "pitch_floor": 75.0,
+              "pitch_ceiling": 500.0,
+              "number_of_formants": 5,
+              "formant_ceiling": 5500.0,
+              "silence_threshold_db": null,
+              "minimum_pause_duration": 0.2,
+              "chunk_seconds": 120.0,
+              "uv_project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic",
+              "worker": "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/acoustic_worker.py",
+              "audio_sha256": "f4d02a9e596f4ed25900945e1ba47019a315a43eddcc142a683e7485e5c8102b"
+            }
+          },
+          "stderr_tail": "",
+          "log_file": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/logs/acoustic.log",
+          "traceback": "Traceback (most recent call last):\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 380, in run_model\n    worker = run_worker(\n             ^^^^^^^^^^^\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/uv_worker.py\", line 76, in run_worker\n    raise WorkerError(\nmultimodal_pipeline.uv_worker.WorkerError: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic. Create it and run `uv sync` there first.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/orchestrator.py\", line 314, in _run_stage\n    outcome = stage.run(context)\n              ^^^^^^^^^^^^^^^^^^\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 154, in run\n    extras = self.execute(ctx) or {}\n             ^^^^^^^^^^^^^^^^^\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 358, in execute\n    self.run_model(ctx, request, raw_path, digest)\n  File \"/data/home/raulagent/miscosas/repos/storytel-pipeline/src/multimodal_pipeline/stages/base.py\", line 394, in run_model\n    raise StageError(f\"{self.name} worker failed: {exc}\", details=details) from exc\nmultimodal_pipeline.exceptions.StageError: acoustic worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic. Create it and run `uv sync` there first.\n"
+        }
+      }
+    }
+  ]
+}

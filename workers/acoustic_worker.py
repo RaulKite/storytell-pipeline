@@ -35,6 +35,15 @@ import traceback
 from pathlib import Path
 from typing import Any, Iterator
 
+# Bound once here: every Praat call below depends on it, and a lazy import per
+# frame would be pure overhead.
+import parselmouth  # noqa: E402 - worker runs only inside environments/acoustic
+
+
+def praat_version() -> str | None:
+    """The bundled Praat version, not just the Python binding's."""
+    return getattr(parselmouth, "PRAAT_VERSION", None) or None
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Praat/Parselmouth acoustic feature worker")
@@ -70,36 +79,40 @@ def clean(value: Any) -> float | None:
 def extract_window(sound, start: float, end: float, params: dict[str, Any]) -> Iterator[list[Any]]:
     """Yield ``[t, f0, intensity, voiced, f1, f2, f3]`` for one audio window.
 
-    Formants and intensity come from objects built with the *whole* window so
-    their internal edge effects land on window boundaries rather than inside
-    speech, and timestamps stay on the global timeline.
+    Pitch, intensity and formants are built per window so an hour of audio costs
+    the same RAM as ten seconds; ``preserve_times`` keeps the window's own clock
+    at zero, so each frame time is offset by ``start`` to land on the global
+    video timeline.
     """
-    import parselmouth  # noqa: PLC0415 - imported by the caller's contract
-
-    window = sound.extract_part(from_time=start, to_time=end, preserve_times=True)
     step = params["time_step"]
-    pitch = window.to_pitch(time_step=step, pitch_floor=params["pitch_floor"],
-                            pitch_ceiling=params["pitch_ceiling"])
-    intensity = window.to_intensity(time_step=step, minimum_pitch=params["pitch_floor"])
-    formants = window.to_formant_burg(time_step=step, maximum_formant=params["number_of_formants"],
-                                      bandwidth=50.0)
+    pitch = sound.to_pitch(time_step=step, pitch_floor=params["pitch_floor"],
+                           pitch_ceiling=params["pitch_ceiling"])
+    # Praat needs a jitter floor to place the intensity grid; the same floor used
+    # for pitch keeps all three analyses on the same 10 ms frame clock.
+    intensity = sound.to_intensity(time_step=step, minimum_pitch=params["pitch_floor"])
+    # Parselmouth 0.4.x separates the *count* of tracked formants from their
+    # frequency ceiling; conflating them silently drops formants.
+    formants = sound.to_formant_burg(time_step=step,
+                                     max_number_of_formants=params["number_of_formants"],
+                                     maximum_formant=params["formant_ceiling"])
     formant_ceiling = params["formant_ceiling"]
-    number_of_formants = params["number_of_formants"]
+    number_of_formants = min(params["number_of_formants"], 3)
     for timestamp in pitch.ts():
         global_time = start + timestamp
         f0 = clean(pitch.get_value_at_time(timestamp))
         voiced = f0 is not None
-        intensity_value = clean(intensity.get_value_at_time(timestamp))
+        intensity_value = clean(intensity.get_value(timestamp, parselmouth.ValueInterpolation.LINEAR))
         formant_values: list[float | None] = []
         for index in range(1, 4):
             if index > number_of_formants:
                 formant_values.append(None)
                 continue
-            value = clean(formants.get_value_for_formant_number(timestamp, index))
-            # Praat's Burg formant tracker is unstable above the configured
-            # ceiling on whispered/noisy frames; an out-of-range formant is
-            # worse than no formant.
-            formant_values.append(value if value is not None and value <= formant_ceiling else None)
+            # Formant.get_value_at_time takes (formant_number, time), unlike the
+            # time-first accessors on Pitch and Intensity.
+            value = clean(formants.get_value_at_time(index, timestamp))
+            # The Burg tracker is unstable on whispered/noisy frames; an
+            # out-of-range formant is worse than no formant.
+            formant_values.append(value if value is not None and 0.0 < value <= formant_ceiling else None)
         yield [round(global_time, 6), f0, intensity_value, voiced, *formant_values]
 
 
@@ -115,7 +128,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.audio.is_file():
             raise FileNotFoundError(f"audio file not found: {args.audio}")
-        import parselmouth  # noqa: PLC0415 - import failures must land in the result file
 
         params = {
             "time_step": args.time_step,
@@ -137,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
                 "minimum_pause_duration": args.minimum_pause_duration,
                 "chunk_seconds": args.chunk_seconds,
                 "parselmouth_version": getattr(parselmouth, "VERSION", None),
-                "praat_version": getattr(parselmouth, "praat_version", None),
+                "praat_version": praat_version(),
             },
             "audio": {
                 "sample_rate": int(sound.sampling_frequency),
@@ -153,7 +165,11 @@ def main(argv: list[str] | None = None) -> int:
             position = 0.0
             while position < duration:
                 stop = min(duration, position + max(args.chunk_seconds, args.time_step * 10))
-                for frame in extract_window(sound, position, stop, params):
+                # A fresh Praat object per window is what keeps memory bounded;
+                # ``preserve_times`` leaves its clock at zero so ``position`` can be
+                # added back to place frames on the global video timeline.
+                window = sound.extract_part(from_time=position, to_time=stop, preserve_times=True)
+                for frame in extract_window(window, position, stop, params):
                     handle.write(json.dumps({"frame": frame}) + "\n")
                     frames += 1
                     if frame[3]:
@@ -174,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         payload.update({
             "status": "ok",
             "tool_version": getattr(parselmouth, "VERSION", None),
-            "model_version": f"parselmouth/{getattr(parselmouth, 'praat_version', 'unknown')}",
+            "model_version": f"parselmouth/{praat_version() or 'unknown'}",
             "frames": frames,
             "voiced_frames": voiced_frames,
             "silences": len(silences),

@@ -12,11 +12,12 @@ from typing import Any
 
 import pyarrow as pa
 
-from ..exceptions import ValidationError
+from ..exceptions import StageError
 from ..schemas import SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, read_table, write_table
 from ..speaker_assignment import assign_speaker, coverage_report, normalise_turns
+from ..state import STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED  # noqa: F401
 from ..validation import check_reference_values
-from .base import Stage, StageContext, StageError
+from .base import Stage, StageContext, ValidationError
 
 
 class SpeakerAssignmentStage(Stage):
@@ -51,6 +52,18 @@ class SpeakerAssignmentStage(Stage):
             return False, "diarization.enabled = false (no speaker timeline to assign)"
         if ctx.state.stage("whisperx").status != "completed" and not ctx.artifact("speech_words").is_file():
             return False, "transcript unavailable"
+        # ``diarization.enabled`` is only an intention: the stage can still be skipped
+        # (no HF token) or fail. Assigning speakers over a timeline that was never
+        # produced would fail this stage and take the transcript consumers with it.
+        diarization_status = ctx.state.stage("diarization").status
+        if diarization_status == STATUS_SKIPPED:
+            prior = ctx.state.stage("diarization")
+            why = (prior.validation_result or {}).get("reason")
+            return False, f"diarization produced no speaker turns (skipped: {why or 'unknown'})"
+        if diarization_status == STATUS_FAILED:
+            return False, "diarization failed; no speaker timeline available"
+        if diarization_status != STATUS_COMPLETED and not ctx.artifact("speaker_turns").is_file():
+            return False, "speaker turns unavailable (run the diarization stage first)"
         return True, ""
 
     def prepare(self, ctx: StageContext) -> None:

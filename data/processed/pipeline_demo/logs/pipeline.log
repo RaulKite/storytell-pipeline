@@ -1,0 +1,24 @@
+2026-09-23 17:22:43,293 INFO    start (status is pending)
+2026-09-23 17:22:43,334 INFO    hashing pipeline_demo.mp4
+2026-09-23 17:22:43,417 INFO    metadata: 640x480 @ 25/1 fps, 9.98s
+2026-09-23 17:22:43,626 INFO    completed
+2026-09-23 17:22:43,627 INFO    start (status is pending)
+2026-09-23 17:22:43,668 INFO    extracting audio -> audio/audio.wav
+2026-09-23 17:22:43,851 INFO    completed
+2026-09-23 17:22:43,853 INFO    start (status is pending)
+2026-09-23 17:22:43,895 INFO    running whisperx worker
+2026-09-23 17:23:39,977 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
+2026-09-23 17:23:40,025 INFO    completed
+2026-09-23 17:23:40,067 INFO    start (status is pending)
+2026-09-23 17:23:40,150 INFO    failed: required input artifact missing: speaker_turns (/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/speaker_turns.parquet)
+2026-09-23 17:26:19,238 INFO    start (status is skipped)
+2026-09-23 17:26:19,279 INFO    running spacy_source worker
+2026-09-23 17:26:19,320 INFO    failed: spacy_source worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy. Create it and run `uv sync` there first.
+2026-09-23 17:26:19,364 INFO    start (status is skipped)
+2026-09-23 17:26:19,404 INFO    running acoustic worker
+2026-09-23 17:26:19,445 INFO    failed: acoustic worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic. Create it and run `uv sync` there first.
+2026-09-23 17:26:19,521 INFO    start (status is skipped)
+2026-09-23 17:26:19,869 INFO    running OpenPose (model=BODY_25, hands=True, face=True, gpu=0)
+2026-09-23 17:26:31,053 INFO    OpenPose normalisation: 249 frames -> body=0 rows, hands=0 rows, face=0 rows
+2026-09-23 17:26:31,268 INFO    completed
+2026-09-23 17:26:31,319 INFO    blocked: upstream stage failed: acoustic, spacy_source

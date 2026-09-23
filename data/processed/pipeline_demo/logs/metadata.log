@@ -1,0 +1,4 @@
+2026-09-23 17:22:43,293 INFO    start (status is pending)
+2026-09-23 17:22:43,334 INFO    hashing pipeline_demo.mp4
+2026-09-23 17:22:43,417 INFO    metadata: 640x480 @ 25/1 fps, 9.98s
+2026-09-23 17:22:43,626 INFO    completed

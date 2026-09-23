@@ -6,6 +6,7 @@ Each stage writes to ``logs/<stage>.log`` and mirrors the same lines into
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 from pathlib import Path
@@ -33,9 +34,13 @@ def configure(level: str = "INFO", *, console: bool = True) -> logging.Logger:
         from rich.console import Console
         from rich.logging import RichHandler
 
-        handler: logging.Handler = RichHandler(
-            rich_text=True, show_path=False, omit_repeated_times=False, console=Console(stderr=True)
-        )
+        # rich has shuffled these keyword arguments across releases (``rich_text``
+        # existed in 13.x and is gone in 15.x), so pass only what this rich
+        # actually accepts instead of pinning the console to one version.
+        wanted = {"rich_text": True, "markup": False, "show_path": False, "omit_repeated_times": False}
+        accepted = set(inspect.signature(RichHandler.__init__).parameters)
+        handler: logging.Handler = RichHandler(console=Console(stderr=True),
+                                               **{key: value for key, value in wanted.items() if key in accepted})
         handler.setFormatter(logging.Formatter("%(message)s"))
     else:
         handler = logging.StreamHandler(sys.stderr)

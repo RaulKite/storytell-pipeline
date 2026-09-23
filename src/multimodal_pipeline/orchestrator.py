@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -28,14 +29,11 @@ from .state import (
 from .stages.acoustic import AcousticStage
 from .stages.audio import AudioStage
 from .stages.base import (
-    STAGE_DEPENDENCIES,
     STAGE_ORDER,
     Stage,
     StageContext,
-    StageError,
     StageOutcome,
     dependency_chain,
-    fingerprint_config,
     should_reuse,
     stage_selection,
 )
@@ -50,6 +48,17 @@ from .stages.translation import TranslationStage
 from .stages.whisperx import WhisperXStage
 
 log = get_logger("orchestrator")
+
+#: Timestamps are second-precision across process boundaries; a dependency that
+#: finished within this window of its dependant is treated as simultaneous.
+_STALENESS_SLACK_SECONDS = 2.0
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
 
 STAGE_CLASSES: dict[str, type[Stage]] = {
     cls.name: cls
@@ -128,6 +137,8 @@ class VideoRunner:
         self.progress = progress or (lambda *_: None)
         self.stage_logger_factory: Callable[[str], Any] | None = None
         self.started_at: str = utc_now()
+        #: Stages that failed during this run; poisons only their dependants.
+        self._failed: set[str] = set()
 
     # ------------------------------------------------------------------ planning
 
@@ -168,9 +179,33 @@ class VideoRunner:
             return "configuration changed"
         if record.dependency_hash != dependency_hash:
             return "upstream dependency changed"
+        stale = self._stale_dependency(context, stage)
+        if stale:
+            # Make-style staleness: a dependency was recomputed after this stage ran
+            # (with identical configuration, so dependency_hash alone misses it).
+            return f"recomputed upstream dependency: {', '.join(stale)}"
         if not stage.outputs_present(context):
             return "output artifacts missing"
         return ""
+
+    @staticmethod
+    def _stale_dependency(context: StageContext, stage: Stage) -> list[str]:
+        """Dependencies that finished after this stage's last completed run."""
+        record = context.state.stage(stage.name)
+        if not record.completed_at:
+            return []
+        finished = _parse_timestamp(record.completed_at)
+        if finished is None:
+            return []
+        stale: list[str] = []
+        for name in dependency_chain(stage.name):
+            upstream = context.state.stage(name)
+            if upstream.status != STATUS_COMPLETED or not upstream.completed_at:
+                continue
+            upstream_finished = _parse_timestamp(upstream.completed_at)
+            if upstream_finished is not None and upstream_finished > finished + _STALENESS_SLACK_SECONDS:
+                stale.append(name)
+        return sorted(stale)
 
     def config_hash_for(self, stage: Stage, context: StageContext) -> str:
         return stable_hash(self.config_payload_for(stage, context), length=16)
@@ -225,11 +260,10 @@ class VideoRunner:
             if record.error:
                 result.errors[stage.name] = record.error
             stage_log.close()
-            if record.status == STATUS_FAILED and stage.name in selected:
-                # A failed stage poisons its dependants; stop this video's path,
-                # report the video as partial, and let the batch continue.
-                self._mark_dependants_skipped(stage, context, selected, "upstream stage failed", result)
-                break
+            if record.status == STATUS_FAILED:
+                # Record the poison and keep going: independent branches of the DAG
+                # (OpenPose from metadata, audio from the source) still run.
+                self._failed.add(stage.name)
         result.total_seconds = round(time.time() - started, 2)
         result.status = self.state.overall_status
         return result
@@ -242,6 +276,17 @@ class VideoRunner:
                 self.state.mark_skipped(name, "outside requested stage range")
             self.progress(name, STATUS_SKIPPED, "outside requested stage range")
             return StageOutcome.skipped("outside requested stage range")
+
+        # A failure poisons only the stages that actually consume its output.
+        # OpenPose depends on metadata alone, so a transcription failure must not
+        # stop pose extraction on an otherwise healthy video.
+        blocked_by = sorted(self._failed & set(dependency_chain(name)))
+        if blocked_by:
+            reason = f"upstream stage failed: {', '.join(blocked_by)}"
+            self.state.mark_skipped(name, reason)
+            self.progress(name, STATUS_SKIPPED, reason)
+            stage_log(f"blocked: {reason}")
+            return StageOutcome.skipped(reason)
 
         config_hash = self.config_hash_for(stage, context)
         dependency_hash = self.dependency_hash_for(stage, context)
@@ -320,16 +365,6 @@ class VideoRunner:
         self.progress(name, STATUS_COMPLETED, "done")
         stage_log("completed")
         return outcome
-
-    def _mark_dependants_skipped(self, stage: Stage, context: StageContext, selected: set[str],
-                                 reason: str, result: VideoResult) -> None:
-        blocked = [name for name in dependency_chain("finalization") if name in selected]
-        for name in blocked:
-            record = self.state.stage(name)
-            if record.status in {"pending", "running"}:
-                self.state.mark_skipped(name, reason)
-                result.stage_outcomes[name] = STATUS_SKIPPED
-                self.progress(name, STATUS_SKIPPED, reason)
 
     # ------------------------------------------------------------------- context
 
