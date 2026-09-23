@@ -21,7 +21,15 @@ Frame = dict[str, Any]
 
 
 def is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not (isinstance(value, float) and math.isnan(value))
+    """True for a usable real measurement.
+
+    ``bool`` is excluded even though it subclasses ``int``: a ``voiced`` flag must
+    never be averaged into a pitch or intensity statistic as a 0/1 value.
+    Non-finite values are excluded so no NaN/inf survives into Parquet.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
 
 
 def summarise(values: Iterable[Any]) -> dict[str, float | None]:
