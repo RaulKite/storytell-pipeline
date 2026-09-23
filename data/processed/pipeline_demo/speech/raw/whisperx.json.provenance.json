@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "raw_artifact": "whisperx.json",
-  "raw_sha256": "a4c8bc1fbf3886aa7d3ea1634801c278ea6e2ae8ad838939065107d046dd27a4",
+  "raw_sha256": "c35701ecbd85e2d22ba0db28db48b7b229ddbc447a7649b93c045c946d2836d4",
   "request_hash": "74018cca77c915bf",
   "request": {
     "stage": "whisperx",
@@ -22,7 +22,7 @@
     "worker": "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/whisperx_worker.py",
     "audio_sha256": "f4d02a9e596f4ed25900945e1ba47019a315a43eddcc142a683e7485e5c8102b"
   },
-  "recorded_at": "2026-09-23T15:41:09Z",
+  "recorded_at": "2026-09-23T15:57:10Z",
   "provenance": {
     "tool_version": "3.8.6",
     "model_version": "large-v3",
@@ -68,7 +68,7 @@
     ],
     "executable": "uv",
     "exit_code": 0,
-    "duration_seconds": 10.152,
+    "duration_seconds": 7.025,
     "uv_project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx"
   }
 }

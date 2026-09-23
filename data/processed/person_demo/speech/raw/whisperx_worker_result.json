@@ -1,0 +1,16 @@
+{
+  "stage": "whisperx",
+  "status": "ok",
+  "request_hash": "44f47b9e56600c84",
+  "tool_version": "3.8.6",
+  "model_version": "large-v3",
+  "detected_language": "en",
+  "segments": 0,
+  "words": 0,
+  "alignment": {
+    "status": "aligned",
+    "align_model": null,
+    "language": "en"
+  },
+  "duration_seconds": 5.674
+}

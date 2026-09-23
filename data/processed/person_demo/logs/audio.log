@@ -1,0 +1,41 @@
+2026-09-23 17:58:15,346 INFO    start (status is pending)
+2026-09-23 17:58:15,379 INFO    extracting audio -> audio/audio.wav
+
+$ ffmpeg -hide_banner -nostdin -loglevel info -y -i /data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/person_demo.avi -vn -map 0:a:0 -ac 1 -ar 16000 -sample_fmt s16 -c:a pcm_s16le /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/person_demo/audio/audio.wav
+(cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/person_demo.avi':
+  Metadata:
+    major_brand     : mp42
+    minor_version   : 0
+    compatible_brands: mp42mp41isomavc1
+    creation_time   : 2017-04-08T22:45:42.000000Z
+  Duration: 00:00:04.12, start: 0.000000, bitrate: 2711 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1280x720 [SAR 1:1 DAR 16:9], 2455 kb/s, 50 fps, 50 tbr, 50 tbn (default)
+      Metadata:
+        creation_time   : 2017-04-08T22:45:42.000000Z
+        handler_name    : L-SMASH Video Handler
+        vendor_id       : [0][0][0][0]
+        encoder         : AVC Coding
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 255 kb/s (default)
+      Metadata:
+        creation_time   : 2017-04-08T22:45:42.000000Z
+        handler_name    : L-SMASH Audio Handler
+        vendor_id       : [0][0][0][0]
+Stream mapping:
+  Stream #0:1 -> #0:0 (aac (native) -> pcm_s16le (native))
+Output #0, wav, to '/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/person_demo/audio/audio.wav':
+  Metadata:
+    major_brand     : mp42
+    minor_version   : 0
+    compatible_brands: mp42mp41isomavc1
+    ISFT            : Lavf61.7.100
+  Stream #0:0(und): Audio: pcm_s16le ([1][0][0][0] / 0x0001), 16000 Hz, mono, s16, 256 kb/s (default)
+      Metadata:
+        creation_time   : 2017-04-08T22:45:42.000000Z
+        handler_name    : L-SMASH Audio Handler
+        vendor_id       : [0][0][0][0]
+        encoder         : Lavc61.19.101 pcm_s16le
+[out#0/wav @ 0x561c49642a00] video:0KiB audio:129KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.059201%
+size=     129KiB time=00:00:04.11 bitrate= 256.2kbits/s speed=1.14e+03x    
+[exit=0 timed_out=False duration=0.1s]
+2026-09-23 17:58:15,563 INFO    completed

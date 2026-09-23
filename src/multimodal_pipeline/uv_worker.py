@@ -60,14 +60,16 @@ def run_worker(
     uv_executable: str = "uv",
 ) -> WorkerResult:
     """Run one worker, requiring its ``status=ok`` result JSON as proof of work."""
-    require_executable(uv_executable, hint="install uv (https://docs.astral.sh/uv/)")
-    if not worker_script.is_file():
-        raise WorkerError(f"worker script not found: {worker_script}")
     project = Path(uv_project)
+    # Environment first: "your ML environment is not set up" is the actionable
+    # answer, and it is the one a fresh clone actually needs.
     if not project.is_dir():
         raise WorkerError(
             f"uv project not found: {project}. Create it and run `uv sync` there first."
         )
+    if not worker_script.is_file():
+        raise WorkerError(f"worker script not found: {worker_script}")
+    require_executable(uv_executable, hint="install uv (https://docs.astral.sh/uv/)")
     argv = worker_argv(python_version, project, worker_script, list(args), uv_executable=uv_executable)
     result_path.parent.mkdir(parents=True, exist_ok=True)
     if result_path.exists():
@@ -85,10 +87,12 @@ def run_worker(
         payload = _read_result(result_path)
         details = {"worker_result": payload} if payload else {}
         details["stderr_tail"] = (exc.result.stderr_tail if exc.result else str(exc))[:4000]
-        raise WorkerError(
-            f"worker exited with {getattr(exc.result, 'returncode', '?')}: {exc}",
-            details=details,
-        ) from exc
+        # The worker's own diagnosis beats a bare exit code: a recorded error that
+        # only says "exited with 1" sends someone digging through stderr.
+        reported = (payload or {}).get("error")
+        prefix = (f"worker reported status={(payload or {}).get('status')}: {reported}"
+                  if reported else f"worker exited with {getattr(exc.result, 'returncode', '?')}")
+        raise WorkerError(f"{prefix}: {exc}", details=details) from exc
     payload = _read_result(result_path)
     if payload is None:
         raise WorkerError(

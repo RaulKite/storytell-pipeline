@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "config_path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/config/config.local.yaml",
-  "config_hash": "94795094ed5731ae",
+  "config_hash": "61f7701a5abb2d3e",
   "resolved_configuration": {
     "input": {
       "directory": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos",
@@ -67,7 +67,7 @@
     "translation": {
       "enabled": true,
       "provider": "openai-compatible",
-      "base_url": "",
+      "base_url": "http://LITELLM_HOST:PORT/v1",
       "api_key": "",
       "model": "",
       "temperature": 0.0,

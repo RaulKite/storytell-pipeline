@@ -105,7 +105,7 @@
     },
     "manifest": {
       "kind": "file",
-      "size_bytes": 4635
+      "size_bytes": 4286
     },
     "metadata": {
       "kind": "file",
@@ -113,7 +113,7 @@
     },
     "pipeline_log": {
       "kind": "file",
-      "size_bytes": 5330
+      "size_bytes": 1665
     },
     "pose_body": {
       "kind": "file",
@@ -138,7 +138,7 @@
     },
     "provenance_processing": {
       "kind": "file",
-      "size_bytes": 15107
+      "size_bytes": 14665
     },
     "provenance_tools": {
       "kind": "file",
@@ -166,7 +166,7 @@
     },
     "status": {
       "kind": "file",
-      "size_bytes": 12633
+      "size_bytes": 12936
     },
     "translation_raw": {
       "kind": "directory",
@@ -175,7 +175,7 @@
     },
     "whisperx_raw": {
       "kind": "file",
-      "size_bytes": 6114
+      "size_bytes": 6115
     }
   }
 }

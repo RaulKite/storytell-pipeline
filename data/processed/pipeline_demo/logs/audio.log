@@ -1,5 +1,5 @@
-2026-09-23 17:22:43,627 INFO    start (status is pending)
-2026-09-23 17:22:43,668 INFO    extracting audio -> audio/audio.wav
+2026-09-23 17:57:02,727 INFO    start (status is pending)
+2026-09-23 17:57:02,768 INFO    extracting audio -> audio/audio.wav
 
 $ ffmpeg -hide_banner -nostdin -loglevel info -y -i /data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo.mp4 -vn -map 0:a:0 -ac 1 -ar 16000 -sample_fmt s16 -c:a pcm_s16le /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/audio/audio.wav
 (cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
@@ -32,13 +32,7 @@ Output #0, wav, to '/data/home/raulagent/miscosas/repos/storytel-pipeline/data/p
         handler_name    : SoundHandler
         vendor_id       : [0][0][0][0]
         encoder         : Lavc61.19.101 pcm_s16le
-[out#0/wav @ 0x561db6c36f00] video:0KiB audio:314KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.024259%
-size=     314KiB time=00:00:10.04 bitrate= 256.1kbits/s speed=3.09e+03x    
+[out#0/wav @ 0x55e7fb617f00] video:0KiB audio:314KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.024259%
+size=     314KiB time=00:00:10.04 bitrate= 256.1kbits/s speed=3.47e+03x    
 [exit=0 timed_out=False duration=0.1s]
-2026-09-23 17:22:43,851 INFO    completed
-2026-09-23 17:30:00,844 INFO    reuse: valid previous result
-2026-09-23 17:40:11,021 INFO    reuse: valid previous result
-2026-09-23 17:40:59,433 INFO    reuse: valid previous result
-2026-09-23 17:43:45,369 INFO    reuse: valid previous result
-2026-09-23 17:43:55,753 INFO    reuse: valid previous result
-2026-09-23 17:46:48,768 INFO    reuse: valid previous result
+2026-09-23 17:57:02,959 INFO    completed

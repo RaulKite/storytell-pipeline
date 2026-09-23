@@ -5,9 +5,10 @@
     "path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov",
     "filename": "pipeline_demo_ntsc.mov"
   },
-  "created_at": "2026-09-23T15:43:56Z",
-  "updated_at": "2026-09-23T15:44:19Z",
+  "created_at": "2026-09-23T15:57:24Z",
+  "updated_at": "2026-09-23T15:57:48Z",
   "overall_status": "completed",
+  "sequence": 7,
   "stage_order": [
     "metadata",
     "audio",
@@ -24,8 +25,8 @@
   "stages": {
     "metadata": {
       "status": "completed",
-      "started_at": "2026-09-23T15:43:56Z",
-      "completed_at": "2026-09-23T15:43:57Z",
+      "started_at": "2026-09-23T15:57:24Z",
+      "completed_at": "2026-09-23T15:57:25Z",
       "duration_seconds": 1.0,
       "config_hash": "ae7bf90611c9b213",
       "dependency_hash": "4cbd3e6dafc8be06",
@@ -46,15 +47,16 @@
         "height": 240
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 1
     },
     "audio": {
       "status": "completed",
-      "started_at": "2026-09-23T15:43:57Z",
-      "completed_at": "2026-09-23T15:43:57Z",
+      "started_at": "2026-09-23T15:57:25Z",
+      "completed_at": "2026-09-23T15:57:25Z",
       "duration_seconds": 0.0,
       "config_hash": "901c5cb32ef3dad7",
-      "dependency_hash": "d89be708c4db7d7a",
+      "dependency_hash": "d3e0d669e57bb182",
       "input_artifacts": [
         "metadata"
       ],
@@ -77,15 +79,16 @@
         "duration_drift_seconds": 0.063
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 2
     },
     "whisperx": {
       "status": "completed",
-      "started_at": "2026-09-23T15:43:57Z",
-      "completed_at": "2026-09-23T15:44:04Z",
+      "started_at": "2026-09-23T15:57:25Z",
+      "completed_at": "2026-09-23T15:57:32Z",
       "duration_seconds": 7.0,
       "config_hash": "d747bc9392724c69",
-      "dependency_hash": "82a55b04edfd655b",
+      "dependency_hash": "c0fb7308839a7649",
       "input_artifacts": [
         "audio"
       ],
@@ -146,12 +149,13 @@
         "alignment_coverage": 1.0
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 3
     },
     "diarization": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:04Z",
+      "completed_at": "2026-09-23T15:57:32Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -167,12 +171,13 @@
         "reason": "missing credential HF_TOKEN (export it to enable diarization)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "speaker_assignment": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:04Z",
+      "completed_at": "2026-09-23T15:57:32Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -188,12 +193,13 @@
         "reason": "diarization produced no speaker turns (skipped: missing credential HF_TOKEN (export it to enable diarization))"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "translation": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:04Z",
+      "completed_at": "2026-09-23T15:57:32Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -209,15 +215,16 @@
         "reason": "translation endpoint is not configured (set translation.base_url, translation.api_key and translation.model in the config file)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "spacy_source": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:04Z",
-      "completed_at": "2026-09-23T15:44:06Z",
+      "started_at": "2026-09-23T15:57:32Z",
+      "completed_at": "2026-09-23T15:57:34Z",
       "duration_seconds": 2.0,
       "config_hash": "999b57ddd02742f8",
-      "dependency_hash": "61abc7deb7a7832a",
+      "dependency_hash": "89efe3225a9d674e",
       "input_artifacts": [
         "speech_segments",
         "speech_words"
@@ -266,12 +273,13 @@
         "sentences": 1
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 4
     },
     "spacy_english": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:06Z",
+      "completed_at": "2026-09-23T15:57:34Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -287,15 +295,16 @@
         "reason": "no English translation available (translation stage did not run)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "acoustic": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:06Z",
-      "completed_at": "2026-09-23T15:44:07Z",
-      "duration_seconds": 1.0,
+      "started_at": "2026-09-23T15:57:34Z",
+      "completed_at": "2026-09-23T15:57:34Z",
+      "duration_seconds": 0.0,
       "config_hash": "3cae57a9c3eac5b2",
-      "dependency_hash": "61abc7deb7a7832a",
+      "dependency_hash": "89efe3225a9d674e",
       "input_artifacts": [
         "audio",
         "speech_segments"
@@ -346,15 +355,16 @@
         "segment_rows": 1
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 5
     },
     "openpose": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:07Z",
-      "completed_at": "2026-09-23T15:44:19Z",
-      "duration_seconds": 12.0,
+      "started_at": "2026-09-23T15:57:34Z",
+      "completed_at": "2026-09-23T15:57:47Z",
+      "duration_seconds": 13.0,
       "config_hash": "0f066a1704f60a44",
-      "dependency_hash": "d89be708c4db7d7a",
+      "dependency_hash": "d3e0d669e57bb182",
       "input_artifacts": [
         "metadata",
         "frame_index"
@@ -400,15 +410,16 @@
         "pose_face_rows": 0
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 6
     },
     "finalization": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:19Z",
-      "completed_at": "2026-09-23T15:44:19Z",
-      "duration_seconds": 0.0,
-      "config_hash": "3aba675d0b17aa02",
-      "dependency_hash": "852b6f3b16c6df97",
+      "started_at": "2026-09-23T15:57:47Z",
+      "completed_at": "2026-09-23T15:57:48Z",
+      "duration_seconds": 1.0,
+      "config_hash": "d2730c20f91c388d",
+      "dependency_hash": "1cb75dc964d96e2f",
       "input_artifacts": [
         "metadata"
       ],
@@ -429,7 +440,8 @@
         "status": "running"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 7
     }
   }
 }

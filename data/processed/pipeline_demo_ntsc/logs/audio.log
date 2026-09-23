@@ -1,5 +1,5 @@
-2026-09-23 17:43:57,225 INFO    start (status is pending)
-2026-09-23 17:43:57,266 INFO    extracting audio -> audio/audio.wav
+2026-09-23 17:57:25,070 INFO    start (status is pending)
+2026-09-23 17:57:25,111 INFO    extracting audio -> audio/audio.wav
 
 $ ffmpeg -hide_banner -nostdin -loglevel info -y -i /data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov -vn -map 0:a:0 -ac 1 -ar 16000 -sample_fmt s16 -c:a pcm_s16le /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/audio/audio.wav
 (cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
@@ -32,7 +32,7 @@ Output #0, wav, to '/data/home/raulagent/miscosas/repos/storytel-pipeline/data/p
         handler_name    : SoundHandler
         vendor_id       : [0][0][0][0]
         encoder         : Lavc61.19.101 pcm_s16le
-[out#0/wav @ 0x55d019b4dc00] video:0KiB audio:314KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.024259%
-size=     314KiB time=00:00:10.04 bitrate= 256.1kbits/s speed=3.41e+03x    
+[out#0/wav @ 0x563ef91a0c00] video:0KiB audio:314KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.024259%
+size=     314KiB time=00:00:10.04 bitrate= 256.1kbits/s speed=3.32e+03x    
 [exit=0 timed_out=False duration=0.1s]
-2026-09-23 17:43:57,451 INFO    completed
+2026-09-23 17:57:25,294 INFO    completed

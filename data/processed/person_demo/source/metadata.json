@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "video_id": "person_demo",
+  "source_filename": "person_demo.avi",
+  "source_path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/person_demo.avi",
+  "SHA256": "b73a09ea84c950383e0c354efcca019c33fdc0019850a12cdf00bc1ea827a30b",
+  "file_size_bytes": 1395096,
+  "container": "mov,mp4,m4a,3gp,3g2,mj2",
+  "container_long_name": "QuickTime / MOV",
+  "duration_seconds": 4.116667,
+  "video_codec": "h264",
+  "video_codec_profile": "High",
+  "pixel_format": "yuv420p",
+  "width": 1280,
+  "height": 720,
+  "display_aspect_ratio": "16:9",
+  "sample_aspect_ratio": "1:1",
+  "frame_rate_rational": "50/1",
+  "frame_rate_float": 50.0,
+  "average_frame_rate_rational": "50/1",
+  "average_frame_rate_float": 50.0,
+  "frame_count": 205,
+  "time_base": "1/50",
+  "audio_codec": "aac",
+  "audio_sample_rate": 48000,
+  "audio_channels": 2,
+  "audio_channel_layout": "stereo",
+  "audio_time_base": "1/48000",
+  "creation_metadata": {
+    "major_brand": "mp42",
+    "minor_version": "0",
+    "compatible_brands": "mp42mp41isomavc1",
+    "creation_time": "2017-04-08T22:45:42.000000Z"
+  },
+  "ffprobe_format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+  "streams_present": [
+    "audio",
+    "video"
+  ]
+}

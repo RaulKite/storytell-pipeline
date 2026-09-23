@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "collected_at": "2026-09-23T15:59:12Z",
+  "pipeline_version": "0.1.0",
+  "system": {
+    "hostname": "asterion.inf.um.es",
+    "os": "Ubuntu 22.04.5 LTS",
+    "os_id": "ubuntu",
+    "kernel": "5.15.0-168-generic",
+    "machine": "x86_64",
+    "cpu": "AMD Ryzen 9 7900X3D 12-Core Processor",
+    "cpu_count": 24,
+    "memory_total_gib": 62.51,
+    "python": "3.12.14",
+    "python_executable": "/data/home/raulagent/miscosas/repos/storytel-pipeline/.venv/bin/python",
+    "uv": "uv 0.12.17 (x86_64-unknown-linux-gnu)"
+  },
+  "gpu": {
+    "available": true,
+    "driver_version": "555.42.06",
+    "count": 1,
+    "devices": [
+      {
+        "name": "NVIDIA GeForce RTX 4090",
+        "driver_version": "555.42.06",
+        "memory": "24564 MiB",
+        "compute_capability": "8.9"
+      }
+    ]
+  },
+  "cuda": {
+    "nvcc": null,
+    "toolkit_path": "/usr/local/cuda/version.json",
+    "toolkit_info": "{\n   \"cuda\" : {\n      \"name\" : \"CUDA SDK\",\n      \"version\" : \"11.8.0\"\n   },\n   \"cuda_cccl\" : {\n      \"name\" : \"CUDA C++ Core Compute Libraries\",\n      \"version\" : \"11.8.89\"\n   },\n   \"cuda_cudart\" : {\n      \"name\" : \"CUDA Runtime (cudart)\",\n      \"version\" : \"11.8.89\"\n   },\n   \"cuda_cuobjdump\" : {\n      \"name\" : \"cuobjdump\",\n      \"version\" : \"11.8.86\"\n   },\n   \"cuda_cupti\" : {\n      \"name\" : \"CUPTI\",\n      \"version\" : \"11.8.87\"\n   },\n   \"cuda_cuxxfilt\" : {\n      \"name\" : \"CUDA cu++ filt\",\n      "
+  },
+  "ffmpeg": {
+    "ffmpeg": "ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers",
+    "ffprobe": "ffprobe version 7.1.1 Copyright (c) 2007-2025 the FFmpeg developers",
+    "resolved_ffmpeg": "/usr/bin/ffmpeg",
+    "resolved_ffprobe": "/usr/bin/ffprobe"
+  },
+  "openpose": {
+    "root": "/opt/openpose",
+    "available": true,
+    "executable": "/opt/openpose/build/examples/openpose/openpose.bin",
+    "model_folder": "/opt/openpose/models",
+    "models": {
+      "body_25_deploy": "/opt/openpose/models/pose/body_25/pose_deploy.prototxt",
+      "body_25_caffemodel": "/opt/openpose/models/pose/body_25/pose_iter_584000.caffemodel",
+      "hand_deploy": "/opt/openpose/models/hand/pose_deploy.prototxt",
+      "hand_caffemodel": "/opt/openpose/models/hand/pose_iter_102000.caffemodel",
+      "face_deploy": "/opt/openpose/models/face/pose_deploy.prototxt",
+      "face_caffemodel": "/opt/openpose/models/face/pose_iter_116000.caffemodel"
+    },
+    "version_probe": "openpose.bin"
+  },
+  "uv_projects": {
+    "whisperx": {
+      "project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx",
+      "exists": true
+    },
+    "diarization": {
+      "project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/diarization",
+      "exists": true
+    },
+    "spacy": {
+      "project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy",
+      "exists": true
+    },
+    "acoustic": {
+      "project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic",
+      "exists": true
+    }
+  }
+}

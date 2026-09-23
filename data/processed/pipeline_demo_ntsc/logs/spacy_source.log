@@ -1,9 +1,9 @@
-2026-09-23 17:44:04,518 INFO    start (status is pending)
-2026-09-23 17:44:04,551 INFO    running spacy_source worker
+2026-09-23 17:57:32,387 INFO    start (status is pending)
+2026-09-23 17:57:32,427 INFO    running spacy_source worker
 
 $ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/spacy_worker.py --variant source --video-id pipeline_demo_ntsc --segments /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/speech/segments.parquet --words /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/speech/words.parquet --raw-output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/linguistic/source/raw/spacy_source.json --source-models {"en": "en_core_web_lg", "es": "es_dep_news_trf", "de": "de_dep_news_trf", "fr": "fr_dep_news_trf", "it": "it_core_news_lg", "pt": "pt_core_news_lg", "nl": "nl_core_news_lg"} --english-model en_core_web_lg --fallback-model blank --max-length 1000000 --request-hash 4219a0a1c8208f10
 (cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
 warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/spacy/.venv` and will be ignored; use `--active` to target the active environment instead
-[exit=0 timed_out=False duration=2.2s]
-2026-09-23 17:44:06,744 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
-2026-09-23 17:44:06,783 INFO    completed
+[exit=0 timed_out=False duration=1.9s]
+2026-09-23 17:57:34,387 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
+2026-09-23 17:57:34,426 INFO    completed

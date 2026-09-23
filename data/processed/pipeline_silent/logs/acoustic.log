@@ -1,9 +1,9 @@
-2026-09-23 17:44:27,752 INFO    start (status is pending)
-2026-09-23 17:44:27,793 INFO    running acoustic worker
+2026-09-23 17:57:56,747 INFO    start (status is pending)
+2026-09-23 17:57:56,779 INFO    running acoustic worker
 
 $ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/acoustic_worker.py --audio /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_silent/audio/audio.wav --raw-output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_silent/acoustic/raw/acoustic_features.jsonl --video-id pipeline_silent --time-step 0.01 --pitch-floor 75.0 --pitch-ceiling 500.0 --number-of-formants 5 --formant-ceiling 5500.0 --minimum-pause-duration 0.2 --chunk-seconds 120.0 --request-hash a6af9e88ede1314a
 (cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
 warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/acoustic/.venv` and will be ignored; use `--active` to target the active environment instead
 [exit=0 timed_out=False duration=0.1s]
-2026-09-23 17:44:27,972 INFO    acoustic: 400 frames (0 voiced), 1 pauses, 0 segment aggregates
-2026-09-23 17:44:28,018 INFO    completed
+2026-09-23 17:57:56,924 INFO    acoustic: 400 frames (0 voiced), 1 pauses, 0 segment aggregates
+2026-09-23 17:57:56,963 INFO    completed

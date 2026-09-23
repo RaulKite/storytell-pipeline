@@ -2,16 +2,16 @@
   "schema_version": "1.0",
   "video_id": "pipeline_silent",
   "pipeline_version": "0.1.0",
-  "pipeline_git_commit": "2bff85be4ec79eb8e6acd076a983c2bdcd939636",
-  "run_started_at": "2026-09-23T15:43:55Z",
-  "recorded_at": "2026-09-23T15:44:35Z",
-  "status": "running",
+  "pipeline_git_commit": "132ac93cd5a14329abb60906c54c6fadeb0ffd81",
+  "run_started_at": "2026-09-23T15:57:02Z",
+  "recorded_at": "2026-09-23T15:58:04Z",
+  "status": "completed",
   "stages": {
     "metadata": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:20Z",
-      "completed_at": "2026-09-23T15:44:20Z",
-      "duration_seconds": 0.0,
+      "started_at": "2026-09-23T15:57:48Z",
+      "completed_at": "2026-09-23T15:57:49Z",
+      "duration_seconds": 1.0,
       "config_hash": "ae7bf90611c9b213",
       "dependency_hash": "4cbd3e6dafc8be06",
       "input_artifacts": [],
@@ -31,15 +31,16 @@
         "height": 240
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 1
     },
     "audio": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:20Z",
-      "completed_at": "2026-09-23T15:44:20Z",
+      "started_at": "2026-09-23T15:57:49Z",
+      "completed_at": "2026-09-23T15:57:49Z",
       "duration_seconds": 0.0,
       "config_hash": "455b64e2b0bd436a",
-      "dependency_hash": "d89be708c4db7d7a",
+      "dependency_hash": "d3e0d669e57bb182",
       "input_artifacts": [
         "metadata"
       ],
@@ -62,15 +63,16 @@
         "duration_drift_seconds": 0.032
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 2
     },
     "whisperx": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:20Z",
-      "completed_at": "2026-09-23T15:44:27Z",
+      "started_at": "2026-09-23T15:57:49Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": 7.0,
       "config_hash": "bfe6c2522852135f",
-      "dependency_hash": "ffca695e32751b17",
+      "dependency_hash": "81aea49b4a89c323",
       "input_artifacts": [
         "audio"
       ],
@@ -131,12 +133,13 @@
         "alignment_coverage": null
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 3
     },
     "diarization": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:27Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -152,12 +155,13 @@
         "reason": "missing credential HF_TOKEN (export it to enable diarization)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "speaker_assignment": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:27Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -173,12 +177,13 @@
         "reason": "diarization produced no speaker turns (skipped: missing credential HF_TOKEN (export it to enable diarization))"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "translation": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:27Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -194,15 +199,16 @@
         "reason": "translation endpoint is not configured (set translation.base_url, translation.api_key and translation.model in the config file)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "spacy_source": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:27Z",
-      "completed_at": "2026-09-23T15:44:27Z",
+      "started_at": "2026-09-23T15:57:56Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": 0.0,
       "config_hash": "5967948cf443f168",
-      "dependency_hash": "c91ff7d6cfe5affa",
+      "dependency_hash": "209dbba4265f275e",
       "input_artifacts": [
         "speech_segments",
         "speech_words"
@@ -251,12 +257,13 @@
         "sentences": 0
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 4
     },
     "spacy_english": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:44:27Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -272,15 +279,16 @@
         "reason": "no English translation available (translation stage did not run)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "acoustic": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:27Z",
-      "completed_at": "2026-09-23T15:44:27Z",
+      "started_at": "2026-09-23T15:57:56Z",
+      "completed_at": "2026-09-23T15:57:56Z",
       "duration_seconds": 0.0,
       "config_hash": "a6fc4482288293f6",
-      "dependency_hash": "c91ff7d6cfe5affa",
+      "dependency_hash": "209dbba4265f275e",
       "input_artifacts": [
         "audio",
         "speech_segments"
@@ -331,15 +339,16 @@
         "segment_rows": 0
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 5
     },
     "openpose": {
       "status": "completed",
-      "started_at": "2026-09-23T15:44:28Z",
-      "completed_at": "2026-09-23T15:44:34Z",
+      "started_at": "2026-09-23T15:57:57Z",
+      "completed_at": "2026-09-23T15:58:03Z",
       "duration_seconds": 6.0,
       "config_hash": "345b003dc83b1e1e",
-      "dependency_hash": "d89be708c4db7d7a",
+      "dependency_hash": "d3e0d669e57bb182",
       "input_artifacts": [
         "metadata",
         "frame_index"
@@ -385,25 +394,38 @@
         "pose_face_rows": 0
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 6
     },
     "finalization": {
-      "status": "running",
-      "started_at": "2026-09-23T15:44:34Z",
-      "completed_at": null,
-      "duration_seconds": null,
-      "config_hash": null,
-      "dependency_hash": null,
-      "input_artifacts": null,
-      "output_artifacts": null,
+      "status": "completed",
+      "started_at": "2026-09-23T15:58:03Z",
+      "completed_at": "2026-09-23T15:58:04Z",
+      "duration_seconds": 1.0,
+      "config_hash": "f86238240ec07061",
+      "dependency_hash": "c5de2e659e008d07",
+      "input_artifacts": [
+        "metadata"
+      ],
+      "output_artifacts": [
+        "manifest",
+        "provenance_config",
+        "provenance_tools",
+        "provenance_processing"
+      ],
       "executable": null,
       "command": null,
       "tool_version": null,
       "model_version": null,
       "exit_code": null,
-      "validation_result": null,
+      "validation_result": {
+        "artifacts": 17,
+        "timed_tables_checked": 7,
+        "status": "running"
+      },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 7
     }
   },
   "artifacts": {
@@ -432,6 +454,11 @@
       "kind": "file",
       "size_bytes": 2172
     },
+    "manifest": {
+      "path": "manifest.json",
+      "kind": "file",
+      "size_bytes": 4284
+    },
     "metadata": {
       "path": "source/metadata.json",
       "kind": "file",
@@ -440,7 +467,7 @@
     "pipeline_log": {
       "path": "logs/pipeline.log",
       "kind": "file",
-      "size_bytes": 1525
+      "size_bytes": 1651
     },
     "pose_body": {
       "path": "pose/body.parquet",
@@ -462,6 +489,21 @@
       "kind": "directory",
       "file_count": 100,
       "size_bytes": 2700
+    },
+    "provenance_config": {
+      "path": "provenance/config.json",
+      "kind": "file",
+      "size_bytes": 4080
+    },
+    "provenance_processing": {
+      "path": "provenance/processing.json",
+      "kind": "file",
+      "size_bytes": 14675
+    },
+    "provenance_tools": {
+      "path": "provenance/tools.json",
+      "kind": "file",
+      "size_bytes": 3114
     },
     "spacy_source_raw": {
       "path": "linguistic/source/raw/spacy_source.json",
@@ -491,7 +533,7 @@
     "status": {
       "path": "status.json",
       "kind": "file",
-      "size_bytes": 12371
+      "size_bytes": 12955
     },
     "translation_raw": {
       "path": "translation/raw",

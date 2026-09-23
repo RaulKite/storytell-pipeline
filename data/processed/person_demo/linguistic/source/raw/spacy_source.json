@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "video_id": "person_demo",
+  "variant": "source",
+  "language": null,
+  "selected_model": "blank",
+  "requested_model": null,
+  "model_selection_status": "fallback_no_model",
+  "model_version": null,
+  "capabilities": "tokenization,sentencizer",
+  "tokens": [],
+  "sentences": []
+}

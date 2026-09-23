@@ -1,80 +1,11 @@
-2026-09-23 17:22:43,853 INFO    start (status is pending)
-2026-09-23 17:22:43,895 INFO    running whisperx worker
-
-$ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/whisperx_worker.py --audio /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/audio/audio.wav --output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/raw/whisperx.json --video-id pipeline_demo --model large-v3 --language auto --device cuda --device-index 0 --compute-type float16 --beam-size 5 --vad-method pyannote --vad-merge-chunk-seconds 30 --threads 4 --asr-options {} --batch-size auto --request-hash 71d98a0254c01f48
-(cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
-warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/whisperx/.venv` and will be ignored; use `--active` to target the active environment instead
-2026-09-23 17:23:30 - whisperx.asr - INFO - No language specified, language will be detected for each audio file (increases inference time)
-2026-09-23 17:23:30 - whisperx.vads.pyannote - INFO - Performing voice activity detection using Pyannote...
-Lightning automatically upgraded your loaded checkpoint from v1.5.4 to v2.6.6. To apply the upgrade to your files permanently, run `python -m lightning.pytorch.utilities.upgrade_checkpoint environments/whisperx/.venv/lib/python3.12/site-packages/whisperx/assets/pytorch_model.bin`
-/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx/.venv/lib/python3.12/site-packages/pyannote/audio/utils/reproducibility.py:74: ReproducibilityWarning: TensorFloat-32 (TF32) has been disabled as it might lead to reproducibility issues and lower accuracy.
-It can be re-enabled by calling
-   >>> import torch
-   >>> torch.backends.cuda.matmul.allow_tf32 = True
-   >>> torch.backends.cudnn.allow_tf32 = True
-See https://github.com/pyannote/pyannote-audio/issues/1370 for more details.
-
-  warnings.warn(
-2026-09-23 17:23:32 - whisperx.asr - WARNING - Audio is shorter than 30s, language detection may be inaccurate
-2026-09-23 17:23:32 - whisperx.asr - INFO - Detected language: en (0.97) in first 30s of audio
-Downloading: "https://download.pytorch.org/torchaudio/models/wav2vec2_fairseq_base_ls960_asr_ls960.pth" to /home/raulagent/.cache/torch/hub/checkpoints/wav2vec2_fairseq_base_ls960_asr_ls960.pth
-
-  0%|          | 0.00/360M [00:00<?, ?B/s]
-  0%|          | 1.38M/360M [00:00<00:26, 14.4MB/s]
-  2%|▏         | 7.88M/360M [00:00<00:08, 43.4MB/s]
-  5%|▍         | 17.5M/360M [00:00<00:05, 68.5MB/s]
-  7%|▋         | 26.9M/360M [00:00<00:04, 74.8MB/s]
- 10%|█         | 36.2M/360M [00:00<00:04, 82.4MB/s]
- 12%|█▏        | 45.0M/360M [00:00<00:04, 81.6MB/s]
- 15%|█▌        | 55.0M/360M [00:00<00:03, 88.4MB/s]
- 18%|█▊        | 63.5M/360M [00:00<00:03, 85.2MB/s]
- 20%|██        | 72.1M/360M [00:00<00:03, 83.2MB/s]
- 23%|██▎       | 82.2M/360M [00:01<00:03, 89.7MB/s]
- 25%|██▌       | 91.0M/360M [00:01<00:03, 87.1MB/s]
- 28%|██▊       | 99.9M/360M [00:01<00:03, 84.9MB/s]
- 30%|███       | 108M/360M [00:01<00:03, 82.5MB/s] 
- 33%|███▎      | 118M/360M [00:01<00:02, 87.2MB/s]
- 35%|███▌      | 127M/360M [00:01<00:02, 89.7MB/s]
- 38%|███▊      | 137M/360M [00:01<00:02, 92.6MB/s]
- 41%|████      | 146M/360M [00:01<00:02, 90.8MB/s]
- 43%|████▎     | 155M/360M [00:01<00:02, 92.4MB/s]
- 46%|████▌     | 164M/360M [00:02<00:02, 90.9MB/s]
- 48%|████▊     | 174M/360M [00:02<00:02, 92.7MB/s]
- 51%|█████     | 183M/360M [00:02<00:01, 93.3MB/s]
- 53%|█████▎    | 192M/360M [00:02<00:01, 89.3MB/s]
- 56%|█████▌    | 201M/360M [00:02<00:01, 91.3MB/s]
- 58%|█████▊    | 210M/360M [00:02<00:01, 87.3MB/s]
- 61%|██████    | 218M/360M [00:02<00:01, 85.3MB/s]
- 63%|██████▎   | 227M/360M [00:02<00:01, 82.9MB/s]
- 66%|██████▌   | 236M/360M [00:02<00:01, 87.4MB/s]
- 68%|██████▊   | 246M/360M [00:03<00:01, 90.4MB/s]
- 71%|███████   | 255M/360M [00:03<00:01, 87.3MB/s]
- 73%|███████▎  | 263M/360M [00:03<00:01, 85.7MB/s]
- 76%|███████▌  | 272M/360M [00:03<00:01, 88.8MB/s]
- 78%|███████▊  | 281M/360M [00:03<00:00, 86.7MB/s]
- 80%|████████  | 289M/360M [00:03<00:00, 85.3MB/s]
- 83%|████████▎ | 298M/360M [00:03<00:00, 86.5MB/s]
- 85%|████████▌ | 306M/360M [00:03<00:00, 84.8MB/s]
- 87%|████████▋ | 315M/360M [00:03<00:00, 86.7MB/s]
- 90%|█████████ | 325M/360M [00:03<00:00, 90.1MB/s]
- 93%|█████████▎| 333M/360M [00:04<00:00, 86.9MB/s]
- 95%|█████████▌| 342M/360M [00:04<00:00, 89.3MB/s]
- 97%|█████████▋| 351M/360M [00:04<00:00, 86.5MB/s]
-100%|█████████▉| 359M/360M [00:04<00:00, 84.3MB/s]
-100%|██████████| 360M/360M [00:04<00:00, 85.8MB/s]
-[exit=0 timed_out=False duration=56.0s]
-2026-09-23 17:23:39,977 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
-2026-09-23 17:23:40,025 INFO    completed
-2026-09-23 17:30:00,902 INFO    reuse: valid previous result
-2026-09-23 17:40:11,063 INFO    reuse: valid previous result
-2026-09-23 17:40:59,438 INFO    start (configuration changed)
-2026-09-23 17:40:59,485 INFO    running whisperx worker
+2026-09-23 17:57:02,961 INFO    start (status is pending)
+2026-09-23 17:57:03,002 INFO    running whisperx worker
 
 $ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/whisperx_worker.py --audio /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/audio/audio.wav --output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/raw/whisperx.json --video-id pipeline_demo --model large-v3 --language auto --device cuda --device-index 0 --compute-type float16 --beam-size 5 --vad-method pyannote --vad-merge-chunk-seconds 30 --threads 4 --asr-options {} --batch-size auto --request-hash 74018cca77c915bf
 (cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
 warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/whisperx/.venv` and will be ignored; use `--active` to target the active environment instead
-2026-09-23 17:41:07 - whisperx.asr - INFO - No language specified, language will be detected for each audio file (increases inference time)
-2026-09-23 17:41:07 - whisperx.vads.pyannote - INFO - Performing voice activity detection using Pyannote...
+2026-09-23 17:57:07 - whisperx.asr - INFO - No language specified, language will be detected for each audio file (increases inference time)
+2026-09-23 17:57:07 - whisperx.vads.pyannote - INFO - Performing voice activity detection using Pyannote...
 Lightning automatically upgraded your loaded checkpoint from v1.5.4 to v2.6.6. To apply the upgrade to your files permanently, run `python -m lightning.pytorch.utilities.upgrade_checkpoint environments/whisperx/.venv/lib/python3.12/site-packages/whisperx/assets/pytorch_model.bin`
 /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx/.venv/lib/python3.12/site-packages/pyannote/audio/utils/reproducibility.py:74: ReproducibilityWarning: TensorFloat-32 (TF32) has been disabled as it might lead to reproducibility issues and lower accuracy.
 It can be re-enabled by calling
@@ -84,11 +15,8 @@ It can be re-enabled by calling
 See https://github.com/pyannote/pyannote-audio/issues/1370 for more details.
 
   warnings.warn(
-2026-09-23 17:41:07 - whisperx.asr - WARNING - Audio is shorter than 30s, language detection may be inaccurate
-2026-09-23 17:41:07 - whisperx.asr - INFO - Detected language: en (0.97) in first 30s of audio
-[exit=0 timed_out=False duration=10.2s]
-2026-09-23 17:41:09,675 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
-2026-09-23 17:41:09,724 INFO    completed
-2026-09-23 17:43:45,410 INFO    reuse: valid previous result
-2026-09-23 17:43:55,803 INFO    reuse: valid previous result
-2026-09-23 17:46:48,810 INFO    reuse: valid previous result
+2026-09-23 17:57:08 - whisperx.asr - WARNING - Audio is shorter than 30s, language detection may be inaccurate
+2026-09-23 17:57:08 - whisperx.asr - INFO - Detected language: en (0.97) in first 30s of audio
+[exit=0 timed_out=False duration=7.0s]
+2026-09-23 17:57:10,068 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
+2026-09-23 17:57:10,108 INFO    completed

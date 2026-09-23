@@ -2,15 +2,15 @@
   "schema_version": "1.0",
   "video_id": "pipeline_demo",
   "pipeline_version": "0.1.0",
-  "pipeline_git_commit": "2bff85be4ec79eb8e6acd076a983c2bdcd939636",
-  "run_started_at": "2026-09-23T15:46:48Z",
-  "recorded_at": "2026-09-23T15:46:49Z",
+  "pipeline_git_commit": "132ac93cd5a14329abb60906c54c6fadeb0ffd81",
+  "run_started_at": "2026-09-23T15:57:02Z",
+  "recorded_at": "2026-09-23T15:57:24Z",
   "status": "completed",
   "stages": {
     "metadata": {
       "status": "completed",
-      "started_at": "2026-09-23T15:22:43Z",
-      "completed_at": "2026-09-23T15:22:43Z",
+      "started_at": "2026-09-23T15:57:02Z",
+      "completed_at": "2026-09-23T15:57:02Z",
       "duration_seconds": 0.0,
       "config_hash": "ae7bf90611c9b213",
       "dependency_hash": "4cbd3e6dafc8be06",
@@ -31,15 +31,16 @@
         "height": 480
       },
       "error": null,
-      "reuse_count": 6
+      "reuse_count": 0,
+      "run_sequence": 1
     },
     "audio": {
       "status": "completed",
-      "started_at": "2026-09-23T15:22:43Z",
-      "completed_at": "2026-09-23T15:22:43Z",
+      "started_at": "2026-09-23T15:57:02Z",
+      "completed_at": "2026-09-23T15:57:02Z",
       "duration_seconds": 0.0,
       "config_hash": "ca4f539a8919bae0",
-      "dependency_hash": "d89be708c4db7d7a",
+      "dependency_hash": "d3e0d669e57bb182",
       "input_artifacts": [
         "metadata"
       ],
@@ -62,15 +63,16 @@
         "duration_drift_seconds": 0.063
       },
       "error": null,
-      "reuse_count": 6
+      "reuse_count": 0,
+      "run_sequence": 2
     },
     "whisperx": {
       "status": "completed",
-      "started_at": "2026-09-23T15:40:59Z",
-      "completed_at": "2026-09-23T15:41:09Z",
-      "duration_seconds": 10.0,
+      "started_at": "2026-09-23T15:57:02Z",
+      "completed_at": "2026-09-23T15:57:10Z",
+      "duration_seconds": 8.0,
       "config_hash": "d747bc9392724c69",
-      "dependency_hash": "4b9c0eb8d2381f06",
+      "dependency_hash": "0161bde922a687a4",
       "input_artifacts": [
         "audio"
       ],
@@ -131,12 +133,13 @@
         "alignment_coverage": 1.0
       },
       "error": null,
-      "reuse_count": 5
+      "reuse_count": 0,
+      "run_sequence": 3
     },
     "diarization": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:46:48Z",
+      "completed_at": "2026-09-23T15:57:10Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -152,12 +155,13 @@
         "reason": "missing credential HF_TOKEN (export it to enable diarization)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "speaker_assignment": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:46:48Z",
+      "completed_at": "2026-09-23T15:57:10Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -173,12 +177,13 @@
         "reason": "diarization produced no speaker turns (skipped: missing credential HF_TOKEN (export it to enable diarization))"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "translation": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:46:48Z",
+      "completed_at": "2026-09-23T15:57:10Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -194,15 +199,16 @@
         "reason": "translation endpoint is not configured (set translation.base_url, translation.api_key and translation.model in the config file)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "spacy_source": {
       "status": "completed",
-      "started_at": "2026-09-23T15:43:45Z",
-      "completed_at": "2026-09-23T15:43:47Z",
+      "started_at": "2026-09-23T15:57:10Z",
+      "completed_at": "2026-09-23T15:57:12Z",
       "duration_seconds": 2.0,
       "config_hash": "61257064bdbab07b",
-      "dependency_hash": "ee2c225df3e212f8",
+      "dependency_hash": "36773cb8d5b25102",
       "input_artifacts": [
         "speech_segments",
         "speech_words"
@@ -251,12 +257,13 @@
         "sentences": 1
       },
       "error": null,
-      "reuse_count": 2
+      "reuse_count": 0,
+      "run_sequence": 4
     },
     "spacy_english": {
       "status": "skipped",
       "started_at": null,
-      "completed_at": "2026-09-23T15:46:48Z",
+      "completed_at": "2026-09-23T15:57:12Z",
       "duration_seconds": null,
       "config_hash": null,
       "dependency_hash": null,
@@ -272,15 +279,16 @@
         "reason": "no English translation available (translation stage did not run)"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": null
     },
     "acoustic": {
       "status": "completed",
-      "started_at": "2026-09-23T15:43:56Z",
-      "completed_at": "2026-09-23T15:43:56Z",
+      "started_at": "2026-09-23T15:57:12Z",
+      "completed_at": "2026-09-23T15:57:12Z",
       "duration_seconds": 0.0,
       "config_hash": "3cae57a9c3eac5b2",
-      "dependency_hash": "ee2c225df3e212f8",
+      "dependency_hash": "36773cb8d5b25102",
       "input_artifacts": [
         "audio",
         "speech_segments"
@@ -331,15 +339,16 @@
         "segment_rows": 1
       },
       "error": null,
-      "reuse_count": 1
+      "reuse_count": 0,
+      "run_sequence": 5
     },
     "openpose": {
       "status": "completed",
-      "started_at": "2026-09-23T15:26:19Z",
-      "completed_at": "2026-09-23T15:26:31Z",
-      "duration_seconds": 12.0,
+      "started_at": "2026-09-23T15:57:12Z",
+      "completed_at": "2026-09-23T15:57:23Z",
+      "duration_seconds": 11.0,
       "config_hash": "4be5838eacd15a2b",
-      "dependency_hash": "d89be708c4db7d7a",
+      "dependency_hash": "d3e0d669e57bb182",
       "input_artifacts": [
         "metadata",
         "frame_index"
@@ -385,15 +394,16 @@
         "pose_face_rows": 0
       },
       "error": null,
-      "reuse_count": 2
+      "reuse_count": 0,
+      "run_sequence": 6
     },
     "finalization": {
       "status": "completed",
-      "started_at": "2026-09-23T15:46:49Z",
-      "completed_at": "2026-09-23T15:46:49Z",
-      "duration_seconds": 0.0,
-      "config_hash": "0f9bbe38730b883e",
-      "dependency_hash": "6b63625178f35eb5",
+      "started_at": "2026-09-23T15:57:23Z",
+      "completed_at": "2026-09-23T15:57:24Z",
+      "duration_seconds": 1.0,
+      "config_hash": "bf62d5ea412181e2",
+      "dependency_hash": "d8892687175aaea7",
       "input_artifacts": [
         "metadata"
       ],
@@ -409,12 +419,13 @@
       "model_version": null,
       "exit_code": null,
       "validation_result": {
-        "artifacts": 20,
+        "artifacts": 17,
         "timed_tables_checked": 7,
         "status": "running"
       },
       "error": null,
-      "reuse_count": 0
+      "reuse_count": 0,
+      "run_sequence": 7
     }
   },
   "artifacts": {
@@ -446,7 +457,7 @@
     "manifest": {
       "path": "manifest.json",
       "kind": "file",
-      "size_bytes": 4635
+      "size_bytes": 4286
     },
     "metadata": {
       "path": "source/metadata.json",
@@ -456,7 +467,7 @@
     "pipeline_log": {
       "path": "logs/pipeline.log",
       "kind": "file",
-      "size_bytes": 5330
+      "size_bytes": 1665
     },
     "pose_body": {
       "path": "pose/body.parquet",
@@ -487,7 +498,7 @@
     "provenance_processing": {
       "path": "provenance/processing.json",
       "kind": "file",
-      "size_bytes": 15107
+      "size_bytes": 14665
     },
     "provenance_tools": {
       "path": "provenance/tools.json",
@@ -522,7 +533,7 @@
     "status": {
       "path": "status.json",
       "kind": "file",
-      "size_bytes": 12633
+      "size_bytes": 12936
     },
     "translation_raw": {
       "path": "translation/raw",
@@ -533,7 +544,7 @@
     "whisperx_raw": {
       "path": "speech/raw/whisperx.json",
       "kind": "file",
-      "size_bytes": 6114
+      "size_bytes": 6115
     }
   }
 }

@@ -1,76 +1,26 @@
-2026-09-23 17:22:43,293 INFO    start (status is pending)
-2026-09-23 17:22:43,334 INFO    hashing pipeline_demo.mp4
-2026-09-23 17:22:43,417 INFO    metadata: 640x480 @ 25/1 fps, 9.98s
-2026-09-23 17:22:43,626 INFO    completed
-2026-09-23 17:22:43,627 INFO    start (status is pending)
-2026-09-23 17:22:43,668 INFO    extracting audio -> audio/audio.wav
-2026-09-23 17:22:43,851 INFO    completed
-2026-09-23 17:22:43,853 INFO    start (status is pending)
-2026-09-23 17:22:43,895 INFO    running whisperx worker
-2026-09-23 17:23:39,977 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
-2026-09-23 17:23:40,025 INFO    completed
-2026-09-23 17:23:40,067 INFO    start (status is pending)
-2026-09-23 17:23:40,150 INFO    failed: required input artifact missing: speaker_turns (/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/speech/speaker_turns.parquet)
-2026-09-23 17:26:19,238 INFO    start (status is skipped)
-2026-09-23 17:26:19,279 INFO    running spacy_source worker
-2026-09-23 17:26:19,320 INFO    failed: spacy_source worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy. Create it and run `uv sync` there first.
-2026-09-23 17:26:19,364 INFO    start (status is skipped)
-2026-09-23 17:26:19,404 INFO    running acoustic worker
-2026-09-23 17:26:19,445 INFO    failed: acoustic worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic. Create it and run `uv sync` there first.
-2026-09-23 17:26:19,521 INFO    start (status is skipped)
-2026-09-23 17:26:19,869 INFO    running OpenPose (model=BODY_25, hands=True, face=True, gpu=0)
-2026-09-23 17:26:31,053 INFO    OpenPose normalisation: 249 frames -> body=0 rows, hands=0 rows, face=0 rows
-2026-09-23 17:26:31,268 INFO    completed
-2026-09-23 17:26:31,319 INFO    blocked: upstream stage failed: acoustic, spacy_source
-2026-09-23 17:30:00,802 INFO    reuse: valid previous result
-2026-09-23 17:30:00,844 INFO    reuse: valid previous result
-2026-09-23 17:30:00,902 INFO    reuse: valid previous result
-2026-09-23 17:30:01,039 INFO    start (status is failed)
-2026-09-23 17:30:01,080 INFO    running spacy_source worker
-2026-09-23 17:30:03,316 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
-2026-09-23 17:30:03,362 INFO    completed
-2026-09-23 17:40:10,979 INFO    reuse: valid previous result
-2026-09-23 17:40:11,021 INFO    reuse: valid previous result
-2026-09-23 17:40:11,063 INFO    reuse: valid previous result
-2026-09-23 17:40:11,230 INFO    start (forced recomputation)
-2026-09-23 17:40:11,272 INFO    reusing existing raw output for request 064f983ec8583b39 (no model run)
-2026-09-23 17:40:11,276 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=8%)
-2026-09-23 17:40:11,347 INFO    completed
-2026-09-23 17:40:59,392 INFO    reuse: valid previous result
-2026-09-23 17:40:59,433 INFO    reuse: valid previous result
-2026-09-23 17:40:59,438 INFO    start (configuration changed)
-2026-09-23 17:40:59,485 INFO    running whisperx worker
-2026-09-23 17:41:09,675 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
-2026-09-23 17:41:09,724 INFO    completed
-2026-09-23 17:41:09,891 INFO    start (forced recomputation)
-2026-09-23 17:41:09,934 INFO    running spacy_source worker
-2026-09-23 17:41:12,227 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
-2026-09-23 17:41:12,275 INFO    completed
-2026-09-23 17:43:45,326 INFO    reuse: valid previous result
-2026-09-23 17:43:45,369 INFO    reuse: valid previous result
-2026-09-23 17:43:45,410 INFO    reuse: valid previous result
-2026-09-23 17:43:45,569 INFO    start (forced recomputation)
-2026-09-23 17:43:45,604 INFO    running spacy_source worker
-2026-09-23 17:43:47,755 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
-2026-09-23 17:43:47,802 INFO    completed
-2026-09-23 17:43:55,711 INFO    reuse: valid previous result
-2026-09-23 17:43:55,753 INFO    reuse: valid previous result
-2026-09-23 17:43:55,803 INFO    reuse: valid previous result
-2026-09-23 17:43:56,003 INFO    reuse: valid previous result
-2026-09-23 17:43:56,050 INFO    start (status is skipped)
-2026-09-23 17:43:56,088 INFO    running acoustic worker
-2026-09-23 17:43:56,307 INFO    acoustic: 1001 frames (634 voiced), 7 pauses, 1 segment aggregates
-2026-09-23 17:43:56,355 INFO    completed
-2026-09-23 17:43:56,472 INFO    reuse: valid previous result
-2026-09-23 17:43:56,480 INFO    start (status is skipped)
-2026-09-23 17:43:56,906 INFO    manifest written with 17 artifacts (status=running)
-2026-09-23 17:43:56,949 INFO    completed
-2026-09-23 17:46:48,727 INFO    reuse: valid previous result
-2026-09-23 17:46:48,768 INFO    reuse: valid previous result
-2026-09-23 17:46:48,810 INFO    reuse: valid previous result
-2026-09-23 17:46:48,978 INFO    reuse: valid previous result
-2026-09-23 17:46:49,078 INFO    reuse: valid previous result
-2026-09-23 17:46:49,203 INFO    reuse: valid previous result
-2026-09-23 17:46:49,208 INFO    start (configuration changed)
-2026-09-23 17:46:49,629 INFO    manifest written with 20 artifacts (status=running)
-2026-09-23 17:46:49,671 INFO    completed
+2026-09-23 17:57:02,411 INFO    start (status is pending)
+2026-09-23 17:57:02,451 INFO    hashing pipeline_demo.mp4
+2026-09-23 17:57:02,542 INFO    metadata: 640x480 @ 25/1 fps, 9.98s
+2026-09-23 17:57:02,726 INFO    completed
+2026-09-23 17:57:02,727 INFO    start (status is pending)
+2026-09-23 17:57:02,768 INFO    extracting audio -> audio/audio.wav
+2026-09-23 17:57:02,959 INFO    completed
+2026-09-23 17:57:02,961 INFO    start (status is pending)
+2026-09-23 17:57:03,002 INFO    running whisperx worker
+2026-09-23 17:57:10,068 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
+2026-09-23 17:57:10,108 INFO    completed
+2026-09-23 17:57:10,236 INFO    start (status is pending)
+2026-09-23 17:57:10,276 INFO    running spacy_source worker
+2026-09-23 17:57:12,395 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
+2026-09-23 17:57:12,442 INFO    completed
+2026-09-23 17:57:12,486 INFO    start (status is pending)
+2026-09-23 17:57:12,526 INFO    running acoustic worker
+2026-09-23 17:57:12,747 INFO    acoustic: 1001 frames (634 voiced), 7 pauses, 1 segment aggregates
+2026-09-23 17:57:12,785 INFO    completed
+2026-09-23 17:57:12,873 INFO    start (status is pending)
+2026-09-23 17:57:13,217 INFO    running OpenPose (model=BODY_25, hands=True, face=True, gpu=0)
+2026-09-23 17:57:23,742 INFO    OpenPose normalisation: 249 frames -> body=0 rows, hands=0 rows, face=0 rows
+2026-09-23 17:57:23,932 INFO    completed
+2026-09-23 17:57:23,937 INFO    start (status is pending)
+2026-09-23 17:57:24,366 INFO    manifest written with 17 artifacts (status=running)
+2026-09-23 17:57:24,417 INFO    completed

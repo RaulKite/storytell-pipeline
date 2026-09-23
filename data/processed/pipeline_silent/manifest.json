@@ -22,7 +22,7 @@
     "detected_language": null
   },
   "processing": {
-    "status": "running",
+    "status": "completed",
     "stages": {
       "metadata": "completed",
       "audio": "completed",
@@ -34,7 +34,7 @@
       "spacy_english": "skipped",
       "acoustic": "completed",
       "openpose": "completed",
-      "finalization": "running"
+      "finalization": "completed"
     }
   },
   "temporal_model": {
@@ -67,7 +67,10 @@
     "pose_raw": "pose/raw",
     "pose_body": "pose/body.parquet",
     "pose_hands": "pose/hands.parquet",
-    "pose_face": "pose/face.parquet"
+    "pose_face": "pose/face.parquet",
+    "provenance_config": "provenance/config.json",
+    "provenance_tools": "provenance/tools.json",
+    "provenance_processing": "provenance/processing.json"
   },
   "artifacts_not_generated": {
     "diarization_raw": "not_generated",
@@ -77,10 +80,7 @@
     "translation_segments": "not_generated",
     "spacy_english_raw": "not_generated",
     "spacy_english_tokens": "not_generated",
-    "spacy_english_sentences": "not_generated",
-    "provenance_config": "not_generated",
-    "provenance_tools": "not_generated",
-    "provenance_processing": "not_generated"
+    "spacy_english_sentences": "not_generated"
   },
   "artifact_details": {
     "acoustic_frames": {
@@ -103,13 +103,17 @@
       "kind": "file",
       "size_bytes": 2172
     },
+    "manifest": {
+      "kind": "file",
+      "size_bytes": 4284
+    },
     "metadata": {
       "kind": "file",
       "size_bytes": 1219
     },
     "pipeline_log": {
       "kind": "file",
-      "size_bytes": 1525
+      "size_bytes": 1651
     },
     "pose_body": {
       "kind": "file",
@@ -127,6 +131,18 @@
       "kind": "directory",
       "file_count": 100,
       "size_bytes": 2700
+    },
+    "provenance_config": {
+      "kind": "file",
+      "size_bytes": 4080
+    },
+    "provenance_processing": {
+      "kind": "file",
+      "size_bytes": 14675
+    },
+    "provenance_tools": {
+      "kind": "file",
+      "size_bytes": 3114
     },
     "spacy_source_raw": {
       "kind": "file",
@@ -150,7 +166,7 @@
     },
     "status": {
       "kind": "file",
-      "size_bytes": 12371
+      "size_bytes": 12955
     },
     "translation_raw": {
       "kind": "directory",

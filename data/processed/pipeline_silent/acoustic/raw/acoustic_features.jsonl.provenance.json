@@ -18,7 +18,7 @@
     "worker": "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/acoustic_worker.py",
     "audio_sha256": "0050583f7e2ca0b222544c06a98ff55248939bf720645477f2c3f8b01bc5c9d2"
   },
-  "recorded_at": "2026-09-23T15:44:27Z",
+  "recorded_at": "2026-09-23T15:57:56Z",
   "provenance": {
     "tool_version": "0.4.7",
     "model_version": "parselmouth/6.1.38",
@@ -56,7 +56,7 @@
     ],
     "executable": "uv",
     "exit_code": 0,
-    "duration_seconds": 0.125,
+    "duration_seconds": 0.107,
     "uv_project": "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic"
   }
 }
