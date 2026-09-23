@@ -26,3 +26,13 @@ environments/*/.venv/
 
 # OS
 .DS_Store
+
+# Third-party example media, copied on demand by scripts/make_fixtures.sh from a
+# local OpenPose install. It is not ours to redistribute, and the pipeline does not
+# need it: pose is exercised against the committed frame JSON in tests/fixtures.
+data/input_videos/person_demo.avi
+
+# Processed datasets are reproducible outputs, not source: a pose dataset for one
+# short clip is tens of megabytes and every file is regenerable from the fixtures.
+# Regenerate with `multimodal-pipeline run` after `scripts/make_fixtures.sh`.
+data/processed/

@@ -41,3 +41,16 @@ ffmpeg -hide_banner -loglevel error -y \
   -map 0:v -map 1:a -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest \
   "$OUT/pipeline_silent.mp4"
 echo "generated $OUT/pipeline_silent.mp4"
+
+# A clip containing a real person, so the OpenPose stages have a body to find. The
+# colour-bar fixtures above deliberately detect nobody. This clip ships with the
+# OpenPose install and is not ours to redistribute, so it is copied on demand from
+# the local install and stays out of version control (see .gitignore).
+OPENPOSE_MEDIA="${OPENPOSE_ROOT:-/opt/openpose}/examples/media/video.avi"
+if [ -f "$OPENPOSE_MEDIA" ]; then
+  cp "$OPENPOSE_MEDIA" "$OUT/person_demo.avi"
+  echo "copied $OUT/person_demo.avi from $OPENPOSE_MEDIA"
+else
+  echo "note: $OPENPOSE_MEDIA not found; the pose stages will run and detect no" \
+       "person, which is a supported outcome but not a useful pose smoke test" >&2
+fi
