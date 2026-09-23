@@ -41,16 +41,20 @@ class FinalizationStage(Stage):
     def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
         from ..config import configuration_hash
 
-        # The fingerprint is the *content* of every stage result: if any upstream
-        # artifact changes, the manifest and provenance must be regenerated.
-        registry = ArtifactRegistry(ctx.paths).refresh()
+        # Only things finalization does not itself write. An earlier version folded
+        # in each artifact's size_bytes, but finalization writes the manifest and
+        # the provenance files, so writing them changed the fingerprint it was
+        # about to be compared against: every subsequent run called finalization
+        # stale and rewrote the whole summary, forever.
+        #
+        # Content changes are already covered by the dependency hash, which tracks
+        # every upstream stage's configuration *and* execution sequence. A hand-edited
+        # artifact makes that stage fail its own integrity check, the stage reruns,
+        # its sequence moves, and finalization follows.
         return {
             "stage": self.name,
             "configuration_hash": configuration_hash(ctx.config),
             "pipeline_version": git_commit(ctx.config.project_root),
-            "artifacts": {name: info.get("size_bytes") for name, info in sorted(registry.present.items())},
-            "stage_hashes": {name: ctx.state.stage(name).config_hash
-                             for name in STAGE_ORDER if name != self.name},
         }
 
     def prepare(self, ctx: StageContext) -> None:
@@ -122,32 +126,57 @@ class FinalizationStage(Stage):
 
     @staticmethod
     def _cross_references(ctx: StageContext) -> list[str]:
-        """Identifiers must resolve across modalities, not just inside a table."""
+        """Identifiers must resolve across modalities, not just inside a table.
+
+        Each check runs independently of the others. An early version returned as
+        soon as the translation table was absent, which silently disabled the
+        speaker cross-check for every dataset without translation — the common case
+        whenever the translation endpoint is unconfigured.
+        """
         issues: list[str] = []
-        if not (ctx.artifact("speech_segments").is_file() and ctx.artifact("translation_segments").is_file()):
-            return issues
-        segments = {row["segment_id"] for row in read_table(ctx.artifact("speech_segments"),
-                                                          columns=["segment_id"]).to_pylist()}
-        try:
-            translated = {row["segment_id"] for row in read_table(ctx.artifact("translation_segments"),
-                                                                 columns=["segment_id"]).to_pylist()}
-        except Exception as exc:  # noqa: BLE001
-            return [f"segments_en.parquet unreadable: {exc}"]
-        missing = translated - segments
-        if missing:
-            issues.append(f"translation rows with no source segment: {sorted(missing)[:5]}")
-        speakers: set[str] = set()
-        if ctx.artifact("speaker_turns").is_file():
-            speakers = {row["speaker_id"] for row in read_table(ctx.artifact("speaker_turns"),
-                                                               columns=["speaker_id"]).to_pylist()}
-            speakers.discard(None)
-        if speakers:
-            segment_speakers = {row["speaker_id"] for row in read_table(ctx.artifact("speech_segments")).to_pylist()
-                                if row.get("speaker_id")}
-            unknown = segment_speakers - speakers
-            if unknown:
-                issues.append(f"transcript speakers absent from diarization: {sorted(unknown)[:5]}")
+        if ctx.artifact("speech_segments").is_file():
+            issues.extend(_translation_references(ctx))
+            issues.extend(_speaker_references(ctx))
         return issues
+
+
+def _translation_references(ctx: StageContext) -> list[str]:
+    if not ctx.artifact("translation_segments").is_file():
+        return []
+    segments = {row["segment_id"] for row in read_table(ctx.artifact("speech_segments"),
+                                                        columns=["segment_id"]).to_pylist()}
+    try:
+        translated = {row["segment_id"] for row in read_table(ctx.artifact("translation_segments"),
+                                                             columns=["segment_id"]).to_pylist()}
+    except Exception as exc:  # noqa: BLE001 - reported as a validation issue
+        return [f"segments_en.parquet unreadable: {exc}"]
+    missing = translated - segments
+    if missing:
+        return [f"translation rows with no source segment: {sorted(missing)[:5]}"]
+    return []
+
+
+def _speaker_references(ctx: StageContext) -> list[str]:
+    """Every speaker the transcript cites must exist in the diarization output."""
+    if not ctx.artifact("speaker_turns").is_file():
+        return []
+    try:
+        speakers = {row["speaker_id"] for row in read_table(ctx.artifact("speaker_turns"),
+                                                           columns=["speaker_id"]).to_pylist()}
+    except Exception as exc:  # noqa: BLE001
+        return [f"speaker_turns.parquet unreadable: {exc}"]
+    speakers.discard(None)
+    if not speakers:
+        return []
+    try:
+        cited = {row["speaker_id"] for row in read_table(ctx.artifact("speech_segments")).to_pylist()
+                 if row.get("speaker_id")}
+    except Exception as exc:  # noqa: BLE001
+        return [f"segments.parquet unreadable: {exc}"]
+    unknown = cited - speakers
+    if unknown:
+        return [f"transcript speakers absent from diarization: {sorted(unknown)[:5]}"]
+    return []
 
 # ---------------------------------------------------------------------- summary
 
