@@ -266,7 +266,27 @@ class VideoRunner:
                 self._failed.add(stage.name)
         result.total_seconds = round(time.time() - started, 2)
         result.status = self.state.overall_status
+        # The loop's log handlers are closed; summaries are written to the video log.
+        context.log = _NullLogger()
+        self._refresh_summary(context)
         return result
+
+    def _refresh_summary(self, context: StageContext) -> None:
+        """Rewrite manifest/provenance so they describe the video as it finished.
+
+        ``finalization`` runs inside the stage loop, so the manifest it writes can
+        only ever record itself as ``running`` and the overall status as whatever
+        preceded it. Without this closing rewrite every dataset on disk misreports
+        its own completion forever.
+        """
+        if not self.paths.manifest.is_file():
+            return  # the dataset was never finalized; nothing to correct
+        from .stages.finalization import write_dataset_summary
+
+        try:
+            write_dataset_summary(context)
+        except Exception as exc:  # noqa: BLE001 - a stale summary must not mask results
+            log.warning("%s: could not refresh manifest: %s", self.source.video_id, exc)
 
     def _run_stage(self, stage: Stage, context: StageContext, stage_log: Any,
                    selected: set[str], forced: set[str]) -> StageOutcome:

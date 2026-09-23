@@ -1,0 +1,4 @@
+2026-09-23 17:43:56,955 INFO    start (status is pending)
+2026-09-23 17:43:56,991 INFO    hashing pipeline_demo_ntsc.mov
+2026-09-23 17:43:57,091 INFO    metadata: 320x240 @ 30000/1001 fps, 9.98s
+2026-09-23 17:43:57,225 INFO    completed

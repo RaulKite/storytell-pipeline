@@ -1,3 +1,13 @@
 2026-09-23 17:26:19,364 INFO    start (status is skipped)
 2026-09-23 17:26:19,404 INFO    running acoustic worker
 2026-09-23 17:26:19,445 INFO    failed: acoustic worker failed: uv project not found: /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic. Create it and run `uv sync` there first.
+2026-09-23 17:43:56,050 INFO    start (status is skipped)
+2026-09-23 17:43:56,088 INFO    running acoustic worker
+
+$ uv run --project /data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic --python 3.12 python /data/home/raulagent/miscosas/repos/storytel-pipeline/workers/acoustic_worker.py --audio /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/audio/audio.wav --raw-output /data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo/acoustic/raw/acoustic_features.jsonl --video-id pipeline_demo --time-step 0.01 --pitch-floor 75.0 --pitch-ceiling 500.0 --number-of-formants 5 --formant-ceiling 5500.0 --minimum-pause-duration 0.2 --chunk-seconds 120.0 --request-hash cc48339fe2d69869
+(cwd=/data/home/raulagent/miscosas/repos/storytel-pipeline)
+warning: `VIRTUAL_ENV=.venv` does not match the project environment path `environments/acoustic/.venv` and will be ignored; use `--active` to target the active environment instead
+[exit=0 timed_out=False duration=0.2s]
+2026-09-23 17:43:56,307 INFO    acoustic: 1001 frames (634 voiced), 7 pauses, 1 segment aggregates
+2026-09-23 17:43:56,355 INFO    completed
+2026-09-23 17:46:49,078 INFO    reuse: valid previous result

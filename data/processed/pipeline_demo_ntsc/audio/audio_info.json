@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "video_id": "pipeline_demo_ntsc",
+  "path": "audio/audio.wav",
+  "command": [
+    "ffmpeg",
+    "-hide_banner",
+    "-nostdin",
+    "-loglevel",
+    "info",
+    "-y",
+    "-i",
+    "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov",
+    "-vn",
+    "-map",
+    "0:a:0",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-sample_fmt",
+    "s16",
+    "-c:a",
+    "pcm_s16le",
+    "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/audio/audio.wav"
+  ],
+  "ffmpeg_version": "ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers",
+  "target": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_format": "s16le"
+  },
+  "output": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "sample_format": "s16le",
+    "frame_count": 160768,
+    "duration_seconds": 10.048,
+    "size_bytes": 321614
+  }
+}

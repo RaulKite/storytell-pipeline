@@ -57,51 +57,13 @@ class FinalizationStage(Stage):
         ctx.paths.ensure_dirs()
 
     def execute(self, ctx: StageContext) -> dict[str, Any]:
-        metadata = read_json(ctx.artifact("metadata"))
-        registry = ArtifactRegistry(ctx.paths).refresh()
-        stage_statuses = {name: ctx.state.stage(name).status for name in STAGE_ORDER}
-        detected_language = self._detected_language(ctx, registry)
-        manifest = build_manifest(
-            video_id=ctx.video_id,
-            metadata=metadata,
-            overall_status=ctx.state.overall_status,
-            registry=registry,
-            stage_statuses=stage_statuses,
-            detected_language=detected_language,
-        )
-        validate_manifest(ctx.paths, manifest)
-        write_manifest(ctx.paths, manifest)
-
-        tools = tools_report(ctx.config)
-        stage_records = {}
-        for name in STAGE_ORDER:
-            record = ctx.state.stage(name).to_dict()
-            # Commands are provenance, not credentials: already masked upstream.
-            stage_records[name] = record
-        processing = processing_report(
-            video_id=ctx.video_id,
-            config=ctx.config,
-            state_summary=ctx.state.summary(),
-            stage_records=stage_records,
-            artifacts=registry.describe(),
-            started_at=ctx.tools.get("run_started_at"),
-        )
-        write_provenance(ctx.paths, ctx.config, tools, processing)
-        ctx.log(f"manifest written with {len(manifest['artifacts'])} artifacts "
-                f"(status={ctx.state.overall_status})")
+        summary = write_dataset_summary(ctx)
+        ctx.log(f"manifest written with {summary['artifacts']} artifacts "
+                f"(status={summary['status']})")
         return {"tool_version": None, "model_version": None,
-                "extra": {"artifacts": len(manifest["artifacts"]),
-                          "detected_language": detected_language}}
+                "extra": {"artifacts": summary["artifacts"],
+                          "detected_language": summary["detected_language"]}}
 
-    @staticmethod
-    def _detected_language(ctx: StageContext, registry: ArtifactRegistry) -> str | None:
-        from ..schemas import iter_rows
-
-        if registry.has("speech_segments"):
-            for row in iter_rows(ctx.artifact("speech_segments"), ["language"]):
-                if row.get("language"):
-                    return str(row["language"])
-        return None
 
     # ---------------------------------------------------------------- validation
 
@@ -186,3 +148,57 @@ class FinalizationStage(Stage):
             if unknown:
                 issues.append(f"transcript speakers absent from diarization: {sorted(unknown)[:5]}")
         return issues
+
+# ---------------------------------------------------------------------- summary
+
+
+def write_dataset_summary(ctx: StageContext) -> dict[str, Any]:
+    """Write ``manifest.json`` and the provenance files from current state.
+
+    Called twice by design: once from the finalization stage, and once when the
+    runner finishes the video. A manifest can only be written while a stage is
+    running, so on its own it would record finalization as ``running`` and the
+    overall status as whatever preceded it — a dataset that permanently misreports
+    itself. The closing rewrite is what makes the on-disk summary true.
+    """
+    metadata_path = ctx.artifact("metadata")
+    metadata = read_json(metadata_path) if metadata_path.is_file() else {}
+    registry = ArtifactRegistry(ctx.paths).refresh()
+    stage_statuses = {name: ctx.state.stage(name).status for name in STAGE_ORDER}
+    detected_language = _detected_language(ctx, registry)
+    manifest = build_manifest(
+        video_id=ctx.video_id,
+        metadata=metadata,
+        overall_status=ctx.state.overall_status,
+        registry=registry,
+        stage_statuses=stage_statuses,
+        detected_language=detected_language,
+    )
+    validate_manifest(ctx.paths, manifest)
+    write_manifest(ctx.paths, manifest)
+
+    stage_records = {name: ctx.state.stage(name).to_dict() for name in STAGE_ORDER}
+    processing = processing_report(
+        video_id=ctx.video_id,
+        config=ctx.config,
+        state_summary=ctx.state.summary(),
+        stage_records=stage_records,
+        artifacts=registry.describe(),
+        started_at=ctx.tools.get("run_started_at"),
+    )
+    write_provenance(ctx.paths, ctx.config, tools_report(ctx.config), processing)
+    return {
+        "artifacts": len(manifest["artifacts"]),
+        "status": ctx.state.overall_status,
+        "detected_language": detected_language,
+    }
+
+
+def _detected_language(ctx: StageContext, registry: ArtifactRegistry) -> str | None:
+    from ..schemas import iter_rows
+
+    if registry.has("speech_segments"):
+        for row in iter_rows(ctx.artifact("speech_segments"), ["language"]):
+            if row.get("language"):
+                return str(row["language"])
+    return None

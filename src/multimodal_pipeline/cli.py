@@ -27,7 +27,7 @@ from .log import configure, get_logger
 from .orchestrator import VideoRunner, build_stages, enabled_stage_names
 from .provenance import system_report, tools_report
 from .report import BatchReport, collect_report, write_batch_report
-from .state import STATUS_COMPLETED, VideoState
+from .state import STATUS_COMPLETED, STATUS_PENDING, STATUS_SKIPPED, VideoState
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Sequential multimodal video-processing pipeline.")
@@ -245,7 +245,13 @@ def validate(
     config: Path = typer.Option(..., "--config", "-c"),
     video: Optional[Path] = typer.Option(None, "--video"),
 ) -> None:
-    """Re-run semantic validation over artifacts already on disk (no processing)."""
+    """Re-run semantic validation over artifacts already on disk (no processing).
+
+    A stage that was legitimately skipped (disabled by configuration, or blocked
+    by a missing credential) is reported as skipped, not as a failure: validating
+    the outputs of a stage that never ran would make every partial dataset look
+    broken and hide the problems that are real.
+    """
     configure("WARNING", console=False)
     pipeline_config = load_config(config)
     sources = _sources(pipeline_config, video)
@@ -258,7 +264,16 @@ def validate(
         logger = _StageLogger(runner.paths.dataset_dir / "logs", "validate")
         context.log = logger
         problems: dict[str, str] = {}
+        skipped: list[str] = []
         for stage in build_stages():
+            status = context.state.stage(stage.name).status
+            if status == STATUS_SKIPPED:
+                reason = (context.state.stage(stage.name).validation_result or {}).get("reason", "")
+                skipped.append(f"{stage.name} ({reason})" if reason else stage.name)
+                continue
+            if status == STATUS_PENDING:
+                skipped.append(f"{stage.name} (never run)")
+                continue
             if not stage.outputs_present(context):
                 problems[stage.name] = "outputs missing"
                 continue
@@ -274,6 +289,8 @@ def validate(
                 console.print(f"    {name}: {message}")
         else:
             console.print(f"[green]OK[/]   {source.video_id}")
+        for item in skipped:
+            console.print(f"    [dim]skipped:[/] {item}")
     raise typer.Exit(code=1 if failures else 0)
 
 

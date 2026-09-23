@@ -1,0 +1,12 @@
+{
+  "stage": "acoustic",
+  "status": "ok",
+  "request_hash": "cc48339fe2d69869",
+  "tool_version": "0.4.7",
+  "model_version": "parselmouth/6.1.38",
+  "frames": 1001,
+  "voiced_frames": 634,
+  "silences": 7,
+  "audio_seconds": 10.048,
+  "duration_seconds": 0.083
+}

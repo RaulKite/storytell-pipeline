@@ -1,0 +1,181 @@
+{
+  "schema_version": "1.0",
+  "video_id": "pipeline_demo",
+  "source": {
+    "filename": "pipeline_demo.mp4",
+    "path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo.mp4",
+    "sha256": "b6ca92ab7952a69ec9fde1be2595cf6bf4fb2c8519ebf6f9f9fdfdf564e2c4b8",
+    "file_size_bytes": 158937,
+    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "duration_seconds": 9.985,
+    "fps": 25.0,
+    "fps_rational": "25/1",
+    "frame_rate_rational": "25/1",
+    "width": 640,
+    "height": 480,
+    "pixel_format": "yuv420p",
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "audio_sample_rate": 16000,
+    "audio_channels": 1,
+    "frame_count": 249,
+    "detected_language": "en"
+  },
+  "processing": {
+    "status": "completed",
+    "stages": {
+      "metadata": "completed",
+      "audio": "completed",
+      "whisperx": "completed",
+      "diarization": "skipped",
+      "speaker_assignment": "skipped",
+      "translation": "skipped",
+      "spacy_source": "completed",
+      "spacy_english": "skipped",
+      "acoustic": "completed",
+      "openpose": "completed",
+      "finalization": "completed"
+    }
+  },
+  "temporal_model": {
+    "unit": "seconds_from_video_start",
+    "interval_columns": [
+      "start_time",
+      "end_time"
+    ],
+    "instant_columns": [
+      "timestamp"
+    ],
+    "frame_columns": [
+      "frame_number"
+    ]
+  },
+  "artifacts": {
+    "metadata": "source/metadata.json",
+    "audio": "audio/audio.wav",
+    "frame_index": "source/frame_index.parquet",
+    "whisperx_raw": "speech/raw/whisperx.json",
+    "speech_segments": "speech/segments.parquet",
+    "speech_words": "speech/words.parquet",
+    "translation_raw": "translation/raw",
+    "spacy_source_raw": "linguistic/source/raw/spacy_source.json",
+    "spacy_source_tokens": "linguistic/source/tokens.parquet",
+    "spacy_source_sentences": "linguistic/source/sentences.parquet",
+    "acoustic_raw": "acoustic/raw/acoustic_features.jsonl",
+    "acoustic_frames": "acoustic/frame_features.parquet",
+    "acoustic_segments": "acoustic/segment_features.parquet",
+    "pose_raw": "pose/raw",
+    "pose_body": "pose/body.parquet",
+    "pose_hands": "pose/hands.parquet",
+    "pose_face": "pose/face.parquet",
+    "provenance_config": "provenance/config.json",
+    "provenance_tools": "provenance/tools.json",
+    "provenance_processing": "provenance/processing.json"
+  },
+  "artifacts_not_generated": {
+    "diarization_raw": "not_generated",
+    "diarization_rttm": "not_generated",
+    "exclusive_diarization_raw": "not_generated",
+    "speaker_turns": "not_generated",
+    "translation_segments": "not_generated",
+    "spacy_english_raw": "not_generated",
+    "spacy_english_tokens": "not_generated",
+    "spacy_english_sentences": "not_generated"
+  },
+  "artifact_details": {
+    "acoustic_frames": {
+      "kind": "file",
+      "size_bytes": 46902
+    },
+    "acoustic_raw": {
+      "kind": "file",
+      "size_bytes": 84531
+    },
+    "acoustic_segments": {
+      "kind": "file",
+      "size_bytes": 7555
+    },
+    "audio": {
+      "kind": "file",
+      "size_bytes": 321614
+    },
+    "frame_index": {
+      "kind": "file",
+      "size_bytes": 2936
+    },
+    "manifest": {
+      "kind": "file",
+      "size_bytes": 4635
+    },
+    "metadata": {
+      "kind": "file",
+      "size_bytes": 1216
+    },
+    "pipeline_log": {
+      "kind": "file",
+      "size_bytes": 5330
+    },
+    "pose_body": {
+      "kind": "file",
+      "size_bytes": 2127
+    },
+    "pose_face": {
+      "kind": "file",
+      "size_bytes": 1887
+    },
+    "pose_hands": {
+      "kind": "file",
+      "size_bytes": 2199
+    },
+    "pose_raw": {
+      "kind": "directory",
+      "file_count": 249,
+      "size_bytes": 6723
+    },
+    "provenance_config": {
+      "kind": "file",
+      "size_bytes": 4080
+    },
+    "provenance_processing": {
+      "kind": "file",
+      "size_bytes": 15107
+    },
+    "provenance_tools": {
+      "kind": "file",
+      "size_bytes": 3114
+    },
+    "spacy_source_raw": {
+      "kind": "file",
+      "size_bytes": 23321
+    },
+    "spacy_source_sentences": {
+      "kind": "file",
+      "size_bytes": 5059
+    },
+    "spacy_source_tokens": {
+      "kind": "file",
+      "size_bytes": 11245
+    },
+    "speech_segments": {
+      "kind": "file",
+      "size_bytes": 4770
+    },
+    "speech_words": {
+      "kind": "file",
+      "size_bytes": 5879
+    },
+    "status": {
+      "kind": "file",
+      "size_bytes": 12633
+    },
+    "translation_raw": {
+      "kind": "directory",
+      "file_count": 0,
+      "size_bytes": 0
+    },
+    "whisperx_raw": {
+      "kind": "file",
+      "size_bytes": 6114
+    }
+  }
+}

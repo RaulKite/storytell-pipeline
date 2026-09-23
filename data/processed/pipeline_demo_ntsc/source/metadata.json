@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "video_id": "pipeline_demo_ntsc",
+  "source_filename": "pipeline_demo_ntsc.mov",
+  "source_path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov",
+  "SHA256": "a7c1353c25dea31f7b0e83d2a898a97ef5632a4ce610881c73a343c9a1a26fe1",
+  "file_size_bytes": 149425,
+  "container": "mov,mp4,m4a,3gp,3g2,mj2",
+  "container_long_name": "QuickTime / MOV",
+  "duration_seconds": 9.985,
+  "video_codec": "h264",
+  "video_codec_profile": "High",
+  "pixel_format": "yuv420p",
+  "width": 320,
+  "height": 240,
+  "display_aspect_ratio": "4:3",
+  "sample_aspect_ratio": "1:1",
+  "frame_rate_rational": "30000/1001",
+  "frame_rate_float": 29.97002997002997,
+  "average_frame_rate_rational": "30000/1001",
+  "average_frame_rate_float": 29.97002997002997,
+  "frame_count": 299,
+  "time_base": "1/30000",
+  "audio_codec": "aac",
+  "audio_sample_rate": 16000,
+  "audio_channels": 1,
+  "audio_channel_layout": "mono",
+  "audio_time_base": "1/16000",
+  "creation_metadata": {
+    "major_brand": "qt  ",
+    "minor_version": "512",
+    "compatible_brands": "qt  ",
+    "encoder": "Lavf61.7.100"
+  },
+  "ffprobe_format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+  "streams_present": [
+    "audio",
+    "video"
+  ]
+}

@@ -90,3 +90,5 @@ See https://github.com/pyannote/pyannote-audio/issues/1370 for more details.
 2026-09-23 17:41:09,675 INFO    normalised 1 segments / 23 words (word alignment 100.0%)
 2026-09-23 17:41:09,724 INFO    completed
 2026-09-23 17:43:45,410 INFO    reuse: valid previous result
+2026-09-23 17:43:55,803 INFO    reuse: valid previous result
+2026-09-23 17:46:48,810 INFO    reuse: valid previous result

@@ -1,0 +1,165 @@
+{
+  "schema_version": "1.0",
+  "video_id": "pipeline_demo_ntsc",
+  "source": {
+    "filename": "pipeline_demo_ntsc.mov",
+    "path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov",
+    "sha256": "a7c1353c25dea31f7b0e83d2a898a97ef5632a4ce610881c73a343c9a1a26fe1",
+    "file_size_bytes": 149425,
+    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "duration_seconds": 9.985,
+    "fps": 29.97002997002997,
+    "fps_rational": "30000/1001",
+    "frame_rate_rational": "30000/1001",
+    "width": 320,
+    "height": 240,
+    "pixel_format": "yuv420p",
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "audio_sample_rate": 16000,
+    "audio_channels": 1,
+    "frame_count": 299,
+    "detected_language": "en"
+  },
+  "processing": {
+    "status": "running",
+    "stages": {
+      "metadata": "completed",
+      "audio": "completed",
+      "whisperx": "completed",
+      "diarization": "skipped",
+      "speaker_assignment": "skipped",
+      "translation": "skipped",
+      "spacy_source": "completed",
+      "spacy_english": "skipped",
+      "acoustic": "completed",
+      "openpose": "completed",
+      "finalization": "running"
+    }
+  },
+  "temporal_model": {
+    "unit": "seconds_from_video_start",
+    "interval_columns": [
+      "start_time",
+      "end_time"
+    ],
+    "instant_columns": [
+      "timestamp"
+    ],
+    "frame_columns": [
+      "frame_number"
+    ]
+  },
+  "artifacts": {
+    "metadata": "source/metadata.json",
+    "audio": "audio/audio.wav",
+    "frame_index": "source/frame_index.parquet",
+    "whisperx_raw": "speech/raw/whisperx.json",
+    "speech_segments": "speech/segments.parquet",
+    "speech_words": "speech/words.parquet",
+    "translation_raw": "translation/raw",
+    "spacy_source_raw": "linguistic/source/raw/spacy_source.json",
+    "spacy_source_tokens": "linguistic/source/tokens.parquet",
+    "spacy_source_sentences": "linguistic/source/sentences.parquet",
+    "acoustic_raw": "acoustic/raw/acoustic_features.jsonl",
+    "acoustic_frames": "acoustic/frame_features.parquet",
+    "acoustic_segments": "acoustic/segment_features.parquet",
+    "pose_raw": "pose/raw",
+    "pose_body": "pose/body.parquet",
+    "pose_hands": "pose/hands.parquet",
+    "pose_face": "pose/face.parquet"
+  },
+  "artifacts_not_generated": {
+    "diarization_raw": "not_generated",
+    "diarization_rttm": "not_generated",
+    "exclusive_diarization_raw": "not_generated",
+    "speaker_turns": "not_generated",
+    "translation_segments": "not_generated",
+    "spacy_english_raw": "not_generated",
+    "spacy_english_tokens": "not_generated",
+    "spacy_english_sentences": "not_generated",
+    "provenance_config": "not_generated",
+    "provenance_tools": "not_generated",
+    "provenance_processing": "not_generated"
+  },
+  "artifact_details": {
+    "acoustic_frames": {
+      "kind": "file",
+      "size_bytes": 46932
+    },
+    "acoustic_raw": {
+      "kind": "file",
+      "size_bytes": 84536
+    },
+    "acoustic_segments": {
+      "kind": "file",
+      "size_bytes": 7568
+    },
+    "audio": {
+      "kind": "file",
+      "size_bytes": 321614
+    },
+    "frame_index": {
+      "kind": "file",
+      "size_bytes": 4757
+    },
+    "metadata": {
+      "kind": "file",
+      "size_bytes": 1257
+    },
+    "pipeline_log": {
+      "kind": "file",
+      "size_bytes": 1550
+    },
+    "pose_body": {
+      "kind": "file",
+      "size_bytes": 2140
+    },
+    "pose_face": {
+      "kind": "file",
+      "size_bytes": 1892
+    },
+    "pose_hands": {
+      "kind": "file",
+      "size_bytes": 2204
+    },
+    "pose_raw": {
+      "kind": "directory",
+      "file_count": 299,
+      "size_bytes": 8073
+    },
+    "spacy_source_raw": {
+      "kind": "file",
+      "size_bytes": 23326
+    },
+    "spacy_source_sentences": {
+      "kind": "file",
+      "size_bytes": 5101
+    },
+    "spacy_source_tokens": {
+      "kind": "file",
+      "size_bytes": 11287
+    },
+    "speech_segments": {
+      "kind": "file",
+      "size_bytes": 4808
+    },
+    "speech_words": {
+      "kind": "file",
+      "size_bytes": 5909
+    },
+    "status": {
+      "kind": "file",
+      "size_bytes": 12427
+    },
+    "translation_raw": {
+      "kind": "directory",
+      "file_count": 0,
+      "size_bytes": 0
+    },
+    "whisperx_raw": {
+      "kind": "file",
+      "size_bytes": 6120
+    }
+  }
+}

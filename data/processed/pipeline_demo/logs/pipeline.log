@@ -53,3 +53,24 @@
 2026-09-23 17:43:45,604 INFO    running spacy_source worker
 2026-09-23 17:43:47,755 INFO    source linguistics: 26 tokens / 1 sentences (model=en_core_web_lg, timestamps aligned=88%)
 2026-09-23 17:43:47,802 INFO    completed
+2026-09-23 17:43:55,711 INFO    reuse: valid previous result
+2026-09-23 17:43:55,753 INFO    reuse: valid previous result
+2026-09-23 17:43:55,803 INFO    reuse: valid previous result
+2026-09-23 17:43:56,003 INFO    reuse: valid previous result
+2026-09-23 17:43:56,050 INFO    start (status is skipped)
+2026-09-23 17:43:56,088 INFO    running acoustic worker
+2026-09-23 17:43:56,307 INFO    acoustic: 1001 frames (634 voiced), 7 pauses, 1 segment aggregates
+2026-09-23 17:43:56,355 INFO    completed
+2026-09-23 17:43:56,472 INFO    reuse: valid previous result
+2026-09-23 17:43:56,480 INFO    start (status is skipped)
+2026-09-23 17:43:56,906 INFO    manifest written with 17 artifacts (status=running)
+2026-09-23 17:43:56,949 INFO    completed
+2026-09-23 17:46:48,727 INFO    reuse: valid previous result
+2026-09-23 17:46:48,768 INFO    reuse: valid previous result
+2026-09-23 17:46:48,810 INFO    reuse: valid previous result
+2026-09-23 17:46:48,978 INFO    reuse: valid previous result
+2026-09-23 17:46:49,078 INFO    reuse: valid previous result
+2026-09-23 17:46:49,203 INFO    reuse: valid previous result
+2026-09-23 17:46:49,208 INFO    start (configuration changed)
+2026-09-23 17:46:49,629 INFO    manifest written with 20 artifacts (status=running)
+2026-09-23 17:46:49,671 INFO    completed

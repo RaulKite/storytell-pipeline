@@ -1,0 +1,147 @@
+{
+  "schema_version": "1.0",
+  "config_path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/config/config.local.yaml",
+  "config_hash": "61f7701a5abb2d3e",
+  "resolved_configuration": {
+    "input": {
+      "directory": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos",
+      "recursive": false,
+      "extensions": [
+        ".avi",
+        ".mkv",
+        ".mov",
+        ".mp4",
+        ".webm"
+      ]
+    },
+    "output": {
+      "directory": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed",
+      "temp_directory": null
+    },
+    "execution": {
+      "mode": "sequential",
+      "gpu": 0,
+      "stop_on_video_error": false,
+      "keep_temp_files": false
+    },
+    "ffmpeg": {
+      "executable": "ffmpeg",
+      "ffprobe": "ffprobe"
+    },
+    "whisperx": {
+      "enabled": true,
+      "uv_project": "environments/whisperx",
+      "worker": "workers/whisperx_worker.py",
+      "model": "large-v3",
+      "language": "auto",
+      "device": "cuda",
+      "device_index": 0,
+      "compute_type": "float16",
+      "batch_size": "auto",
+      "beam_size": 5,
+      "align_model": null,
+      "vad_method": "pyannote",
+      "vad_merge_chunk_seconds": 30,
+      "threads": 4,
+      "download_root": null,
+      "asr_options": {},
+      "python_version": "3.12",
+      "extra_args": []
+    },
+    "diarization": {
+      "enabled": true,
+      "uv_project": "environments/diarization",
+      "worker": "workers/diarization_worker.py",
+      "provider": "pyannote",
+      "pipeline": "pyannote/speaker-diarization-community-1",
+      "hf_token_env": "HF_TOKEN",
+      "device": "cuda",
+      "device_index": 0,
+      "use_exclusive_diarization_for_alignment": true,
+      "min_speakers": null,
+      "max_speakers": null,
+      "num_speakers": null,
+      "python_version": "3.12",
+      "extra_args": []
+    },
+    "translation": {
+      "enabled": true,
+      "provider": "openai-compatible",
+      "base_url": "http://LITELLM_HOST:PORT/v1",
+      "api_key": "",
+      "model": "",
+      "temperature": 0.0,
+      "timeout_seconds": 120.0,
+      "max_retries": 3,
+      "backoff_base_seconds": 1.0,
+      "batch_size": 10,
+      "context_segments": 2,
+      "prompt_version": "v1",
+      "max_output_tokens": null,
+      "cache": true,
+      "extra_body": {}
+    },
+    "spacy": {
+      "enabled": true,
+      "uv_project": "environments/spacy",
+      "worker": "workers/spacy_worker.py",
+      "process_source": true,
+      "process_english": true,
+      "english_model": "en_core_web_lg",
+      "source_models": {
+        "en": "en_core_web_lg",
+        "es": "es_dep_news_trf",
+        "de": "de_dep_news_trf",
+        "fr": "fr_dep_news_trf",
+        "it": "it_core_news_lg",
+        "pt": "pt_core_news_lg",
+        "nl": "nl_core_news_lg"
+      },
+      "fallback_model": "blank",
+      "max_length": 1000000,
+      "python_version": "3.12"
+    },
+    "acoustic": {
+      "enabled": true,
+      "uv_project": "environments/acoustic",
+      "worker": "workers/acoustic_worker.py",
+      "backend": "parselmouth",
+      "time_step": 0.01,
+      "pitch_floor": 75.0,
+      "pitch_ceiling": 500.0,
+      "number_of_formants": 5,
+      "formant_ceiling": 5500.0,
+      "silence_threshold_db": null,
+      "minimum_pause_duration": 0.2,
+      "chunk_seconds": 120.0,
+      "python_version": "3.12"
+    },
+    "openpose": {
+      "enabled": true,
+      "root": "/opt/openpose",
+      "executable": "auto",
+      "model_folder": "auto",
+      "gpu": 0,
+      "body": {
+        "enabled": true,
+        "model": "BODY_25"
+      },
+      "hands": {
+        "enabled": true
+      },
+      "face": {
+        "enabled": true
+      },
+      "disable_multi_thread": true,
+      "timeout_seconds": null,
+      "extra_args": []
+    },
+    "logging": {
+      "level": "INFO",
+      "console": true,
+      "progress_interval_seconds": 10.0
+    },
+    "project_root": "/data/home/raulagent/miscosas/repos/storytel-pipeline",
+    "config_path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/config/config.local.yaml"
+  }
+}

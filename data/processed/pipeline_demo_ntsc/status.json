@@ -1,0 +1,435 @@
+{
+  "schema_version": "1.0",
+  "video_id": "pipeline_demo_ntsc",
+  "source": {
+    "path": "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov",
+    "filename": "pipeline_demo_ntsc.mov"
+  },
+  "created_at": "2026-09-23T15:43:56Z",
+  "updated_at": "2026-09-23T15:44:19Z",
+  "overall_status": "completed",
+  "stage_order": [
+    "metadata",
+    "audio",
+    "whisperx",
+    "diarization",
+    "speaker_assignment",
+    "translation",
+    "spacy_source",
+    "spacy_english",
+    "acoustic",
+    "openpose",
+    "finalization"
+  ],
+  "stages": {
+    "metadata": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:43:56Z",
+      "completed_at": "2026-09-23T15:43:57Z",
+      "duration_seconds": 1.0,
+      "config_hash": "ae7bf90611c9b213",
+      "dependency_hash": "4cbd3e6dafc8be06",
+      "input_artifacts": [],
+      "output_artifacts": [
+        "metadata",
+        "frame_index"
+      ],
+      "executable": null,
+      "command": null,
+      "tool_version": "ffprobe version 7.1.1 Copyright (c) 2007-2025 the FFmpeg developers",
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "duration_seconds": 9.985,
+        "frame_index_rows": 299,
+        "width": 320,
+        "height": 240
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "audio": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:43:57Z",
+      "completed_at": "2026-09-23T15:43:57Z",
+      "duration_seconds": 0.0,
+      "config_hash": "901c5cb32ef3dad7",
+      "dependency_hash": "d89be708c4db7d7a",
+      "input_artifacts": [
+        "metadata"
+      ],
+      "output_artifacts": [
+        "audio"
+      ],
+      "executable": null,
+      "command": null,
+      "tool_version": "ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers",
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "sample_rate": 16000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "sample_format": "s16le",
+        "frame_count": 160768,
+        "duration_seconds": 10.048,
+        "size_bytes": 321614,
+        "duration_drift_seconds": 0.063
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "whisperx": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:43:57Z",
+      "completed_at": "2026-09-23T15:44:04Z",
+      "duration_seconds": 7.0,
+      "config_hash": "d747bc9392724c69",
+      "dependency_hash": "82a55b04edfd655b",
+      "input_artifacts": [
+        "audio"
+      ],
+      "output_artifacts": [
+        "whisperx_raw",
+        "speech_segments",
+        "speech_words"
+      ],
+      "executable": "uv",
+      "command": [
+        "uv",
+        "run",
+        "--project",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/whisperx",
+        "--python",
+        "3.12",
+        "python",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/whisperx_worker.py",
+        "--audio",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/audio/audio.wav",
+        "--output",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/speech/raw/whisperx.json",
+        "--video-id",
+        "pipeline_demo_ntsc",
+        "--model",
+        "large-v3",
+        "--language",
+        "auto",
+        "--device",
+        "cuda",
+        "--device-index",
+        "0",
+        "--compute-type",
+        "float16",
+        "--beam-size",
+        "5",
+        "--vad-method",
+        "pyannote",
+        "--vad-merge-chunk-seconds",
+        "30",
+        "--threads",
+        "4",
+        "--asr-options",
+        "{}",
+        "--batch-size",
+        "auto",
+        "--request-hash",
+        "74018cca77c915bf"
+      ],
+      "tool_version": "3.8.6",
+      "model_version": "large-v3",
+      "exit_code": 0,
+      "validation_result": {
+        "language": "en",
+        "segments": 1,
+        "words": 23,
+        "aligned_words": 23,
+        "alignment_coverage": 1.0
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "diarization": {
+      "status": "skipped",
+      "started_at": null,
+      "completed_at": "2026-09-23T15:44:04Z",
+      "duration_seconds": null,
+      "config_hash": null,
+      "dependency_hash": null,
+      "input_artifacts": null,
+      "output_artifacts": null,
+      "executable": null,
+      "command": null,
+      "tool_version": null,
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "skipped": true,
+        "reason": "missing credential HF_TOKEN (export it to enable diarization)"
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "speaker_assignment": {
+      "status": "skipped",
+      "started_at": null,
+      "completed_at": "2026-09-23T15:44:04Z",
+      "duration_seconds": null,
+      "config_hash": null,
+      "dependency_hash": null,
+      "input_artifacts": null,
+      "output_artifacts": null,
+      "executable": null,
+      "command": null,
+      "tool_version": null,
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "skipped": true,
+        "reason": "diarization produced no speaker turns (skipped: missing credential HF_TOKEN (export it to enable diarization))"
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "translation": {
+      "status": "skipped",
+      "started_at": null,
+      "completed_at": "2026-09-23T15:44:04Z",
+      "duration_seconds": null,
+      "config_hash": null,
+      "dependency_hash": null,
+      "input_artifacts": null,
+      "output_artifacts": null,
+      "executable": null,
+      "command": null,
+      "tool_version": null,
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "skipped": true,
+        "reason": "translation endpoint is not configured (set translation.base_url, translation.api_key and translation.model in the config file)"
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "spacy_source": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:44:04Z",
+      "completed_at": "2026-09-23T15:44:06Z",
+      "duration_seconds": 2.0,
+      "config_hash": "999b57ddd02742f8",
+      "dependency_hash": "61abc7deb7a7832a",
+      "input_artifacts": [
+        "speech_segments",
+        "speech_words"
+      ],
+      "output_artifacts": [
+        "spacy_source_raw",
+        "spacy_source_tokens",
+        "spacy_source_sentences"
+      ],
+      "executable": "uv",
+      "command": [
+        "uv",
+        "run",
+        "--project",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/spacy",
+        "--python",
+        "3.12",
+        "python",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/spacy_worker.py",
+        "--variant",
+        "source",
+        "--video-id",
+        "pipeline_demo_ntsc",
+        "--segments",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/speech/segments.parquet",
+        "--words",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/speech/words.parquet",
+        "--raw-output",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/linguistic/source/raw/spacy_source.json",
+        "--source-models",
+        "{\"en\": \"en_core_web_lg\", \"es\": \"es_dep_news_trf\", \"de\": \"de_dep_news_trf\", \"fr\": \"fr_dep_news_trf\", \"it\": \"it_core_news_lg\", \"pt\": \"pt_core_news_lg\", \"nl\": \"nl_core_news_lg\"}",
+        "--english-model",
+        "en_core_web_lg",
+        "--fallback-model",
+        "blank",
+        "--max-length",
+        "1000000",
+        "--request-hash",
+        "4219a0a1c8208f10"
+      ],
+      "tool_version": "3.8.16",
+      "model_version": "3.8.0",
+      "exit_code": 0,
+      "validation_result": {
+        "tokens": 26,
+        "sentences": 1
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "spacy_english": {
+      "status": "skipped",
+      "started_at": null,
+      "completed_at": "2026-09-23T15:44:06Z",
+      "duration_seconds": null,
+      "config_hash": null,
+      "dependency_hash": null,
+      "input_artifacts": null,
+      "output_artifacts": null,
+      "executable": null,
+      "command": null,
+      "tool_version": null,
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "skipped": true,
+        "reason": "no English translation available (translation stage did not run)"
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "acoustic": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:44:06Z",
+      "completed_at": "2026-09-23T15:44:07Z",
+      "duration_seconds": 1.0,
+      "config_hash": "3cae57a9c3eac5b2",
+      "dependency_hash": "61abc7deb7a7832a",
+      "input_artifacts": [
+        "audio",
+        "speech_segments"
+      ],
+      "output_artifacts": [
+        "acoustic_raw",
+        "acoustic_frames",
+        "acoustic_segments"
+      ],
+      "executable": "uv",
+      "command": [
+        "uv",
+        "run",
+        "--project",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/environments/acoustic",
+        "--python",
+        "3.12",
+        "python",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/workers/acoustic_worker.py",
+        "--audio",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/audio/audio.wav",
+        "--raw-output",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/acoustic/raw/acoustic_features.jsonl",
+        "--video-id",
+        "pipeline_demo_ntsc",
+        "--time-step",
+        "0.01",
+        "--pitch-floor",
+        "75.0",
+        "--pitch-ceiling",
+        "500.0",
+        "--number-of-formants",
+        "5",
+        "--formant-ceiling",
+        "5500.0",
+        "--minimum-pause-duration",
+        "0.2",
+        "--chunk-seconds",
+        "120.0",
+        "--request-hash",
+        "cc48339fe2d69869"
+      ],
+      "tool_version": "0.4.7",
+      "model_version": "parselmouth/6.1.38",
+      "exit_code": 0,
+      "validation_result": {
+        "frame_rows": 1001,
+        "segment_rows": 1
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "openpose": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:44:07Z",
+      "completed_at": "2026-09-23T15:44:19Z",
+      "duration_seconds": 12.0,
+      "config_hash": "0f066a1704f60a44",
+      "dependency_hash": "d89be708c4db7d7a",
+      "input_artifacts": [
+        "metadata",
+        "frame_index"
+      ],
+      "output_artifacts": [
+        "pose_raw",
+        "pose_body",
+        "pose_hands",
+        "pose_face"
+      ],
+      "executable": "/opt/openpose/build/examples/openpose/openpose.bin",
+      "command": [
+        "/opt/openpose/build/examples/openpose/openpose.bin",
+        "--video",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/input_videos/pipeline_demo_ntsc.mov",
+        "--model_folder",
+        "/opt/openpose/models",
+        "--write_json",
+        "/data/home/raulagent/miscosas/repos/storytel-pipeline/data/processed/pipeline_demo_ntsc/pose/raw",
+        "--num_gpu",
+        "1",
+        "--num_gpu_start",
+        "0",
+        "--display",
+        "0",
+        "--render_pose",
+        "0",
+        "--disable_multi_thread",
+        "--model_pose",
+        "BODY_25",
+        "--hand",
+        "--face",
+        "--logtostderr",
+        "--alsologtostderr"
+      ],
+      "tool_version": "openpose.bin",
+      "model_version": "BODY_25",
+      "exit_code": 0,
+      "validation_result": {
+        "raw_files": 299,
+        "pose_body_rows": 0,
+        "pose_hands_rows": 0,
+        "pose_face_rows": 0
+      },
+      "error": null,
+      "reuse_count": 0
+    },
+    "finalization": {
+      "status": "completed",
+      "started_at": "2026-09-23T15:44:19Z",
+      "completed_at": "2026-09-23T15:44:19Z",
+      "duration_seconds": 0.0,
+      "config_hash": "3aba675d0b17aa02",
+      "dependency_hash": "852b6f3b16c6df97",
+      "input_artifacts": [
+        "metadata"
+      ],
+      "output_artifacts": [
+        "manifest",
+        "provenance_config",
+        "provenance_tools",
+        "provenance_processing"
+      ],
+      "executable": null,
+      "command": null,
+      "tool_version": null,
+      "model_version": null,
+      "exit_code": null,
+      "validation_result": {
+        "artifacts": 17,
+        "timed_tables_checked": 7,
+        "status": "running"
+      },
+      "error": null,
+      "reuse_count": 0
+    }
+  }
+}
