@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+# Several test modules import workers/*.py by path. Writing bytecode for those puts a
+# workers/__pycache__ next to source that is not part of the package, and a stale entry
+# there has already made a test fail against code that was fixed two commands earlier --
+# which reads like a wrong assertion and costs a debugging detour. Never write it.
+sys.dont_write_bytecode = True
 
 import pyarrow as pa
 import pyarrow.parquet as pq
