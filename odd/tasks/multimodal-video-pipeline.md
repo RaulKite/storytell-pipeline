@@ -171,7 +171,7 @@ Progress legend: `[ ]` pending · `[~]` in progress · `[x]` done (evidence reco
 - [x] Normalized `speaker_turns.parquet` + validation
 - [x] Without `HF_TOKEN` the stage reports `skipped: missing credential HF_TOKEN` and every
       downstream stage degrades cleanly instead of failing (verified on the 4-video batch)
-- [ ] Live diarization run — **blocked on a user-supplied `HF_TOKEN`**
+- [x] Live diarization run — DONE with a user-supplied `HF_TOKEN`: GPU inference on all six videos, 2 speakers in the Kimmel clip, 0 in the silent fixture. Three real defects were found and fixed by this run (see section 16).
 
 ### TG6 Speaker assignment — DONE
 - [x] Interval-overlap assignment (segments + words), overlap seconds/ratio, method field
@@ -182,7 +182,7 @@ Progress legend: `[ ]` pending · `[~]` in progress · `[x]` done (evidence reco
 - [x] OpenAI-compatible client, contextual batching, structured JSON keyed by `segment_id`
 - [x] exactly-one-translation validation, retries/backoff, batch cache, raw responses
 - [x] 52 tests against a real threaded `HTTPServer` (status codes, timeouts, retry timing)
-- [ ] Live LiteLLM run — **blocked on `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `LITELLM_MODEL`**
+- [x] Live LiteLLM run — DONE against the user's vLLM endpoint (two usable chat models probed; `chat` selected for latency, `modelo-gordo` also works and its reasoning preamble parses). Its `tts` endpoint returns HTTP 500, so it could not be used to synthesize non-English fixtures.
 
 ### TG8/TG9 spaCy — DONE
 - [x] `environments/spacy` + `scripts/install_spacy_models.sh` (multilingual set)
@@ -227,7 +227,12 @@ Progress legend: `[ ]` pending · `[~]` in progress · `[x]` done (evidence reco
 ## 9. Acceptance criteria
 
 Mapped to observable evidence in §10. Two criteria (live diarization, live
-translation) are gated on credentials this machine does not have; their code
+translation) were gated on credentials this machine did not have when this section
+was written; they are now verified live — see criteria 10 and 12. What remains
+unverifiable here is a **non-English source**: flite ships English-only voices, there
+is no espeak, and the endpoint's tts returns 500, so language detection, the `es`
+spaCy model and genuine es->en translation are covered only by unit tests against a
+real HTTP server. Legacy text retained for context: their code
 paths are tested against a real HTTP server and a real uv worker contract, and
 the stages degrade to `skipped` with an actionable reason rather than failing.
 
@@ -259,9 +264,9 @@ pipeline_silent      completed 15.9s
 | 7 | Frame index with true PTS | `source/frame_index.parquet`, 249 rows for the demo | ✅ |
 | 8 | WhisperX transcription + word alignment | GPU run: 1 segment, 23 words, 100 % `alignment_status=aligned`, `language=en` | ✅ |
 | 9 | Language auto-detection | `language="auto"` resolved to `en`, surfaced in manifest `source.detected_language` | ✅ |
-| 10 | Pyannote community-1 diarization | worker + env verified; stage skips with `missing credential HF_TOKEN` | ⏸ credential |
+| 10 | Pyannote community-1 diarization | **Live GPU run** with a real token: community-1 found 2 speakers in the KABC/Kimmel clip (0.03-4.25 SPEAKER_00, 3.05-3.14 SPEAKER_01), 1 in the CNN clip, and correctly 0 turns in pipeline_silent. Turns land in speech/speaker_turns.parquet. | ✅ |
 | 11 | Speaker-assigned transcript + overlap metrics | 38 unit tests on real interval arithmetic; `speaker_overlap_ratio`, `speaker_assignment_method` columns present | ✅ (code) |
-| 12 | English translation via LiteLLM | 52 tests vs a real HTTP server incl. retries and malformed JSON | ⏸ credential |
+| 12 | English translation via LiteLLM | **Live run** against a real OpenAI-compatible endpoint (vLLM, model chat): 1 request, 281 tokens, 450 ms; 'Now that you say that, I can remember hearing your voice at the Laker game.' became 'Now that you mention it, I remember hearing your voice at the Lakers game.' translation/segments_en.parquet populated and spacy_english ran on it. | ✅ |
 | 13 | spaCy linguistics, source language | 26 tokens × 32 columns, POS/lemma/dep/NER + per-token timestamps | ✅ |
 | 14 | spaCy linguistics, English | same schema under `linguistic/english/`, runs when translation exists | ✅ (code) |
 | 15 | Acoustics via Parselmouth | 1001 frames (`f0_hz`, `intensity_db`, `voiced`, `f1..f3_hz`) + 1 segment row | ✅ |
@@ -343,9 +348,14 @@ burned a consent binding that expired unused.
 
 ## 14. Remaining work (user decisions)
 
-1. **Live diarization** — needs `HF_TOKEN` (plus the pyannote community-1 EULA).
-2. **Live translation + `spacy_english`** — needs `LITELLM_BASE_URL`, `LITELLM_API_KEY`,
-   `LITELLM_MODEL`.
+1. ~~Live diarization~~ — DONE, see criterion 10.
+2. ~~Live translation + `spacy_english`~~ — DONE, see criterion 12.
+2b. **A non-English source video** — the only remaining credential-free gap. Needs a real
+   clip with non-English speech to exercise language detection, the `es` spaCy model
+   and genuine es->en translation. Cannot be synthesized on this machine.
+2c. **`.env` support** — implemented: `load_dotenv`, environment-over-file precedence,
+   `ConfigError` naming the offending line, the
+   `MULTIMODAL_PIPELINE_NO_DOTENV` escape hatch, and a committed `.env.example`.
 3. `push` / pull-request remain the user's call; 12 work-unit commits exist on `master`.
 
 ## 15. RESUME POINT (session interrupted by context limit)
@@ -397,3 +407,26 @@ with a visible body and hands (OpenPose on real movement, not colour bars), one 
 or ambient (empty-transcription path on real audio). Drop them in `data/input_videos/`
 — that directory's contents are gitignored except the three committed fixtures, so
 they stay local and out of the push.
+
+## 16. Live credentials: what the first real run actually caught
+
+Credentials arrived after the review escalation, so diarization and translation ran
+for the first time ever. All three defects below were invisible until then, and each
+was found by running rather than by reading:
+
+| # | Symptom | Root cause | Why tests missed it |
+|---|---|---|---|
+| 1 | every completed diarization rejected as `raw result was produced by a different configuration` | `validate()` compared a `request_hash` read out of the worker's JSON, which never contains one → `None != hash` always | the stage always skipped without a token, so `validate` never ran |
+| 2 | `person_demo`/`pipeline_silent` failed validation with `diarization: outputs missing` | the RTTM was written only when truthy; a no-speech diarization has a legitimately empty RTTM | same — plus the empty-transcript path was never reached |
+| 3 | `speaker_assignment: expected bytes, NoneType found`, then `segments table is empty after assignment` | `write_table` passed `diarization_type=None` into Parquet metadata (string-only, rejected inside Cython); `validate` demanded a non-empty transcript and averaged over it | unit tests never combined a speaker timeline with zero segments |
+
+Plus a dead `from pyannote.core import Segmentation` (removed in pyannote 4.x) that
+made the worker fail at import on the first real invocation.
+
+Each fix carries a mutation-verified test: the diarization validation test was run
+against the original buggy code and fails exactly as production did, and reverting
+only the `if rttm:` guard to its old truthy form fails the RTTM test.
+
+**Final state**: clean six-video batch (four fixtures + two real broadcast clips) in
+03m37s, 6 completed / 0 partial / 0 failed, `validate` globally `ok: true`, rerun in
+6s reusing every stage. 610 tests pass (561→610 unit+e2e growth this session).

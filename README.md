@@ -23,9 +23,14 @@ a join across five timestamp conventions.
 uv sync --python 3.12                       # orchestrator (light dependencies only)
 cp config/config.example.yaml config/config.local.yaml
 $EDITOR config/config.local.yaml            # input/output dirs, model, endpoints
+cp .env.example .env && $EDITOR .env        # credentials (optional: diarization, translation)
 multimodal-pipeline inspect-environment -c config/config.local.yaml
 multimodal-pipeline run -c config/config.local.yaml
 ```
+
+`.env` at the project root is read automatically before the config is interpolated,
+so a run needs no shell wrapper and no `source .env`. Variables you export yourself
+always win over the file, which keeps CI secrets and one-off overrides working.
 
 `inspect-environment` before a long run is worth the two seconds: it reports the
 ffmpeg/OpenPose/GPU inventory it actually found and lists, in
@@ -247,7 +252,26 @@ openpose:
 
 ### Secrets
 
-Anything matching `token|key|secret|password` is replaced with `***masked***` in
+Credentials live in an untracked `.env` at the project root — never in the YAML.
+A config file gets copied between machines and pasted into issues; a pipeline whose
+secrets are embedded in it leaks every time someone shares their config. The YAML
+references them as `${VAR}` / `${VAR:-default}` and `load_config` reads `.env` first:
+
+```bash
+HF_TOKEN=hf_...                      # pyannote community-1 (accept its EULA first)
+LITELLM_BASE_URL=https://host/v1     # any OpenAI-compatible endpoint
+LITELLM_API_KEY=sk-...
+LITELLM_MODEL=chat
+```
+
+`.env.example` is the committed template with fake values. Precedence is
+environment-over-file on purpose: a stale `.env` from another account can never
+shadow an explicit `HF_TOKEN=... multimodal-pipeline run` or a CI secret. A
+malformed line names itself (`.env:2: expected KEY=value`) and exits 2 rather than
+raising a traceback. `MULTIMODAL_PIPELINE_NO_DOTENV=1` skips the implicit read —
+that is what keeps the test suite independent of the credentials on your machine.
+
+Anything matching `token|key|secret|password` is then replaced with `***masked***` in
 logs, `status.json`, manifests, provenance and the batch report. Keys that *name*
 where a secret lives (`hf_token_env: HF_TOKEN`) survive masking on purpose — the
 variable name is documentation, its value is not. An e2e test greps every file a
@@ -353,7 +377,7 @@ masking, and the manifest's promise that every listed artifact exists.
 
 | Symptom | Cause and fix |
 |---|---|
-| `diarization ... missing credential HF_TOKEN` | `export HF_TOKEN=...` and accept the model's EULA on Hugging Face. Everything except speakers and English linguistics still runs without it. |
+| `diarization ... missing credential HF_TOKEN` | Put `HF_TOKEN=...` in `.env` and accept the model's EULA on Hugging Face. Everything except speakers and English linguistics still runs without it. |
 | `translation endpoint is not configured` | Set `translation.base_url`/`api_key`/`model` (or `provider: mock` to test the graph). |
 | `uv project not found: .../environments/whisperx` | Run `uv sync --python 3.12` in that environment directory. |
 | `libnvrtc.so.13` on import | `torchcodec` drifted past 0.7.0. Re-pin and re-sync the diarization env. |
