@@ -706,3 +706,51 @@ What is *not* free, and why this is a task rather than a one-line edit:
 - Depends on `openpose` and inherits its skip semantics. Pairs naturally with 20.4
   (normalised keypoints à la dfMaker): the skeleton images are the human-facing view of
   the same signal, so the two should agree on which frames had a usable detection.
+
+### 20.6 Documentation that installs, explains and *shows* the dataset
+
+Requested by the operator, and it is a documentation task plus one capability the
+repository does not have yet.
+
+**Verified, not assumed:** `find data/processed -name '*.png' -o -name '*.jpg'
+-o -name '*.mp4'` returns nothing. The pipeline emits Parquet and JSON only. So a
+README with diagrams and screenshots cannot be written by linking what exists — the
+assets have to be produced first. Two consequences:
+
+- Rendered OpenPose skeletons (20.5) are a **prerequisite** for a visual pose section,
+  not a nice-to-have: without `--write_images` there is no pose image to show.
+- Active-speaker and diarization output can be rendered cheaply and deterministically
+  from the Parquet tables themselves (a timeline strip: frames × face/score/active, plus
+  speaker turns against word timings). That does not need a new tool, only a small
+  plotting script, and it is the fastest way to make the dataset legible.
+
+What the README has to do, which it does not do today:
+
+1. **Install from nothing.** A clean machine, in order: prerequisites (uv, ffmpeg,
+   OpenPose at `/opt/openpose`, an `HF_TOKEN`, an OpenAI-compatible endpoint), then each
+   `uv sync`, then `scripts/install_spacy_models.sh`, then `.env` from `.env.example`,
+   then `config/config.local.yaml` from the example. The end-to-end clone run (task #60)
+   is the test for this section: if a step is missing there, the README is wrong.
+2. **Explain what each stage decides**, not just that it exists. The stage table is
+   already there; what is missing is the reasoning a reader needs to trust a result —
+   why the frames table is dense, what `face_status` distinguishes, what `spacy_model:
+   blank` costs, what `language_detection.status: low` warns about.
+3. **Show the outputs.** One worked example dataset, walked file by file, with a real
+   clip's values and an image per sensory channel where an image is possible.
+4. **Teach how to consume it.** Concrete load snippets (pandas/pyarrow over Parquet,
+   joining `speaker/active_speaker_frames` to `pose/*` on `frame_index`, reading
+   `manifest.json`/`status.json` to know what is trustworthy), plus the invariants a
+   consumer may rely on: dense frame tables, nulls meaning absence and never zero,
+   `score_imputed`/`face_status` as the disclosure columns, and raw artifacts preserved
+   byte-identical beside every normalized table.
+
+Rule that keeps this honest: every number, filename and screenshot in the README must be
+generated from a real run and reproducible. A README that drifts from the tool is worse
+than a terse one, and this repository has already had commit messages claim README
+content that did not exist.
+
+Suggested shape of the visual assets, all regenerable by one script so they cannot rot:
+`docs/assets/` holding (a) the stage graph, (b) an annotated example frame with OpenPose
+body+hands+face skeleton, (c) an active-speaker timeline strip for one clip, (d) a
+speaker-turn × word-timing alignment strip. Images committed, never generated at import
+time.
