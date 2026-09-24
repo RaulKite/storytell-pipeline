@@ -347,3 +347,53 @@ burned a consent binding that expired unused.
 2. **Live translation + `spacy_english`** — needs `LITELLM_BASE_URL`, `LITELLM_API_KEY`,
    `LITELLM_MODEL`.
 3. `push` / pull-request remain the user's call; 12 work-unit commits exist on `master`.
+
+## 15. RESUME POINT (session interrupted by context limit)
+
+Read this first when continuing. Persisted also in Engram (project `raulagent`,
+title starting "RESUME POINT").
+
+**Repository state**: branch `master`, HEAD `8885891`, 16 commits, clean tree except
+`.gitignore` modified. 561 unit + 28 e2e tests green. Not pushed yet, remote not added.
+
+**In flight — `.env` credential support.** Decision: credentials go in an untracked
+`.env` at the project root and reach the pipeline only through the existing `${VAR}`
+interpolation, so nothing secret lives in `config/config.local.yaml` (a config file
+gets copied, pasted into issues and committed far more easily than a dedicated secret
+file). Done so far:
+
+- `.gitignore` extended with `.env`, `.env.*`, `!.env.example` — **verified** with
+  `git check-ignore` (`.env.example` correctly NOT ignored).
+- Verified no credential ever reached the working tree or any commit
+  (`git log --all -S` for each secret returns nothing).
+- Blocked: the agent's write tool refuses `.env`/`.env.example` as a sensitive path
+  under the Gentle AI safety policy. Awaiting the user's explicit plan. Proposed: the
+  user creates `.env` themselves; the agent commits only `.env.example` (fake values).
+
+**Still to implement** in `src/multimodal_pipeline/config.py`: `load_dotenv()` reading
+the project-root `.env`, with real environment taking precedence over the file (so
+`HF_TOKEN=... multimodal-pipeline run`, and CI secrets, still win), quoted values,
+`#` comments, malformed line -> `ConfigError`, missing file not an error. Keep
+interpolation single-pass: `_ENV_RE`'s default group is `[^}]*`, so no nested `${}`.
+
+**Live endpoints, already probed** (values deliberately not recorded here):
+reachable; models available are `chat`, `modelo-gordo`, `embeddings`, `whisper`, `tts`.
+`chat` answered in 0.17 s but wraps JSON in ```` ```json ```` fences; `modelo-gordo`
+took 0.69 s and emits a reasoning preamble — `parse_structured_translations` already
+strips fences, so either works. `tts` returns HTTP 500. ffmpeg's flite ships only
+English voices (`awb kal kal16 rms slt`) and there is no espeak, so Spanish speech
+**cannot** be synthesized on this machine: a real Spanish clip is the only way to
+exercise language detection, the `es` spaCy model and es→en translation.
+
+**Next, in order**: 1) resolve the `.env` guard; 2) implement `load_dotenv` + tests;
+3) live run of diarization + translation + spacy_english over the fixtures and
+re-verify; 4) `git remote add origin git@github.com:RaulKite/storytell-pipeline.git`
+and push (deploy key verified working against the empty repo), after re-checking the
+pushed tree contains no secret; 5) real videos from the user.
+
+**Requested real videos** (30–90 s, small): one with **two or more Spanish speakers**
+(the only way to test diarization + `es` linguistics + real es→en translation), one
+with a visible body and hands (OpenPose on real movement, not colour bars), one quiet
+or ambient (empty-transcription path on real audio). Drop them in `data/input_videos/`
+— that directory's contents are gitignored except the three committed fixtures, so
+they stay local and out of the push.

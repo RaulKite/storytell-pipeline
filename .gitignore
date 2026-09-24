@@ -36,3 +36,10 @@ data/input_videos/person_demo.avi
 # short clip is tens of megabytes and every file is regenerable from the fixtures.
 # Regenerate with `multimodal-pipeline run` after `scripts/make_fixtures.sh`.
 data/processed/
+
+# Credentials. Never committed: this file is copied between machines, pasted into
+# issues and committed by accident far more often than a dedicated secret file is.
+# .env.example (fake values) is committed as the template.
+.env
+.env.*
+!.env.example
