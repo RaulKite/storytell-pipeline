@@ -299,3 +299,111 @@ class TestInstalledModelInventory:
         before = stage.request_digest(context)
         self._model(tmp_path, "en_core_web_lg")
         assert stage.request_digest(context) != before
+
+
+class TestSelectModel:
+    """The resolver decides which model annotates every token, and it was untested.
+
+    Its order is configured model -> same family -> any model named for the language ->
+    fallback, and each branch records a status that travels into provenance. The status
+    is the only place a reader learns the tags came from a substituted pipeline, so a
+    wrong branch is not a cosmetic problem.
+    """
+
+    CONFIGURED = {"en": "en_core_web_lg", "es": "es_core_news_lg"}
+    FALLBACK = "blank"
+
+    def _select(self, language, available, configured=None):
+        from multimodal_pipeline.stages.spacy_source import select_model
+
+        return select_model(language, configured if configured is not None
+                            else self.CONFIGURED, available, fallback=self.FALLBACK)
+
+    def test_configured_model_wins_when_installed(self):
+        result = self._select("es", {"es_core_news_lg", "en_core_web_lg"})
+        assert result["model"] == "es_core_news_lg"
+        assert result["status"] == "configured"
+        assert result["capabilities"] == "full"
+
+    def test_same_family_substitution_is_labelled_as_such(self):
+        """A different model of the same language is a substitution, and the record must
+        say so rather than reporting the model that was asked for."""
+        result = self._select("es", {"es_core_news_sm"})
+        assert result["model"] == "es_core_news_sm"
+        assert result["status"] == "substituted_family"
+        assert result["requested_model"] == "es_core_news_lg"
+
+    def test_family_substitution_is_stable_across_two_installed_candidates(self):
+        result = self._select("es", {"es_core_news_md", "es_core_news_sm"})
+        assert result["model"] == "es_core_news_md"
+
+    def test_missing_configured_model_falls_back_and_says_why(self):
+        result = self._select("es", {"en_core_web_lg"})
+        assert result["model"] == "blank"
+        assert result["status"] == "fallback_missing_model"
+        assert "full" not in result["capabilities"]
+
+    def test_unconfigured_language_discovers_an_installed_model(self):
+        result = self._select("de", {"de_core_news_sm"})
+        assert result["model"] == "de_core_news_sm"
+        assert result["status"] == "discovered"
+        assert result["requested_model"] is None
+
+    def test_unknown_language_degrades_to_the_fallback(self):
+        result = self._select("qq", {"en_core_web_lg"})
+        assert result["model"] == "blank"
+        assert result["status"] == "fallback_no_model"
+
+    def test_a_configured_language_never_borrows_a_foreign_model(self):
+        """A wrong model is worse than no model: it looks like a result.
+
+        Measured, not theorised: annotating Spanish text with ca_core_news_lg returned
+        'Muy buena entrada' as three PROPN tokens with the first as ROOT and plausible
+        dependencies attached, where `blank` returned nothing and admitted knowing
+        nothing. So when the language has a configured model that is simply not
+        installed, the answer is the fallback -- not the one other model lying around.
+
+        The Spanish clip that produced those tags reached the Catalan model by a
+        different route: WhisperX *detected* Catalan on 4.2 s of audio, so Spanish text
+        was annotated as language `ca` and `ca_core_news_lg` was the correct model for
+        the reported language. That is why the resolver stays as it is and the language
+        detection carries a confidence into the artifact instead.
+        """
+        result = self._select("es", {"ca_core_news_lg"})
+        assert result["model"] == "blank"
+        assert result["status"] == "fallback_missing_model"
+
+    def test_an_unconfigured_detected_language_does_take_an_installed_foreign_model(self):
+        """The branch the La 1 clip actually took, pinned so it cannot be mistaken for a
+        bug later: an auto-detected language with no configured entry picks up the model
+        named for it. Correct given the detection; wrong if the detection was wrong --
+        which is the detection's problem to report, not this resolver's to guess at."""
+        from multimodal_pipeline.stages.spacy_source import select_model
+
+        result = select_model("ca", self.CONFIGURED, {"ca_core_news_lg"},
+                              fallback=self.FALLBACK)
+        assert result["model"] == "ca_core_news_lg"
+        assert result["status"] == "discovered"
+        assert result["capabilities"] == "full"
+
+    def test_family_prefix_is_matched_at_a_word_boundary(self):
+        """'e' must not match 'en_core_web_lg' as a family."""
+        result = self._select("en", {"es_core_news_sm"}, configured={"en": "en_core_web_lg"})
+        assert result["status"] != "configured"
+        assert not result["model"].startswith("es_") or result["status"] == "discovered"
+
+    def test_none_language_is_recorded_as_und_not_crashed(self):
+        result = self._select(None, {"en_core_web_lg"})
+        assert result["language"] == "und"
+        assert result["model"] == "blank"
+
+    def test_language_case_and_padding_are_normalised(self):
+        result = self._select("  ES ", {"es_core_news_lg"})
+        assert result["status"] == "configured"
+        assert result["language"] == "es"
+
+    def test_english_variant_defaults_are_not_disturbed_by_the_source_map(self):
+        """The English stage asks for English; the source-language map must not steer it."""
+        result = self._select("en", {"en_core_web_sm"}, configured={})
+        assert result["model"] == "en_core_web_sm"
+        assert result["status"] == "discovered"
