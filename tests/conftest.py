@@ -22,6 +22,31 @@ from multimodal_pipeline.stages.base import STAGE_ORDER, StageContext
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite independent of the credentials installed on this machine.
+
+    Two independent leaks are closed here:
+
+    * ``load_config`` reads the project-root ``.env``, so a developer's real
+      ``HF_TOKEN`` would decide whether assertions such as "diarization skipped
+      because the token is missing" pass -- green on CI, red at the desk that has
+      credentials. The opt-out variable stops only that implicit read.
+    * A test that loads a ``.env`` mutates ``os.environ`` in place, and pytest shares
+      one process, so those values would leak into every later test in the same run --
+      including the e2e test that asserts an unset token is reported as unset.
+    """
+    monkeypatch.setenv("MULTIMODAL_PIPELINE_NO_DOTENV", "1")
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        for key in list(os.environ):
+            if key not in before:
+                del os.environ[key]
+        os.environ.update(before)
+
+
 @pytest.fixture
 def project_root(tmp_path: Path) -> Path:
     root = tmp_path / "project"

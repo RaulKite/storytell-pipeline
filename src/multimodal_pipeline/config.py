@@ -3,6 +3,10 @@
 The orchestrator validates the whole configuration at startup: every stage
 reads its own typed sub-model, so a typo in ``config.local.yaml`` fails before
 any GPU work starts.
+
+Credentials live in an untracked ``.env`` at the project root and reach the YAML
+only through ``${VAR}`` interpolation, so no secret is ever written into a config
+file, a log, or a provenance record.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ from typing import Any, Iterable, Mapping
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .exceptions import ConfigError
+
 # Values whose keys match this pattern are masked in logs/provenance/manifests.
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|authorization|access[_-]?key)", re.I)
 
@@ -26,6 +32,9 @@ SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|authorization|ac
 SECRET_HOLDER_RE = re.compile(r"(_env|_var|_variable|_env_var)$", re.I)
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+# A .env assignment: optional ``export``, optional quotes, optional trailing comment.
+_DOTENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 
 PLACEHOLDER_VALUES = {
     "",
@@ -38,8 +47,69 @@ PLACEHOLDER_VALUES = {
 }
 
 
+def load_dotenv(path: Path | str | None = None, *, override: bool = False) -> list[str]:
+    """Load ``KEY=value`` lines from an untracked ``.env`` into the environment.
+
+    Returns the keys actually set. Credentials live in one gitignored file rather
+    than inside the YAML because a config file gets copied between machines, pasted
+    into issues and committed by accident; a pipeline whose secrets are embedded in it
+    leaks every time someone shares their config. ``${VAR}`` interpolation then keeps
+    the YAML free of them.
+
+    Precedence is deliberate: a variable already in the environment wins unless
+    ``override=True``, so ``HF_TOKEN=... multimodal-pipeline run`` and CI secrets both
+    beat a stale ``.env`` left over from a different account.
+
+    A missing file is not an error — ``.env`` is optional by design, and a stage that
+    needs a credential reports it as skipped with the variable to set.
+
+    """
+    dotenv = Path(path) if path is not None else Path.cwd() / ".env"
+    if not dotenv.is_file():
+        return []
+    loaded: list[str] = []
+    for lineno, raw in enumerate(dotenv.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _DOTENV_LINE_RE.match(line)
+        if match is None:
+            # Named by file and line: a half-edited .env otherwise shows up as a stage
+            # mysteriously skipping for a missing credential.
+            raise ConfigError(f"{dotenv.name}:{lineno}: expected KEY=value, got {line[:60]!r}")
+        key, value = match.group(1), _clean_dotenv_value(match.group(2))
+        if override or key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
+def _clean_dotenv_value(raw: str) -> str:
+    """Reduce a ``.env`` right-hand side to its value.
+
+    Quoted and unquoted forms are resolved in one direction only. Stripping a
+    trailing comment first and then the quotes would misread ``A="x #y"`` (the comment
+    marker is inside the quotes and part of the value); stripping quotes first would
+    misread ``A=x #y`` (the comment is not part of the value). Quoting wins, exactly
+    as shells and python-dotenv treat it.
+    """
+    if raw[:1] in ('"', "'"):
+        end = raw.find(raw[0], 1)
+        if end != -1:
+            return raw[1:end]  # everything after the closing quote is a comment
+        return raw[1:]  # unterminated quote: take what is there rather than lose it
+    if " #" in raw:  # unquoted trailing comment
+        return raw.split(" #", 1)[0].rstrip()
+    return raw
+
+
 def interpolate_env(value: Any) -> Any:
-    """Recursively expand ``${VAR}`` / ``${VAR:-default}`` inside YAML values."""
+    """Recursively expand ``${VAR}`` / ``${VAR:-default}`` inside YAML values.
+
+    Each string is rewritten in a single pass. Rescanning a substituted value would
+    interpolate the *result*, so a credential whose own text contains ``${...}`` could
+    be silently mangled — and a truncated API key is worse than a loud failure.
+    """
     if isinstance(value, str):
 
         def _sub(match: re.Match[str]) -> str:
@@ -398,13 +468,24 @@ def load_config(path: Path | str, *, project_root: Path | None = None,
     config_path = Path(path).expanduser().resolve()
     if not config_path.is_file():
         raise FileNotFoundError(f"config file not found: {config_path}")
+    root = project_root or config_path.parent.parent
+    # Credentials are read here, before interpolation, so a run needs neither a shell
+    # wrapper nor an explicit ``source .env``. The project root is used rather than the
+    # process cwd so the same file applies however the CLI is invoked.
+    #
+    # MULTIMODAL_PIPELINE_NO_DOTENV=1 skips exactly this implicit read. Without it the
+    # suite would be non-hermetic on a machine that has real credentials: assertions
+    # like "diarization skips because the token is missing" would pass on CI and fail at
+    # that desk. An explicit ``load_dotenv(path)`` call is never disabled -- tests of the
+    # loader itself must keep working.
+    if os.environ.get("MULTIMODAL_PIPELINE_NO_DOTENV") != "1":
+        load_dotenv(root / ".env")
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"config root must be a mapping: {config_path}")
     data = interpolate_env(raw)
     if overrides:
         data = _deep_merge(data, dict(overrides))
-    root = project_root or config_path.parent.parent
     data.setdefault("project_root", str(root))
     config = PipelineConfig.model_validate(data)
     config.config_path = config_path

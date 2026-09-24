@@ -10,6 +10,19 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 
+class ConfigError(RuntimeError):
+    """The configuration itself is unusable (bad YAML, bad key, bad ``.env`` line).
+
+    Distinct from :class:`StageError`: nothing ran yet, so there is no stage to mark
+    failed and nothing to resume from. The CLI turns it into one readable line and a
+    usage exit code rather than a traceback.
+    """
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
 class StageError(RuntimeError):
     """A stage failed in a way that should be recorded and reported."""
 

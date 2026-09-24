@@ -25,11 +25,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not available")
 
 
-def cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+def cli(*args: str, cwd: Path | None = None,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Invoke the console script as a subprocess — exit codes are part of the API."""
     argv = [sys.executable, "-m", "multimodal_pipeline.cli", *args]
     return subprocess.run(argv, cwd=str(cwd or PROJECT_ROOT), capture_output=True, text=True,
-                          env=_env(), timeout=1800)
+                          env=env if env is not None else _env(), timeout=1800)
 
 
 def _env() -> dict[str, str]:
@@ -116,6 +117,38 @@ class TestHelpAndEnvironment:
         assert result.returncode != 0
         assert "not found" in (result.stdout + result.stderr).lower() or \
             "no such file" in (result.stdout + result.stderr).lower()
+
+    @staticmethod
+    def _dotenv_env() -> dict[str, str]:
+        """Environment with the implicit .env read switched back on for these tests."""
+        env = _env()
+        env.pop("MULTIMODAL_PIPELINE_NO_DOTENV", None)
+        return env
+
+    def test_a_malformed_dotenv_is_reported_not_traced(self, fresh: Path) -> None:
+        """A half-edited credential file must name the line, not dump a traceback."""
+        (fresh / ".env").write_text("HF_TOKEN=ok\nthis is not an assignment\n", encoding="utf-8")
+        config = fresh / "config" / "config.yaml"
+        result = cli("inspect-environment", "-c", str(config), cwd=fresh, env=self._dotenv_env())
+        combined = result.stdout + result.stderr
+        assert result.returncode == 2, combined[-1500:]
+        assert ".env:2" in combined and "Traceback" not in combined
+
+    def test_dotenv_credentials_reach_the_run_without_export(self, fresh: Path) -> None:
+        """The documented workflow: write .env, run. No shell wrapper, no `source`."""
+        env = self._dotenv_env()
+        env.pop("HF_TOKEN", None)
+        (fresh / ".env").write_text("HF_TOKEN=hf_fromdotenvfile\n", encoding="utf-8")
+        config = fresh / "config" / "config.yaml"
+        payload = yaml.safe_load(config.read_text())
+        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        config.write_text(yaml.safe_dump(payload), encoding="utf-8")
+        result = cli("inspect-environment", "-c", str(config), cwd=fresh, env=env)
+        warnings = stdout_json(result)["environment_warnings"]
+        # The token now exists, so the "will be skipped" warning must be gone.
+        assert not [w for w in warnings if "HF_TOKEN" in w], warnings
+        # And its value must not be echoed anywhere in the report.
+        assert "hf_fromdotenvfile" not in (result.stdout + result.stderr)
 
     def test_inspect_environment_reports_the_toolchain(self) -> None:
         example = PROJECT_ROOT / "config" / "config.example.yaml"

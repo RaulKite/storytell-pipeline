@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from multimodal_pipeline.config import load_config, mask_command, mask_secrets, stable_hash
+from multimodal_pipeline.config import (
+    load_config,
+    load_dotenv,
+    mask_command,
+    mask_secrets,
+    stable_hash,
+)
+from multimodal_pipeline.exceptions import ConfigError
 
 
 def write_config(root: Path, payload: dict, name: str = "c.yaml") -> Path:
@@ -189,3 +196,138 @@ class TestHashing:
         second = load_config(write_config(tmp_path, base_payload(tmp_path), "b.yaml"))
         assert first.config_path != second.config_path
         assert configuration_hash(first) == configuration_hash(second)
+
+
+class TestLoadDotenv:
+    """.env is the only place credentials live; the YAML never holds one."""
+
+    def test_sets_variables_from_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.delenv("LITELLM_MODEL", raising=False)
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("HF_TOKEN=abc123\nLITELLM_MODEL=chat\n")
+        keys = load_dotenv(dotenv)
+        assert sorted(keys) == ["HF_TOKEN", "LITELLM_MODEL"]
+        assert os.environ["HF_TOKEN"] == "abc123"
+
+    def test_missing_file_is_not_an_error(self, tmp_path):
+        assert load_dotenv(tmp_path / ".env") == []
+
+    def test_existing_environment_wins(self, tmp_path):
+        """A stale .env must not shadow an explicit override or a CI secret."""
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("HF_TOKEN=from-file\n")
+        os.environ["HF_TOKEN"] = "from-shell"
+        try:
+            assert load_dotenv(dotenv) == []
+            assert os.environ["HF_TOKEN"] == "from-shell"
+        finally:
+            os.environ.pop("HF_TOKEN", None)
+
+    def test_override_flag_replaces(self, tmp_path):
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("HF_TOKEN=from-file\n")
+        os.environ["HF_TOKEN"] = "from-shell"
+        try:
+            assert load_dotenv(dotenv, override=True) == ["HF_TOKEN"]
+            assert os.environ["HF_TOKEN"] == "from-file"
+        finally:
+            os.environ.pop("HF_TOKEN", None)
+
+    def test_quotes_and_comments(self, tmp_path, monkeypatch):
+        for key in ("HF_TOKEN", "HF_HASH_TOKEN", "LITELLM_BASE_URL", "LITELLM_MODEL"):
+            monkeypatch.delenv(key, raising=False)
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(
+            "# a comment line\n"
+            'export HF_TOKEN="quoted token"  # trailing\n'
+            'HF_HASH_TOKEN="a#b"  # hash inside quotes is data\n'
+            "LITELLM_BASE_URL=https://host/v1 # inline comment\n"
+            "LITELLM_MODEL='single'\n"
+        )
+        load_dotenv(dotenv)
+        assert os.environ["HF_TOKEN"] == "quoted token"
+        assert os.environ["HF_HASH_TOKEN"] == "a#b"
+        assert os.environ["LITELLM_BASE_URL"] == "https://host/v1"
+        assert os.environ["LITELLM_MODEL"] == "single"
+
+    def test_hash_without_space_is_part_of_value(self, tmp_path, monkeypatch):
+        """A '#' only starts a comment when spaced out; tokens contain hashes."""
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("HF_TOKEN=abc#def\n")
+        load_dotenv(dotenv)
+        assert os.environ["HF_TOKEN"] == "abc#def"
+
+    def test_malformed_line_names_the_line(self, tmp_path):
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("HF_TOKEN=ok\nthis is not an assignment\n")
+        with pytest.raises(ConfigError, match=r"\.env:2: expected KEY=value"):
+            load_dotenv(dotenv)
+
+    def test_blank_lines_and_whitespace_ok(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("\n\n   HF_TOKEN = spaced   \n\n")
+        load_dotenv(dotenv)
+        assert os.environ["HF_TOKEN"] == "spaced"
+
+
+class TestCredentialsReachConfigFromDotenv:
+    # The autouse conftest fixture disables the implicit project-root read to keep the
+    # suite independent of this machine's real credentials. These two tests are *about*
+    # that read, so they opt back in.
+    @pytest.fixture(autouse=True)
+    def _allow_implicit_dotenv(self, monkeypatch):
+        monkeypatch.delenv("MULTIMODAL_PIPELINE_NO_DOTENV", raising=False)
+
+    def test_load_config_reads_project_dotenv_without_export(self, tmp_path, monkeypatch):
+        """The whole point: no shell wrapper, no `source`, just a .env in the root."""
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        root = tmp_path / "proj"
+        (root / "config").mkdir(parents=True)
+        (root / ".env").write_text("HF_TOKEN=from-dotenv\n")
+        conf = root / "config" / "c.yaml"
+        conf.write_text(
+            "input:\n  directory: in\noutput:\n  directory: out\n"
+            "diarization:\n  hf_token_env: HF_TOKEN\n"
+        )
+        cfg = load_config(conf)
+        # The stage reads the credential from the variable named in the config, so
+        # the .env value has to be in the environment by the time it looks.
+        assert cfg.diarization.hf_token_env == "HF_TOKEN"
+        assert os.environ[cfg.diarization.hf_token_env] == "from-dotenv"
+
+    def test_explicit_environment_beats_the_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HF_TOKEN", "from-shell")
+        root = tmp_path / "proj"
+        (root / "config").mkdir(parents=True)
+        (root / ".env").write_text("HF_TOKEN=from-dotenv\n")
+        conf = root / "config" / "c.yaml"
+        conf.write_text(
+            "input:\n  directory: in\noutput:\n  directory: out\n"
+            "diarization:\n  hf_token_env: HF_TOKEN\n"
+        )
+        cfg = load_config(conf)
+        assert os.environ[cfg.diarization.hf_token_env] == "from-shell"
+
+    def test_opt_out_variable_suppresses_the_implicit_read(self, tmp_path, monkeypatch):
+        """The escape hatch the test suite relies on must be real, not incidental."""
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setenv("MULTIMODAL_PIPELINE_NO_DOTENV", "1")
+        root = tmp_path / "proj"
+        (root / "config").mkdir(parents=True)
+        (root / ".env").write_text("HF_TOKEN=from-dotenv\n")
+        conf = root / "config" / "c.yaml"
+        conf.write_text("input:\n  directory: in\noutput:\n  directory: out\n")
+        load_config(conf)
+        assert "HF_TOKEN" not in os.environ
+
+    def test_explicit_call_still_works_when_opted_out(self, tmp_path, monkeypatch):
+        """The opt-out covers the implicit read only; the loader itself stays usable."""
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.setenv("MULTIMODAL_PIPELINE_NO_DOTENV", "1")
+        dotenv = tmp_path / ".env"
+        dotenv.write_text("HF_TOKEN=explicit\n")
+        assert load_dotenv(dotenv) == ["HF_TOKEN"]
+        assert os.environ["HF_TOKEN"] == "explicit"

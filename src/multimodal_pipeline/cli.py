@@ -68,9 +68,15 @@ def load_config_or_exit(path: Optional[Path]) -> PipelineConfig:
     import yaml as _yaml
     from pydantic import ValidationError as _ValidationError
 
+    from .exceptions import ConfigError as _ConfigError
+
     try:
         return load_config(path)
     except FileNotFoundError as exc:
+        _fail(str(exc))
+    except _ConfigError as exc:
+        # A malformed .env line otherwise surfaces as a bare traceback, and the
+        # operator cannot tell which of their credential lines the pipeline rejected.
         _fail(str(exc))
     except _yaml.YAMLError as exc:
         _fail(f"config is not valid YAML ({path}): {_one_line(str(exc).replace(chr(10), ' '))}")

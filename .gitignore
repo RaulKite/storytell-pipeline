@@ -27,10 +27,17 @@ environments/*/.venv/
 # OS
 .DS_Store
 
-# Third-party example media, copied on demand by scripts/make_fixtures.sh from a
-# local OpenPose install. It is not ours to redistribute, and the pipeline does not
-# need it: pose is exercised against the committed frame JSON in tests/fixtures.
-data/input_videos/person_demo.avi
+# Input media is data, not source, and most of it is not ours to redistribute:
+# real broadcast clips, third-party example media, and anything a teammate drops in
+# to test. Everything in here is ignored except the three fixtures that
+# scripts/make_fixtures.sh generates, which are committed so a fresh clone can run
+# the pipeline and the tests without a camera.
+# (person_demo.avi comes from a local OpenPose install and is copied on demand by
+# that same script -- it stays ignored.)
+data/input_videos/*
+!data/input_videos/pipeline_demo.mp4
+!data/input_videos/pipeline_demo_ntsc.mov
+!data/input_videos/pipeline_silent.mp4
 
 # Processed datasets are reproducible outputs, not source: a pose dataset for one
 # short clip is tens of megabytes and every file is regenerable from the fixtures.
