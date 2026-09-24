@@ -754,3 +754,92 @@ Suggested shape of the visual assets, all regenerable by one script so they cann
 body+hands+face skeleton, (c) an active-speaker timeline strip for one clip, (d) a
 speaker-turn × word-timing alignment strip. Images committed, never generated at import
 time.
+
+## 21. RESUME POINT after the second session cut (2026-09-24, 12:2x)
+
+The session was interrupted mid-sentence ("se cortó la sesión anterior"). This section is
+the recovered state, verified in this session rather than trusted from the transcript.
+
+**What the interruption left behind**: branch `master`, clean tree, **9 commits ahead of
+`origin/master`** (`f5f3414..6c5e04c`). Nothing was half-written — the cut happened after
+the last commit, so recovery was verification, not repair.
+
+**Verified rather than assumed**
+
+- Full suite: **711 passed** (`tests/unit tests/e2e -q -p no:randomly`, 134 s). The 681/711
+  counts asserted in `6c5e04c`'s message are correct; they were measured, not guessed.
+- The two most recent commits' live claims hold against the real dataset on the La 1 clip:
+  `speech/raw/whisperx.json` carries `language: es` with
+  `language_detection {status: low, probability: 0.8833, reasons: [audio is 8.0s, …]}` and
+  `linguistic/source/tokens.parquet` reads `Muy/mucho/ADV/advmod`,
+  `entrada/entrada/NOUN/ROOT` — the Spanish model, not the Catalan one. `speaker/
+  active_speaker_frames.parquet` has 200 dense rows with `face_status` split
+  **152 tracked / 48 no_face**, matching the commit message.
+
+**Defect the recovery found: a stale batch that still reported itself mostly fine.**
+`validate` returned **`ok: false` for 6 of 7 videos**, each with
+`whisperx: raw result was produced by a different configuration`. Cause: `6c5e04c` changed
+`workers/whisperx_worker.py`, which changes the request digest, so every pre-existing
+WhisperX raw artifact stopped matching the current configuration. Only the one video that
+had been re-run after that commit (the La 1 clip) validated. This is the cache doing its
+job, not a regression — but it means the tree was left in a state where "the last video I
+touched is fine" read as "the dataset is fine". Fixed by re-running the batch:
+**7 completed / 0 partial / 0 failed in 02m 10s**, `validate` **`ok: true` for 7/7**,
+0 problems, 0 skipped.
+
+`language_detection` on all 7 videos now, all graded `low` because every clip in this
+corpus is shorter than WhisperX's 30 s detection window:
+
+| video | language | probability |
+| --- | --- | --- |
+| KABC/Kimmel | en | 0.997 |
+| CNN/Arctic Melt | en | 0.986 |
+| La 1 Telediario | **es** | 0.883 |
+| pipeline_demo | en | 0.957 |
+| pipeline_demo_ntsc | en | 0.957 |
+| person_demo | **nn** | **0.238** |
+| pipeline_silent | **nn** | **0.215** |
+
+The two fixtures with no real speech are the interesting rows: the field earns its keep
+there, adding a second reason (`detection probability 0.24`) on top of the short-audio
+reason. A consumer that reads only `language` would take "nn" from a silent video as a
+measurement; the status/probability pair says otherwise.
+
+**Discrepancy about the review switch — left for the operator, changed by nobody here.**
+`AGENTS.md` states receipt-driven development is *disabled for this clone*. It is not:
+`gentle-ai review mode status` reads **`on (decided by default)`**, and the clone-local
+record shows why — generation 1 at `08:25:28Z` was `mode: "off"` (the deliberate
+`disable --scope clone` recorded in §19), and generation 2 at `08:36:16Z` replaced it with
+`mode: "inherit"`, which falls through to the default of *on*. Something reversed the
+disable about 11 minutes after it was written; this session did not touch it and will not,
+since §19 makes that switch the operator's.
+
+Consequence, stated plainly because it is the whole point of the section: **the 9 commits
+pushed below carry no review receipt.** They stand on the 711-test suite and the live
+7-video run, exactly as §13 and §18 describe for receipts that did not close. If the
+operator intended the disable to persist, re-run
+`gentle-ai review mode disable --scope clone`; if they intended RDD back on, `AGENTS.md`
+is now the artifact that is wrong.
+
+**Delivery**: pushed `53ccaf8..6c5e04c` to `origin/master` (normal push, authorized by
+`AGENTS.md`). Secret sweep clean — zero occurrences of each credential in the 9 new commits
+and, as a sanity check, zero in all of history. No `.env`, no `config/config.local.yaml`,
+no real clip filenames in any of the 11 touched paths.
+
+`/tmp/storytel-out` refreshed to the current 7-video dataset (27 MB).
+`processed_es_forced/` was **removed**: it existed to prove the forced `language: es`
+route, and auto-detection now reaches `es` on its own, so the copy is superseded rather
+than stale.
+
+**Next, in order**
+
+1. Operator decision on the review switch (above). Nothing in this repository can resolve
+   it honestly.
+2. §20.6 documentation work, which is the only entry there that is unblocked today —
+   it needs no new model, only `--write_images` for the pose section (20.5) and a plotting
+   script for the rest.
+3. Follow-ups 1 and 2 from §18 (stage warnings, a real reason column for
+   past-the-tail frames) are still open; follow-up 3 was answered by `6c5e04c` for the
+   *disclosure* half, while the *trust* half (should a `low` detection drive model choice
+   at all?) is still open and is a policy decision.
+
