@@ -316,7 +316,32 @@ has a regression test verified by mutation (restoring the defect fails the test)
 | `schemas._coerce` called `table.append_columns` (plural) | a table missing a declared column raised AttributeError instead of writing nulls (latent: no stage hits it today) | use pyarrow's singular `append_column`; 100 % coverage on `schemas.py` |
 | `config.example.yaml` did not load | shipped template was unusable (`no:` parsed as boolean; misplaced key) | fixed, and a test now loads it |
 
-## 13. Remaining work (user decisions)
+## 13. Native review outcome (RDD)
+
+RDD is enabled, so the final work-unit commit was frozen for native review:
+
+```
+lineage      review-0d54936f4c1fd6cd
+candidate    f342aa0..HEAD (7 paths, 518 changed lines, tier high)
+lenses       review-risk, review-resilience, review-readability, review-reliability
+outcome      did NOT close
+```
+
+Three of the four reviewers were captured and submitted; the fourth capture failed,
+and bound STATUS returned `action: stop`, `state: escalated`,
+`reason_code: native_stop_required` with `escalation.cause = unknown_causality` on
+finding `R3-001`. Per the lifecycle contract a `stop` ends the transition and never
+approves delivery, so **this candidate has no review approval**, and the finding's
+causality is unknown rather than established as pre-existing.
+
+What that means concretely: the commit stands on its own verification (589 passing
+tests, mutation-checked regressions, real batch), not on a review receipt. Resolving
+`R3-001` requires maintainer inspection of the lineage
+(`gentle-ai review inspect`/`recover`), which is a deliberate human decision, not
+something to route around by restarting the transaction. The two earlier attempts also
+burned a consent binding that expired unused.
+
+## 14. Remaining work (user decisions)
 
 1. **Live diarization** — needs `HF_TOKEN` (plus the pyannote community-1 EULA).
 2. **Live translation + `spacy_english`** — needs `LITELLM_BASE_URL`, `LITELLM_API_KEY`,
