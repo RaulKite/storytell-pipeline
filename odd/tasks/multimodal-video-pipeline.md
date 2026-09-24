@@ -621,3 +621,50 @@ Why it is not a single prompt over the transcript:
 Prototype first, small: hand-pick three clips, write the prompt, read the output, and
 only then decide the schema. Building the stage before seeing what the endpoint actually
 returns is how you end up with a schema that cannot hold the answers.
+
+### 20.4 `pose_normalized` — body keypoints normalised à la dfMaker (multimolang)
+
+Requested by the operator. Depends on **`openpose` output only**, so it is a downstream
+normalisation stage, not a new detector: it consumes `pose/*.parquet` and the raw
+OpenPose JSON already in `pose/raw/`.
+
+What it is, verified rather than assumed: `dfMaker()` is the first tool of **multimolang**
+(the MULTIFLOW project, daedalusLAB), published on CRAN. It structures OpenPose keypoints
+and applies a **user-defined linear transformation** to the raw coordinates: pick one
+keypoint as the origin and two more to define the new basis vectors, which re-expresses
+every joint in a body-centred frame instead of pixels. That is what makes poses
+comparable across people, camera framing and shot scale — the current `pose/*.parquet`
+carries pixel coordinates, so a presenter who steps back looks like they shrank.
+
+Facts that will shape the implementation more than the maths:
+
+- **It is R, not Python.** CRAN `multimolang` depends on R ≥ 4.1.0 and imports `arrow`.
+  Two honest routes, and the choice must be made deliberately:
+  1. run R as a **sidecar** (a `environments/pose_normalized/` holding an R script,
+     invoked like the workers are invoked today). Keeps semantics identical to the tool
+     the operator referenced, keeps results comparable with published multimolang work,
+     and inherits a GPL-3 dependency plus a second runtime on every machine.
+  2. reimplement the transformation **in Python** inside the pipeline. The vignette
+     defines the algebra (origin + two basis keypoints), so the reimplementation is
+     small and stays inside the existing Parquet/provenance/validation discipline.
+     Cost: it is *compatible with* dfMaker, not dfMaker, and must be verified against
+     the reference rather than asserted.
+  Recommended: route 2, validated against route 1 on the fixtures, because the pipeline's
+  guarantees (atomic writes, row-count integrity, request-digest caching, provenance
+  sidecars that leave raw bytes untouched) would otherwise be duplicated in R.
+- **The reference frame is a real decision, not a parameter to fill in later.** Which
+  keypoint is the origin (sternum? pelvis? neck?) and which two define the basis decides
+  whether the output answers "how does the body move" or "how do the arms move relative
+  to the torso". BODY_25 gives us both candidates. Record the chosen triple in the
+  request digest, because changing it changes every number in the table.
+- **Missing keypoints are the normal case, not the error case.** OpenPose reports
+  confidence per joint and this corpus contains people who are partially off-frame; a
+  basis defined by a joint that is absent in a frame cannot produce a frame of
+  coordinates for that frame. The table needs an explicit state for "no valid basis in
+  this frame" — the same lesson as `face_status` in 20.2/§17: absence must not be
+  encoded as a zero or as a silently dropped row.
+- Keep it as a **new output next to the raw pixel tables**. Pixels are the measured
+  quantity; normalised coordinates are a derived interpretation, and the pipeline's rule
+  is that raw survives so a later decision can be recomputed without re-running OpenPose.
+- Depends on `openpose` only, so it must inherit openpose's skip semantics and stay
+  independent of the audio/transcript branch.
