@@ -61,7 +61,6 @@ def main(argv: list[str] | None = None) -> int:
 
         import torch
         from pyannote.audio import Pipeline
-        from pyannote.core import Segmentation  # noqa: F401  (type of the diarization output)
 
         device = args.device
         if device == "cuda" and not torch.cuda.is_available():
@@ -113,7 +112,10 @@ def main(argv: list[str] | None = None) -> int:
                            indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        if args.rttm_output is not None and document["rttm"]:
+        if args.rttm_output is not None and document["rttm"] is not None:
+            # A diarization that found no speech still has an RTTM: zero lines. It is
+            # written even when empty because the stage declares it as an output, and
+            # `validate` is right to expect every declared output to exist.
             args.rttm_output.write_text(str(document["rttm"]), encoding="utf-8")
 
         payload.update({

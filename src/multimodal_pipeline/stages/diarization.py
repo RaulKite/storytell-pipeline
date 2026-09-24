@@ -24,7 +24,7 @@ from ..artifacts import atomic_write_json
 from ..exceptions import StageError, ValidationError
 from ..normalization import diarization_turn_rows
 from ..schemas import SPEAKER_TURNS_SCHEMA, read_table, write_table
-from .base import StageContext, WorkerStage
+from .base import StageContext, WorkerStage, raw_request_matches
 
 
 class DiarizationStage(WorkerStage):
@@ -121,8 +121,17 @@ class DiarizationStage(WorkerStage):
         return args + list(cfg.extra_args)
 
     def run_model(self, ctx, request, raw_path, digest) -> None:  # noqa: ANN001
-        """Preserve the exclusive timeline too before stamping provenance."""
+        """Preserve the exclusive timeline and RTTM, then stamp provenance."""
         super().run_model(ctx, request, raw_path, digest)
+        self.preserve_extra_raw(ctx, raw_path)
+
+    def preserve_extra_raw(self, ctx: StageContext, raw_path: Path) -> None:
+        """Split the worker's single document into its declared raw artifacts.
+
+        Kept separate from :meth:`run_model` so the artifact contract is testable
+        without running a model: which files must exist after a diarization is pure
+        logic over the raw JSON.
+        """
         payload = json.loads(raw_path.read_text(encoding="utf-8"))
         exclusive = payload.get("exclusive_turns")
         if exclusive is not None:
@@ -130,12 +139,14 @@ class DiarizationStage(WorkerStage):
             atomic_write_json(exclusive_path, {
                 "schema_version": "1.0",
                 "video_id": ctx.video_id,
-                "pipeline": request["pipeline"],
+                "pipeline": ctx.config.diarization.pipeline,
                 "turns": exclusive,
-                "_pipeline_request": (payload.get("_pipeline_request") or {}),
             })
         rttm = payload.get("rttm")
-        if rttm:
+        if rttm is not None:
+            # An empty RTTM is written on purpose. A diarization that found no speech
+            # is a completed stage with declared outputs, and `validate` is correct to
+            # expect all of them; skipping the file made silent videos fail validation.
             ctx.paths.artifact("diarization_rttm").write_text(str(rttm), encoding="utf-8")
 
     # ------------------------------------------------------------ normalisation
@@ -185,10 +196,11 @@ class DiarizationStage(WorkerStage):
                 [f"raw result came from {payload['pipeline_id']}, config asks for "
                  f"{ctx.config.diarization.pipeline}"],
             )
-        request = payload.get("_pipeline_request") or {}
-        from ..config import stable_hash
-
-        if request.get("request_hash") != stable_hash(self.request(ctx), length=16):
+        # The sidecar written when the raw file was stamped is the record of which
+        # request produced it. The worker's own JSON never carries a request hash, so
+        # comparing one read out of the payload would compare None to a hash and reject
+        # every successful diarization run.
+        if not raw_request_matches(ctx.artifact(self.raw_artifact), self.request_digest(ctx)):
             raise ValidationError(self.name, ["raw result was produced by a different configuration"])
         return {"turns": len(turns), "speakers": len(speakers)}
 

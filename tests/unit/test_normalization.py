@@ -350,3 +350,57 @@ class TestOpenposeRealFrame:
 
 def person_score(frame: dict, person_index: int, key: str, point: int) -> float:
     return float(frame["people"][person_index][key][point * 3 + 2])
+
+
+class TestDiarizationValidationBindsToRequest:
+    """`validate` must accept the raw a run produced and reject one from another config.
+
+    It used to compare a request hash read out of the worker's own JSON, which never
+    contains one, so the comparison was None != <hash> and rejected every successful
+    diarization. That was invisible while the stage skipped for a missing HF token.
+    """
+
+    @staticmethod
+    def _seed(context, stage):
+        import json
+        import pyarrow as pa
+        from multimodal_pipeline.schemas import SPEAKER_TURNS_SCHEMA, write_table
+        from multimodal_pipeline.stages.base import stamp_raw
+
+        raw = context.artifact("diarization_raw")
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps({
+            "video_id": context.video_id,
+            "pipeline_id": context.config.diarization.pipeline,
+            "turns": [[0.0, 1.0, "SPEAKER_00"]], "exclusive_turns": [], "rttm": "",
+        }), encoding="utf-8")
+        stamp_raw(raw, request=stage.request(context),
+                  digest=stage.request_digest(context), worker=None)
+        write_table(context.artifact("speaker_turns"),
+                    pa.Table.from_pylist(
+                        [{"schema_version": "1.0", "video_id": context.video_id,
+                          "turn_index": 0, "start_time": 0.0, "end_time": 1.0,
+                          "duration": 1.0, "speaker_id": "SPEAKER_00",
+                          "diarization_type": "inclusive", "confidence": None}],
+                        schema=SPEAKER_TURNS_SCHEMA),
+                    SPEAKER_TURNS_SCHEMA)
+        return raw
+
+    def test_matching_request_validates(self, context):
+        from multimodal_pipeline.stages.diarization import DiarizationStage
+
+        stage = DiarizationStage()
+        self._seed(context, stage)
+        assert stage.validate(context)["speakers"] == 1
+
+    def test_raw_from_a_different_config_is_rejected(self, context):
+        import pytest as _pt
+        from multimodal_pipeline.exceptions import ValidationError
+        from multimodal_pipeline.stages.diarization import DiarizationStage
+
+        stage = DiarizationStage()
+        self._seed(context, stage)
+        # Same raw file, different request: the sidecar must notice.
+        context.config.diarization.device = "cpu"
+        with _pt.raises(ValidationError, match="different configuration"):
+            stage.validate(context)

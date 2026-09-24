@@ -199,3 +199,19 @@ class TestCoverage:
     def test_empty_and_missing_duration(self) -> None:
         assert coverage_report([])["speaker_seconds"] == 0.0
         assert coverage_report(TURNS)["speaker_time"] == 0.0
+
+
+class TestDiarizationRttmWrittenWhenEmpty:
+    def test_stage_writes_empty_rttm_for_no_turns(self, context):
+        """The artifact split must preserve an empty RTTM, not treat falsy as absent."""
+        import json
+        from multimodal_pipeline.stages.diarization import DiarizationStage
+
+        raw = context.artifact("diarization_raw")
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps({"video_id": context.video_id, "turns": [],
+                                   "exclusive_turns": [], "rttm": ""}), encoding="utf-8")
+        DiarizationStage().preserve_extra_raw(context, raw)
+        rttm = context.artifact("diarization_rttm")
+        assert rttm.is_file(), "a diarization with no turns still has an RTTM artifact"
+        assert rttm.read_text(encoding="utf-8") == ""
