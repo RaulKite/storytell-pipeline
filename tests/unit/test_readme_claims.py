@@ -134,6 +134,58 @@ class TestDocumentedCommandsExist:
         assert documented <= names, f"README documents commands that do not exist: {sorted(documented - names)}"
 
 
+class TestDocumentedFlagsExist:
+    """Flags the README shows must exist on the command it shows them on.
+
+    This test was written after measuring that ``inspect-environment --json`` exits 2
+    with typer's "No such option": the README had listed inspect-environment beside
+    status/validate as taking ``--json``, and it never did — it is JSON unconditionally.
+    """
+
+    def options(self, command: str) -> set[str]:
+        import typer.main
+
+        from multimodal_pipeline.cli import app
+
+        # typer 0.27 vendors click as typer._click, so never `import click` here: this
+        # environment has typer without a top-level click.
+        group = typer.main.get_command(app)
+        target = group.commands[command]
+        return {opt for param in target.params for opt in param.opts}
+
+    def test_stage_control_flags_exist_on_run(self) -> None:
+        # `--([a-z-]+)` would also match the `---` horizontal rules of the markdown.
+        documented = set(re.findall(r"^--([a-z][a-z-]*)\s", README, re.MULTILINE))
+        assert {"only-stage", "from-stage", "to-stage", "force-stage", "video"} <= documented
+        real = self.options("run")
+        missing = {f"--{name}" for name in documented} - real
+        assert not missing, f"README shows run flags that do not exist: {sorted(missing)}"
+
+    def test_process_video_takes_the_four_stage_controls_not_video(self) -> None:
+        # The README block is shared by run and process-video and says so; --video is
+        # run-only because process-video takes the file positionally. If the CLI ever
+        # grows --video on process-video, update the README block and this test together.
+        real = self.options("process-video")
+        for flag in ("--only-stage", "--from-stage", "--to-stage", "--force-stage"):
+            assert flag in real, f"process-video lost {flag}"
+        assert "--video" not in real
+
+    def test_json_flag_claims_match_the_commands_that_have_it(self) -> None:
+        for command in ("status", "validate"):
+            assert "--json" in self.options(command), f"{command} lost --json"
+        # The claim this was written for: inspect-environment never had --json.
+        assert "--json" not in self.options("inspect-environment"), (
+            "inspect-environment now accepts --json; the README's flag prose and this "
+            "test should both be updated together"
+        )
+        assert "no flag needed" in README, (
+            "the Commands table must say inspect-environment is JSON unconditionally"
+        )
+
+    def test_plan_flag_exists_on_status(self) -> None:
+        assert "--plan" in self.options("status")
+
+
 class TestDatasetLayoutMatchesTheRegistry:
     """The tree diagram lists artifacts the registry actually declares."""
 

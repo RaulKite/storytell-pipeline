@@ -39,9 +39,12 @@ entry point.
 so a run needs no shell wrapper and no `source .env`. Variables you export yourself
 always win over the file, which keeps CI secrets and one-off overrides working.
 
-`inspect-environment` before a long run is worth the two seconds: it reports the
-ffmpeg/OpenPose/GPU inventory it actually found and lists, in
-`environment_warnings`, every stage that is about to be skipped and why.
+`inspect-environment` before a long run is worth the two seconds: it prints JSON on
+stdout with the ffmpeg/OpenPose/GPU inventory it actually found, and its
+`environment_warnings` list names the optional stages that are about to be skipped
+(missing `HF_TOKEN`, unconfigured translation) and a missing OpenPose binary. Stages
+with a required install are not listed there because they do not skip — see
+[Resume, reuse and invalidation](#resume-reuse-and-invalidation).
 
 The five heavy tool environments live in their own uv projects and must be synced
 separately. This is deliberate — see [Why five environments](#why-five-environments).
@@ -74,21 +77,24 @@ uv run multimodal-pipeline process-video -c config/config.local.yaml data/input_
 | `process-video <file>` | Process one file by path (the smoke-test entry point) |
 | `status` | Per-video, per-stage state. `--plan` explains every reuse decision, `--json` for scripts |
 | `validate` | Re-run semantic validation over artifacts already on disk, without processing |
-| `inspect-environment` | Discovered tools, models and GPU/CUDA versions as JSON |
+| `inspect-environment` | Discovered tools, models and GPU/CUDA versions — JSON on stdout, always, no flag needed |
 
-Stage controls on `run` and `process-video`:
+Stage controls on `run`; `process-video` takes the same four stage controls and takes
+the file as its positional argument instead of a flag:
 
 ```
 --only-stage   acoustic              this stage plus whatever it needs
 --from-stage   whisperx              start here
 --to-stage     acoustic              stop here            (default: finalization)
 --force-stage  whisperx,acoustic     recompute even if valid
---video        clip.mp4               one file; a bare name resolves against input.directory
+--video        clip.mp4               one file (run only); a bare name resolves
+                                     against input.directory
 ```
 
-`--json` on `status` and `validate`, and `inspect-environment`, write JSON to
-**stdout**; the human-readable tables go to **stderr**, so `| jq` and CI capture
-work without scraping.
+`status` and `validate` take `--json` for machine output, and `inspect-environment`
+*is* JSON unconditionally; on all three, the human-readable tables go to **stderr**,
+so `| jq` and CI capture work without scraping. (`inspect-environment --json` is not a
+thing — it exits 2 with typer's "No such option", measured.)
 
 Exit codes are part of the API:
 
@@ -215,10 +221,26 @@ meaningless box is not a location.
 | `activespeaker` | uv env worker (TalkNet-ASD) | TalkNet checkout + `environments/activespeaker` |
 | `finalization` | in-process | everything above |
 
-A stage whose prerequisites are missing is **skipped with a reason**, not failed:
-`missing credential HF_TOKEN (export it to enable diarization)`. `status --plan`
-and `validate` both echo those reasons, so you learn what to fix without reading
-a log file. The rest of the dataset is still produced and still valid.
+What happens to a stage whose prerequisites are absent depends on **which kind of
+prerequisite is missing**, and the distinction is deliberate — measured, not styled:
+
+1. **A choice you can opt out of** (disabled section, missing credential, unconfigured
+   endpoint): the stage is **skipped with a reason** — `missing credential HF_TOKEN
+   (export it to enable diarization)`. `status --plan`, the batch report and
+   `validate` echo those reasons. The rest of the dataset is still produced and still
+   valid.
+2. **An install you explicitly asked for**: the stage **fails** with the fix in its
+   message. With `openpose.enabled: true` and a wrong `openpose.root`, the run ends
+   `openpose: OpenPose binary not found under … Set openpose.executable explicitly`
+   (verified on this machine against a nonexistent root: `status.json` records
+   `failed`, the video is `partial`, exit code 2). Same for a missing uv environment:
+   `whisperx worker failed: uv project not found: … Create it and run \`uv sync\` there
+   first.` Skipping instead would turn a broken install into a silently incomplete
+   dataset — an operator who enabled a stage asked for its data or for an error, not a
+   shrug.
+3. **A stage blocked by a failed upstream** is *skipped* with
+   `blocked by failed upstream: whisperx` (per-branch, as described above) — that skip
+   is bookkeeping for the run, not a claim that the stage was configured wrong.
 
 ---
 
