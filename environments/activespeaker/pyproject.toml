@@ -1,0 +1,45 @@
+[project]
+name = "mp-activespeaker-env"
+version = "0.1.0"
+description = "Isolated TalkNet-ASD active speaker detection environment (worker-only)"
+requires-python = ">=3.10,<3.13"
+# Resolved 2026-09-24 against the user's TalkNet-ASD fork README.
+#
+# torch is pinned to 2.5.1 deliberately, not to whatever is newest:
+#   * talkNet.py and model/faceDetector/s3fd/__init__.py call torch.load() without
+#     weights_only=. torch >=2.6 flipped that default to True, which refuses these
+#     2021 checkpoints (they pickle numpy/torch internals), so a newer torch turns a
+#     working install into an import-time failure with a confusing message.
+#   * numpy 2.0.x is what the fork was last run against; S3FD indexes arrays in ways
+#     that older numpy silently accepted.
+# torchaudio is not imported by run_talknet.py, but facenet-pytorch and the fork's
+# own imports resolve through the same wheel train, so it is pinned to match.
+#
+# scenedetect[opencv] provides the `scenedetect` CLI the worker shells out to; the
+# pipeline never imports it in the orchestrator.
+dependencies = [
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "torchaudio==2.5.1",
+    "facenet-pytorch==2.5.3",
+    "scenedetect[opencv]==0.6.5",
+    "opencv-python==4.10.0.84",
+    "python_speech_features==0.6",
+    "numpy==2.0.2",
+    "scipy==1.13.1",
+    "scikit-learn==1.5.2",
+    "pandas==2.2.3",
+    "tqdm==4.67.1",
+    "gdown==5.2.0",
+    "pyarrow>=17",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
