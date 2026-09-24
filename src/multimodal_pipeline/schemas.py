@@ -280,11 +280,22 @@ HAND_KEYPOINT_NAMES: tuple[str, ...] = (
 FACE_KEYPOINT_COUNT = 70  # OpenPose face model: 70 landmarks
 
 
-def write_table(path, table: pa.Table, schema: pa.schema, *, extra_metadata: dict[str, str] | None = None) -> None:
-    """Validate against the declared schema, then write with compression."""
+def write_table(path, table: pa.Table, schema: pa.schema, *, extra_metadata: dict[str, Any] | None = None) -> None:
+    """Validate against the declared schema, then write with compression.
+
+    Metadata is normalised to strings because Parquet key/value metadata is
+    string-valued and pyarrow rejects anything else from inside Cython, with
+    ``expected bytes, NoneType found`` and no mention of which key. Optional
+    provenance values are genuinely absent sometimes -- ``diarization_type`` is None
+    for a video with no speaker turns -- and losing one annotation must not fail a
+    stage that has already done its work.
+    """
     if extra_metadata:
         merged = {**(schema.metadata or {}), **extra_metadata}
-        schema = schema.with_metadata(merged)
+        schema = schema.with_metadata(
+            {key: (value if isinstance(value, str) else str(value))
+             for key, value in merged.items() if value is not None}
+        )
     table = _coerce(table, schema)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, path, compression="zstd")

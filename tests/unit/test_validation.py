@@ -383,3 +383,32 @@ class TestChunkedWriter:
                        "schema_version": "1.0"} for i, t in enumerate(times))
         writer.close()
         assert [row["pts_seconds"] for row in read_table(path).to_pylist()] == times
+
+
+class TestWriteTableMetadata:
+    """Parquet metadata is string-valued; pyarrow says so only from inside Cython."""
+
+    def test_none_metadata_value_is_dropped_not_fatal(self, tmp_path):
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA, write_table, read_table
+        import pyarrow as pa
+
+        # speaker_assignment passes diarization_type=None for a video with no turns:
+        # with a real HF token that is every silent video, and the write used to die
+        # in pyarrow with "expected bytes, NoneType found".
+        table = pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA)
+        write_table(tmp_path / "s.parquet", table, SEGMENTS_SCHEMA,
+                    extra_metadata={"video_id": "v", "diarization_type": None})
+        meta = read_table(tmp_path / "s.parquet").schema.metadata
+        assert meta[b"video_id"] == b"v"
+        assert b"diarization_type" not in meta
+
+    def test_non_string_metadata_is_stringified(self, tmp_path):
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA, write_table, read_table
+        import pyarrow as pa
+
+        table = pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA)
+        write_table(tmp_path / "s.parquet", table, SEGMENTS_SCHEMA,
+                    extra_metadata={"segments": 3, "ratio": 0.5})
+        meta = read_table(tmp_path / "s.parquet").schema.metadata
+        assert meta[b"segments"] == b"3"
+        assert meta[b"ratio"] == b"0.5"
