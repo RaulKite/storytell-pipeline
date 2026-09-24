@@ -24,9 +24,16 @@ uv sync --python 3.12                       # orchestrator (light dependencies o
 cp config/config.example.yaml config/config.local.yaml
 $EDITOR config/config.local.yaml            # input/output dirs, model, endpoints
 cp .env.example .env && $EDITOR .env        # credentials (optional: diarization, translation)
-multimodal-pipeline inspect-environment -c config/config.local.yaml
-multimodal-pipeline run -c config/config.local.yaml
+uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
+uv run multimodal-pipeline run -c config/config.local.yaml
 ```
+
+Every command in this file is written as `uv run multimodal-pipeline …`. That is the
+form that works with no activation step: `multimodal-pipeline` is a console script of
+the root project, so the bare name is only on `PATH` inside an activated
+`.venv/bin` (`source .venv/bin/activate`, or `uv shell`) — verified on a fresh clone,
+where the bare command is not found. Use whichever form you prefer; they are the same
+entry point.
 
 `.env` at the project root is read automatically before the config is interpolated,
 so a run needs no shell wrapper and no `source .env`. Variables you export yourself
@@ -36,7 +43,7 @@ always win over the file, which keeps CI secrets and one-off overrides working.
 ffmpeg/OpenPose/GPU inventory it actually found and lists, in
 `environment_warnings`, every stage that is about to be skipped and why.
 
-The four heavy tools live in their own uv projects and must be synced
+The five heavy tool environments live in their own uv projects and must be synced
 separately. This is deliberate — see [Why five environments](#why-five-environments).
 
 ```bash
@@ -52,7 +59,7 @@ Then generate the test fixtures and run a smoke test end to end:
 
 ```bash
 scripts/make_fixtures.sh                    # ~1 s, uses ffmpeg's flite TTS
-multimodal-pipeline process-video -c config/config.local.yaml data/input_videos/pipeline_demo.mp4
+uv run multimodal-pipeline process-video -c config/config.local.yaml data/input_videos/pipeline_demo.mp4
 ```
 
 ---
@@ -301,7 +308,7 @@ LITELLM_MODEL=chat
 
 `.env.example` is the committed template with fake values. Precedence is
 environment-over-file on purpose: a stale `.env` from another account can never
-shadow an explicit `HF_TOKEN=... multimodal-pipeline run` or a CI secret. A
+shadow an explicit `HF_TOKEN=... uv run multimodal-pipeline run` or a CI secret. A
 malformed line names itself (`.env:2: expected KEY=value`) and exits 2 rather than
 raising a traceback. `MULTIMODAL_PIPELINE_NO_DOTENV=1` skips the implicit read —
 that is what keeps the test suite independent of the credentials on your machine.
@@ -462,4 +469,5 @@ OpenPose's own example media, copied on demand by `scripts/make_fixtures.sh`.
 
 ## License
 
-Not yet declared.
+MIT. The `LICENSE` file is the text; `pyproject.toml` declares the same SPDX
+identifier, so the machine-readable and human-readable declarations agree.
