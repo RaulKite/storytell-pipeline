@@ -430,3 +430,65 @@ only the `if rttm:` guard to its old truthy form fails the RTTM test.
 **Final state**: clean six-video batch (four fixtures + two real broadcast clips) in
 03m37s, 6 completed / 0 partial / 0 failed, `validate` globally `ok: true`, rerun in
 6s reusing every stage. 610 tests pass (561→610 unit+e2e growth this session).
+
+## 17. Active speaker detection (TalkNet-ASD) — 2026-09-24
+
+Added as a new `activespeaker` stage plus a fifth uv environment, at the user's
+request, reusing their own per-frame active-speaker script's semantics.
+
+### What landed (six work-unit commits, each independently green)
+
+| Commit | Unit |
+| --- | --- |
+| `8d54c54` | `WorkerStage.worker_timeout` received no context — config timeouts were dead code |
+| `afb666a` | spaCy fingerprint carries the installed-model inventory; install script fixed |
+| `653204a` | `environments/activespeaker` uv project (torch 2.5.1+cu124 pin) |
+| `fdc5963` | `workers/activespeaker_worker.py` (pure logic + TalkNet child process) |
+| `78e25a7` | config section, artifact layout, two Parquet schemas |
+| `516c12b` | the stage, DAG wiring, 39 tests |
+| `abadea0` | README + example config |
+
+### Live verification
+
+- TalkNet smoke run on the KABC clip: 105 frames at 25 fps, 1 scene, 2 tracks, exit 0,
+  inference 1.48 s. Scores of length 104 against tracks of 105 — the operator script's
+  tail imputation is load-bearing, not superstition.
+- Selection sanity on real pickles: track 0 (mean +1.13) won 78/105 frames over track 1
+  (mean −0.94); every emitted frame lands within 0.02 s of a real source frame.
+- Full batch: 7 videos (4 fixtures + 2 real clips + La 1), Completed 7, Failed 0, 6m49s;
+  `speaker/active_speaker_frames.parquet` and `active_speaker_tracks.parquet` written for
+  all of them. Rerun idempotent in 11 s. `validate --json`: global `ok: true`, 7/7 videos,
+  0 problems, 0 skipped.
+- Test suite: 659 passing (629 unit + 30 e2e). Four activespeaker tests are mutation-
+  locked (density check, request-hash coverage, active-frame-without-face,
+  score_imputed preservation).
+
+### Defects this feature caught
+
+1. `worker_timeout()` had no `ctx` parameter — every `*.timeout_seconds` setting in the
+   config was unreachable.
+2. `validate()` crashed with a bare `TypeError` on a row with `track_id` set but null
+   bbox; must be a `ValidationError` naming the frame.
+3. `track_summary_rows()` subtracted possibly-null bbox coordinates.
+4. spaCy fingerprint omitted the installed-model inventory: installing `es_core_news_lg`
+   did not invalidate a cached `blank` result (found while enabling Catalan/Spanish).
+5. `install_spacy_models.sh` built wheel URLs from the spaCy version (models ship 3.8.0,
+   spaCy is 3.8.16 → 404), and its `spacy download` fallback reported success without
+   linking into the uv venv.
+
+### Known limitation, documented in README
+
+A language model that does not match the text language is worse than `blank`:
+`ca_core_news_lg` on Spanish output labelled "Muy buena entrada" as three PROPNs, first
+token ROOT. WhisperX auto-detected the La 1 clip as Catalan (`ca`), which pulls in the
+Catalan model. Resolution prefers family matches, but a discovered model of any family
+still beats an honest `blank`. Kept visible via `spacy_model` in the tokens table.
+
+### Review disposition
+
+The first candidate (all 15 paths as one workspace target) was rejected by the provider
+with `lens_context_budget_exceeded` — no authority created, candidate evidence never
+truncated. Response: split into the six work units above, each of which the provider can
+size independently. Native review of the individual units was not started this session;
+no review receipt exists and none is claimed. Push follows ordinary repository policy
+and the user's standing authorization, not a review outcome.
