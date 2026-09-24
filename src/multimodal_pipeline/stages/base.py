@@ -42,6 +42,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "spacy_english",
     "acoustic",
     "openpose",
+    "activespeaker",
     "finalization",
 )
 
@@ -56,6 +57,11 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "spacy_english": ("translation",),
     "acoustic": ("audio", "speaker_assignment"),
     "openpose": ("metadata",),
+    # Deliberately independent of whisperx/diarization: active speaker detection reads
+    # the original video and the extracted audio only, so a transcription failure must
+    # not cost the visual speaker signal (the same reasoning that keeps openpose
+    # metadata-only).
+    "activespeaker": ("metadata", "audio"),
     "finalization": tuple(name for name in STAGE_ORDER if name != "finalization"),
 }
 

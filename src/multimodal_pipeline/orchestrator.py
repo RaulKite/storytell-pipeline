@@ -40,6 +40,7 @@ from .stages.base import (
 from .stages.diarization import DiarizationStage
 from .stages.finalization import FinalizationStage
 from .stages.metadata import MetadataStage
+from .stages.activespeaker import ActiveSpeakerStage
 from .stages.openpose import OpenPoseStage
 from .stages.speaker_assignment import SpeakerAssignmentStage
 from .stages.spacy_english import SpacyEnglishStage
@@ -62,6 +63,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         SpacyEnglishStage,
         AcousticStage,
         OpenPoseStage,
+        ActiveSpeakerStage,
         FinalizationStage,
     )
 }
