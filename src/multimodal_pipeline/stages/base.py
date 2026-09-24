@@ -430,7 +430,13 @@ class WorkerStage(Stage):
     def python_version(self, ctx: StageContext) -> str | None:
         return None
 
-    def worker_timeout(self) -> float | None:
+    def worker_timeout(self, ctx: StageContext) -> float | None:
+        """Wall-clock limit for one worker invocation.
+
+        Takes ``ctx`` because the only sensible source of a timeout is the stage's own
+        configuration, and a hook without a context cannot reach it: a context-free
+        signature makes every ``*.timeout_seconds`` setting dead code.
+        """
         return None
 
     # ---------------------------------------------------------------- execution
@@ -481,7 +487,7 @@ class WorkerStage(Stage):
                 result_path=result_path,
                 python_version=self.python_version(ctx),
                 env=self.worker_environment(ctx),
-                timeout=self.worker_timeout(),
+                timeout=self.worker_timeout(ctx),
                 cwd=ctx.config.project_root,
             )
         except Exception as exc:  # noqa: BLE001 - translated into a recorded failure
