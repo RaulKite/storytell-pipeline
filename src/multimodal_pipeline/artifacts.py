@@ -41,6 +41,12 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "pose_body": "pose/body.parquet",
     "pose_hands": "pose/hands.parquet",
     "pose_face": "pose/face.parquet",
+    "activespeaker_raw": "speaker/raw/active_speaker.json",
+    "activespeaker_tracks_pkl": "speaker/raw/tracks.pckl",
+    "activespeaker_scores_pkl": "speaker/raw/scores.pckl",
+    "activespeaker_scenes_csv": "speaker/raw/scenes.csv",
+    "active_speaker_frames": "speaker/active_speaker_frames.parquet",
+    "active_speaker_tracks": "speaker/active_speaker_tracks.parquet",
     "pipeline_log": "logs/pipeline.log",
     "provenance_config": "provenance/config.json",
     "provenance_tools": "provenance/tools.json",
@@ -60,6 +66,7 @@ STAGE_LOG_NAMES = (
     "spacy_english",
     "acoustic",
     "openpose",
+    "activespeaker",
     "finalization",
 )
 
@@ -113,6 +120,7 @@ class VideoPaths:
             "linguistic/english/raw",
             "acoustic/raw",
             "pose/raw",
+            "speaker/raw",
             "logs",
             "provenance",
         }:

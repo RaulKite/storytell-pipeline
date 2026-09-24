@@ -186,6 +186,50 @@ ACOUSTIC_SEGMENTS_SCHEMA = pa.schema(
     ]
 )
 
+# --- active speaker -------------------------------------------------------
+
+# One row per 25 FPS frame of the TalkNet working timeline, including frames with
+# no detected face: the stage's whole purpose is a dense per-frame speaker track,
+# so a consumer must be able to trust that frame N exists exactly once.
+ACTIVE_SPEAKER_FRAMES_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        ("frame_number", pa.int64()),
+        ("timestamp", pa.float64()),
+        ("source_timestamp", pa.float64()),
+        ("scene_id", pa.int64()),
+        ("track_id", pa.int64()),
+        ("x1", pa.float64()),
+        ("y1", pa.float64()),
+        ("x2", pa.float64()),
+        ("y2", pa.float64()),
+        ("talknet_score_raw", pa.float64()),
+        ("talknet_score", pa.float64()),
+        ("score_imputed", pa.bool_()),
+        ("is_active_speaker", pa.bool_()),
+    ]
+)
+
+# One row per TalkNet face track, summarising where it sits on the audio timeline
+# so it can be related to diarization turns without re-reading the frames table.
+ACTIVE_SPEAKER_TRACKS_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        ("track_id", pa.int64()),
+        ("first_timestamp", pa.float64()),
+        ("last_timestamp", pa.float64()),
+        ("frame_count", pa.int64()),
+        ("active_frame_count", pa.int64()),
+        ("active_ratio", pa.float64()),
+        ("mean_score", pa.float64()),
+        ("max_score", pa.float64()),
+        ("scenes", pa.list_(pa.int64())),
+        ("mean_bbox_area", pa.float64()),
+    ]
+)
+
 # --- pose -----------------------------------------------------------------
 
 BODY_SCHEMA = pa.schema(

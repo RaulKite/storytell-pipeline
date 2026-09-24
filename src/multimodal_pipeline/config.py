@@ -368,6 +368,65 @@ class OpenPoseConfig(_Model):
         return bool(self.face.get("enabled", True))
 
 
+class ActiveSpeakerConfig(_Model):
+    """TalkNet-ASD active-speaker detection over the original video.
+
+    ``talknet_root`` points at a TalkNet-ASD checkout rather than an installed
+    package: the upstream project is research code that resolves its checkpoints
+    and its ``model/`` imports relative to the current working directory, so it has
+    to be invoked in place. ``weights_dir`` is an escape hatch for a read-only
+    checkout -- without it the runner downloads its two checkpoints into the repo.
+    """
+
+    enabled: bool = True
+    uv_project: Path = Path("environments/activespeaker")
+    worker: Path = Path("workers/activespeaker_worker.py")
+    python_version: str = "3.12"
+    talknet_root: Path | None = None
+    weights_dir: Path | None = None
+    device: str = "auto"
+    device_index: int = 0
+    #: Smoothed score at or above which a frame counts as an active speaker.
+    #: TalkNet scores are unbounded logits; the upstream convention is 0.
+    speaker_threshold: float = 0.0
+    #: Centered smoothing window in 25 FPS frames, clipped at scene boundaries.
+    score_window: int = 5
+    #: A challenger must beat the incumbent by this much...
+    switch_margin: float = 0.5
+    #: ...for this many consecutive frames before it takes over.
+    switch_frames: int = 3
+    timeout_seconds: float | None = None
+    extra_args: list[str] = Field(default_factory=list)
+
+    @field_validator("device")
+    @classmethod
+    def _device(cls, value: str) -> str:
+        if value not in ("auto", "cuda", "cpu"):
+            raise ValueError("activespeaker.device must be 'auto', 'cuda' or 'cpu'")
+        return value
+
+    @field_validator("score_window")
+    @classmethod
+    def _window(cls, value: int) -> int:
+        if value <= 0 or value % 2 == 0:
+            raise ValueError("activespeaker.score_window must be a positive odd integer")
+        return value
+
+    @field_validator("switch_frames")
+    @classmethod
+    def _switch_frames(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("activespeaker.switch_frames must be positive")
+        return value
+
+    @field_validator("switch_margin")
+    @classmethod
+    def _margin(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("activespeaker.switch_margin must not be negative")
+        return value
+
+
 class LoggingConfig(_Model):
     level: str = "INFO"
     console: bool = True
@@ -386,6 +445,7 @@ class PipelineConfig(_Model):
     spacy: SpacyConfig = Field(default_factory=SpacyConfig)
     acoustic: AcousticConfig = Field(default_factory=AcousticConfig)
     openpose: OpenPoseConfig = Field(default_factory=OpenPoseConfig)
+    activespeaker: ActiveSpeakerConfig = Field(default_factory=ActiveSpeakerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     # ``--project-root`` is resolved at load time; relative uv projects/workers
@@ -402,6 +462,7 @@ class PipelineConfig(_Model):
             "spacy": self.spacy,
             "acoustic": self.acoustic,
             "openpose": self.openpose,
+            "activespeaker": self.activespeaker,
         }
 
     def resolve(self, path: Path | str) -> Path:
