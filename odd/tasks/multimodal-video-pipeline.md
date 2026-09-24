@@ -553,3 +553,71 @@ Verified rather than assumed:
 Note for a fresh clone: RDD is on by default elsewhere, so this document's claim that
 review consent is disabled describes *this* clone. An agent must read
 `gentle-ai review mode status` rather than assume it.
+
+## 20. Requested next capabilities (operator, 2026-09-24) — not started
+
+Ordered by how much they depend on what already exists. Each is a separate feature
+entry with its own task list when it starts; none of them is scoped yet.
+
+### 20.1 `diarization_v2` — fuse pyannote with active speaker detection
+
+Output a *second* diarization result alongside v1 rather than replacing it: v1 is
+audio-only and is the input to `speaker_assignment`, acoustics and the existing
+datasets. A replacement would silently relabel every existing artefact.
+
+The fusion is the interesting part and it is not a join. pyannote answers *when does a
+voice speak*; `activespeaker` answers *which visible face is talking at 25 FPS*. They
+agree often and disagree in exactly the cases that matter: an off-screen narrator (voice
+with no face), a cutaway shot (voice continues over a different face), two people
+visible while only one talks, and a face that keeps moving its mouth while silent.
+Those disagreements are signal, not noise, so the table should keep the audio turn, the
+winning face per turn and an explicit agreement state per turn rather than flattening to
+one label.
+
+Depends on: `diarization` + `activespeaker` (so it lands after both, and inherits both
+their skip semantics — if either is absent there is nothing to fuse and it must skip with
+a reason, not emit an empty table).
+
+### 20.2 `persons` — YOLO detection + tracking, persons per video
+
+Ultralytics YOLO for person detection with a tracker, to answer things no current stage
+answers: how many distinct people appear in a video, when each is on screen, and whether
+a scene changed. Cross-checking the tracker's own re-identification against `scenedetect`
+cuts is worth doing deliberately: `activespeaker` already trusts scenedetect for scene
+ids, so a disagreement between the two is a defect report on one of them.
+
+Constraints that will shape this more than the model choice:
+- **It needs its own uv environment.** Ultralytics pulls a torch build of its own and
+  will fight the `whisperx`/`diarization`/`activespeaker` pins if installed beside them.
+  Five environments already exist for exactly this reason.
+- Choose a **weights policy up front**: ultralytics downloads checkpoints on first use,
+  like TalkNet does. Reuse the `weights_dir` staging idea or accept the download.
+- Its output is a *person* track, not a *face* track. Do not pretend the two are the
+  same id space; TalkNet's `track_id` and a YOLO tracker id are unrelated and a consumer
+  that joins on them gets nonsense.
+
+### 20.3 `stories` — narrative windows mined with the LLM
+
+The hardest of the three and the one to prototype before building. Input: transcript +
+word timings + `speaker_assignment` + (once it exists) diarization_v2/persons. Output:
+candidate narrative windows with a start and an end, plus why the model thinks the story
+begins and ends there.
+
+Why it is not a single prompt over the transcript:
+- Stories **nest** (an anecdote inside a report) and **interrupt** each other, so the
+  output is a forest, not a list of intervals. A schema that cannot express nesting will
+  force the model to flatten the very structure being asked for.
+- Boundaries are usually *prosodic and referential* ("volviendo a lo de antes…", a
+  speaker change, a topic return), which means the prompt needs the transcript *with*
+  timestamps and speaker labels, not plain text.
+- The endpoint already emits fenced JSON (seen in translation), so the parse path exists;
+  what does not exist is a **rejection path**. A model asked hard enough will always
+  find a story. The output must be allowed to be empty, and something must count how
+  often it is.
+- Cost and determinism: one request per candidate window vs one request per video is a
+  real design fork. Temperature 0 alone will not make it reproducible; the request digest
+  must bind the prompt version, the model name and the transcript hash.
+
+Prototype first, small: hand-pick three clips, write the prompt, read the output, and
+only then decide the schema. Building the stage before seeing what the endpoint actually
+returns is how you end up with a schema that cannot hold the answers.
