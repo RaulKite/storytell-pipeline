@@ -57,6 +57,71 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+#: whisperx detects the language from this much audio and no more. Its own code warns
+#: "Audio is shorter than 30s, language detection may be inaccurate", which is exactly
+#: the case where the guess is wrong most often -- and short clips are this pipeline's
+#: normal input.
+LANGUAGE_DETECTION_WINDOW_SECONDS = 30.0
+
+
+def detect_language(pipeline, audio):
+    """Return ``(code, probability)`` for the audio; ``None`` if it cannot be determined.
+
+    Measured against the installed whisperx 3.8.6, not inferred from documentation:
+    ``load_model()`` returns a ``whisperx.asr.FasterWhisperPipeline``
+    (a ``transformers.Pipeline``), whose ``.model`` is a ``whisperx.asr.WhisperModel``
+    subclassing ``faster_whisper.WhisperModel``.
+
+    * ``pipeline.detect_language(audio)`` is whisperx's own override: it computes
+      ``language_probability``, writes it to a log line, and returns the bare code. Going
+      through it is what made an early version of this helper report
+      ``probability: null`` while every unit test passed.
+    * ``pipeline.model`` does **not** override ``detect_language``; it inherits
+      faster_whisper's, which returns ``(language, probability, all_language_probs)`` and
+      takes audio. That is the one to call.
+
+    Both answers were observed on the La 1 clip, and they differ: the pipeline's own
+    detection said ``ca`` at 0.53 while this returns ``es`` at 0.88. Which is right is a
+    question about 8 seconds of audio, not something to resolve silently here -- the
+    worker records its own detection with its confidence and lets ``language_reliability``
+    say how much to trust it.
+
+    Every failure mode returns a missing probability rather than raising: a transcript is
+    never worth losing over a confidence value. It must not be *silent* either, so
+    ``language_reliability`` treats an absent probability as its own reason to downgrade.
+    """
+    try:
+        raw = pipeline.model.detect_language(audio=audio)
+    except Exception:  # noqa: BLE001 - never lose a transcript over a confidence value
+        return None, None
+    if isinstance(raw, tuple) and raw and isinstance(raw[0], str):
+        probability = (raw[1] if len(raw) > 1
+                       and isinstance(raw[1], (int, float)) else None)
+        return raw[0], float(probability) if probability is not None else None
+    return (raw if isinstance(raw, str) else None), None
+
+
+def language_reliability(audio_seconds, probability, explicit_language):
+    """Grade the auto-detection in the artifact, where downstream stages can read it.
+
+    Only auto-detection is graded: an explicit ``whisperx.language`` is an operator
+    decision, not a guess to score.
+    """
+    if explicit_language:
+        return {"status": "configured", "probability": probability, "reasons": []}
+    reasons = []
+    if audio_seconds is not None and audio_seconds < LANGUAGE_DETECTION_WINDOW_SECONDS:
+        reasons.append(
+            f"audio is {audio_seconds:.1f}s, below the "
+            f"{LANGUAGE_DETECTION_WINDOW_SECONDS:.0f}s detection window")
+    if probability is None:
+        reasons.append("detection probability unavailable")
+    elif probability < 0.5:
+        reasons.append(f"detection probability {probability:.2f}")
+    return {"status": "low" if reasons else "ok", "probability": probability,
+            "reasons": reasons}
+
+
 def resolve_batch_size(value: str | int) -> int:
     """``auto`` scales with available VRAM; explicit values pass through."""
     if isinstance(value, int):
@@ -119,8 +184,16 @@ def main(argv: list[str] | None = None) -> int:
             use_auth_token=os.environ.get("HF_TOKEN") or None,
         )
         audio = whisperx.load_audio(str(args.audio))
+        # Detect the language ourselves when it was not configured, so its confidence
+        # survives; whisperx would recompute it internally and discard the number.
+        language_detection = {"status": "configured", "probability": None, "reasons": []}
+        if language is None:
+            detected_code, probability = detect_language(pipeline, audio)
+            audio_seconds = _wav_duration(args.audio)
+            language = detected_code
+            language_detection = language_reliability(audio_seconds, probability, None)
         transcription = pipeline.transcribe(audio, batch_size=batch_size, language=language)
-        detected_language = transcription.get("language")
+        detected_language = transcription.get("language") or language
 
         alignment_meta: dict[str, object] = {"status": "not_attempted"}
         aligned = transcription
@@ -147,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
 
         native = dict(aligned)
         native["language"] = detected_language
+        native["language_detection"] = language_detection
         native["_worker"] = {
             "whisperx_version": version,
             "model": args.model,
@@ -174,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
             "tool_version": version,
             "model_version": args.model,
             "detected_language": detected_language,
+            "language_detection": language_detection,
             "segments": len(segments),
             "words": words,
             "alignment": alignment_meta,
