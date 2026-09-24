@@ -492,3 +492,31 @@ truncated. Response: split into the six work units above, each of which the prov
 size independently. Native review of the individual units was not started this session;
 no review receipt exists and none is claimed. Push follows ordinary repository policy
 and the user's standing authorization, not a review outcome.
+
+## 18. Native review receipt for the activespeaker slice (2026-09-24)
+
+Splitting the 15-path candidate worked. The provider sized the stage slice
+(`README.md`, `config/config.example.yaml`, this document, `orchestrator.py`,
+`stages/activespeaker.py`, `stages/base.py`, `tests/unit/test_activespeaker.py` — 7 files,
+925 changed lines, medium tier, one `review-reliability` lens) and it closed **approved**.
+
+- Lineage `review-66668d42e1a11acc`, store revision `sha256:a16e970f…c9b1a`.
+- Acknowledgement completed: `burn_evidence: gentle-ai.review-acknowledged/v1`,
+  `authority: burned`, `delivery: ordinary-repository-policy`.
+- One advisory finding, explicitly non-blocking and reopening nothing:
+  **R3-001** (WARNING, `stages/activespeaker.py:264-267`) — the dense-sequence check
+  rejects a frame table that is dense-but-reordered rather than logging the anomaly.
+  Verified: the stage has no logging call at all, so this is a real observation about the
+  whole stage, not just those lines. Filed as follow-up work, not fixed under this receipt.
+
+### Follow-ups carried out of this review
+
+1. `activespeaker` emits no warnings anywhere; a malformed-but-parseable worker result is
+   silently strict-rejected. Add the stage's first warning log where a distinct diagnosis
+   is possible (R3-001).
+2. Frames past the two that may be imputed fall into the same `track_id = null` rows as
+   "no face detected"; `score_imputed` cannot distinguish them because no row is emitted
+   for them at all. Documented in README; a real fix needs a distinct reason column.
+3. WhisperX auto-detected the La 1 clip as Catalan, so source linguistics use
+   `ca_core_news_lg` and produce confidently wrong POS on Spanish text. Needs either a
+   genuinely Spanish clip or a policy decision about trusting auto-detection.
