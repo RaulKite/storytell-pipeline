@@ -129,7 +129,7 @@ data/processed/<video_id>/
 │   ├── face.parquet              ← 70 points
 │   └── raw/<video>_NNNNNNNNNNNN_keypoints.json   ← OpenPose's own output, untouched
 ├── speaker/
-│   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense by design)
+│   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense, face_status)
 │   ├── active_speaker_tracks.parquet   ← one row per TalkNet face track
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── logs/                         ← pipeline.log + one log per stage
@@ -185,6 +185,13 @@ bodies are; only TalkNet connects the two. Its frames table is deliberately **de
 — exactly one row per 25 FPS frame of its working timeline, including frames where no
 face was found — and every row also carries the nearest original-video timestamp,
 because TalkNet thinks in constant-rate 25 FPS and the rest of the dataset does not.
+
+Each frame carries `face_status`: `no_face` (nothing located), `tracked` (a face with a
+score), or `tracked_unscored` (S3FD located a face, TalkNet had no measurement for it).
+The third state matters: collapsing it into `no_face` would report "we could not score
+this person" as "nobody was here", and a reader would draw the opposite conclusion from
+the same null. A malformed bounding box is still dropped rather than invented — a
+meaningless box is not a location.
 
 | Stage | Runs | Needs |
 |---|---|---|
@@ -388,7 +395,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 629 tests, ~25 s
+uv run --with pytest pytest tests/unit -q     # 640 tests, ~25 s
 uv run --with pytest pytest tests/e2e -q      # 30 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -428,7 +435,7 @@ masking, and the manifest's promise that every listed artifact exists.
 | TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why five environments](#why-five-environments)). |
 | `speaker/active_speaker_frames.parquet` has rows with `track_id = null` | No face was detected in those frames — off-screen, back-turned, or too small. S3FD tracks near-frontal faces only; a person walking away legitimately loses the track. Absence is recorded as a row, not dropped. |
 | `score_imputed = true` on some frames | TalkNet scores fewer frames than it tracks (an unexplained `-1` in its MFCC windowing), so the last score was carried forward rather than measured. At most two frames per track are affected; treat those as unmeasured, not as low confidence. |
-| A track ends but `active_speaker` says no face for its last frames | Frames beyond the two that may be imputed are dropped rather than invented, and the frame table is dense, so they land as `track_id = null` like any frame with no face. Bounded and rare; compare against `speaker/raw/tracks.pckl` if a track's ending matters. |
+| A frame has `face_status = "tracked_unscored"` | S3FD located a face there but TalkNet produced no usable score for it (past the two frames that may be imputed, or a non-finite score). The scores stay `null` and the frame is never active — this is "we could not measure", not "nobody was on screen" and not a confidence of zero. |
 | `acoustic/segment_features.parquet` is empty | No voiced audio (silent track, or music with no speech-like f0). |
 | `avg_segments_confidence` is negative | WhisperX reports log-probability-derived segment confidence; word confidences are the 0–1 ones. |
 
@@ -442,7 +449,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          (whisperx, diarization, spacy, acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                629 tests
+tests/unit/                640 tests
 tests/e2e/                 30 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)

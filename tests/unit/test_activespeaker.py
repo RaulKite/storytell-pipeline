@@ -9,6 +9,7 @@ when the model or its tuning changed.
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import pyarrow as pa
@@ -411,3 +412,204 @@ class TestMalformedRawRows:
         stage.normalize(seeded)
         with pytest.raises(ValidationError, match="non-finite score"):
             stage.validate(seeded)
+
+
+def load_asd_worker():
+    """Import workers/activespeaker_worker.py by path: it runs in its own uv project
+    and is not an importable module of this package (same pattern as the spaCy tests)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "workers" / "activespeaker_worker.py"
+    spec = importlib.util.spec_from_file_location("activespeaker_worker_under_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Register before executing: this worker declares dataclasses, and dataclass field
+    # resolution looks the owning module up in sys.modules. A module loaded by path that
+    # was never registered resolves to None and fails inside stdlib code with an
+    # AttributeError about __dict__ instead of naming the worker.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def make_track(frames, bboxes):
+    """The pkl shape TalkNet writes: one dict per track, frame/bbox aligned arrays."""
+    return {"track": {"frame": list(frames), "bbox": [list(b) for b in bboxes]}}
+
+
+BOX = (10.0, 20.0, 50.0, 70.0)
+
+
+class TestUnscoredFaceStaysVisible:
+    """A located face whose score does not exist is its own state.
+
+    Before face_status, build_candidates dropped every frame it could not score, so
+    the emitted row was identical to a frame with no face: a reader of
+    track_id = null could not tell "nobody was on screen" from "S3FD had a person and
+    TalkNet had no measurement". Absence of a score became absence of a person.
+    """
+
+    def test_past_the_imputable_tail_keeps_the_face_without_a_score(self):
+        worker = load_asd_worker()
+        # One track, four frames, one score. The budget of two carries the last score
+        # over positions 1 and 2; position 3 is past it and must stay visible with no
+        # score at all -- this is the frame that used to vanish and reappear as no face.
+        tracks = [make_track([0, 1, 2, 3], [BOX] * 4)]
+        scores = [[1.0]]
+        by_frame = worker.build_candidates(tracks, scores, [1, 1, 1, 1])
+        assert by_frame[0][0].raw_score == 1.0
+        assert not by_frame[0][0].score_imputed
+        assert by_frame[1][0].raw_score == 1.0 and by_frame[1][0].score_imputed
+        assert by_frame[2][0].raw_score == 1.0 and by_frame[2][0].score_imputed
+        assert by_frame[3][0].raw_score is None
+        assert not by_frame[3][0].score_imputed
+
+    def test_non_finite_score_leaves_the_face_located(self):
+        worker = load_asd_worker()
+        tracks = [make_track([0, 1], [BOX, BOX])]
+        scores = [[1.0, float("nan")]]
+        by_frame = worker.build_candidates(tracks, scores, [1, 1])
+        assert by_frame[0][0].raw_score == 1.0
+        assert by_frame[1][0].raw_score is None
+
+    def test_malformed_bbox_is_still_dropped(self):
+        """A garbage box is not a location: inventing one would place a person where
+        the detector never saw anybody, so this face stays dropped."""
+        worker = load_asd_worker()
+        junk = (float("nan"), 20.0, 50.0, 70.0)
+        tracks = [make_track([0, 1], [BOX, junk])]
+        scores = [[1.0, 1.0]]
+        by_frame = worker.build_candidates(tracks, scores, [1, 1])
+        assert 0 in by_frame[0]
+        assert by_frame[1] == {}
+
+    def test_smoothing_never_averages_an_unscored_frame(self):
+        worker = load_asd_worker()
+        # Track 0 scored at frames 0..2; frame 3 sits inside its smoothing window but
+        # is unscored. The mean at frame 2 must be of the three real scores only.
+        by_frame = [
+            {0: worker.Candidate(0, BOX, 1.0, False)},
+            {0: worker.Candidate(0, BOX, 2.0, False)},
+            {0: worker.Candidate(0, BOX, 3.0, False)},
+            {0: worker.Candidate(0, BOX, None, False)},
+        ]
+        worker.smooth_scores(by_frame, [1, 1, 1, 1], window=3)
+        assert by_frame[2][0].smoothed_score == pytest.approx((2.0 + 3.0) / 2)
+        assert by_frame[3][0].smoothed_score is None
+
+    def test_selection_never_picks_an_unscored_face(self):
+        worker = load_asd_worker()
+        by_frame = [
+            {0: worker.Candidate(0, BOX, 1.0, False, smoothed_score=1.0)},
+            {1: worker.Candidate(1, BOX, None, False)},
+        ]
+        worker.smooth_scores(by_frame, [1, 1], window=1)
+        chosen = worker.select_stable(by_frame, [1, 1], 0.5, 3)
+        assert chosen[0] is not None and chosen[0].track_id == 0
+        # Frame 1 has a visible face but no evidence about speaking: no active label.
+        assert chosen[1] is None
+
+    def test_document_reports_the_three_face_states(self):
+        worker = load_asd_worker()
+        scored = worker.Candidate(0, BOX, 2.0, False, smoothed_score=2.0)
+        unscored = worker.Candidate(1, BOX, None, False)
+        by_frame = [{0: scored}, {1: unscored}, {}]
+        document = worker.build_document(
+            video_id="v", source_fps=30.0, stamps=[0.0, 0.04, 0.08],
+            scene_ids=[1, 1, 1], chosen=[scored, None, None], visible=by_frame,
+            track_count=2, pickle_encoding="bytes", device="cpu",
+            requested_device="cpu", fallback_reason=None,
+            params={"speaker_threshold": 0.0, "score_window": 5,
+                    "switch_margin": 0.5, "switch_frames": 3},
+        )
+        rows = document["frames"]
+        assert [r["face_status"] for r in rows] == ["tracked", "tracked_unscored", "no_face"]
+        assert rows[1]["track_id"] == 1 and rows[1]["x1"] == pytest.approx(10.0)
+        assert rows[1]["talknet_score"] is None
+        assert rows[1]["talknet_score_raw"] is None
+        assert rows[1]["is_active_speaker"] is False
+        assert rows[1]["score_imputed"] is False
+
+
+class TestFrameStatusInTable:
+    """The table and the validator must agree about what each state may contain."""
+
+    def _row(self, index, **overrides):
+        base = {"frame_25fps": index, "timestamp_sec": index * 0.04,
+                "source_timestamp_sec": index * 0.033, "scene_id": 1,
+                "track_id": 0, "x1": 10.0, "y1": 20.0, "x2": 50.0, "y2": 70.0,
+                "talknet_score_raw": 1.0, "talknet_score": 1.0,
+                "score_imputed": False, "is_active_speaker": True}
+        base.update(overrides)
+        return base
+
+    def test_normalize_derives_face_status_for_old_raw_artifacts(self, seeded):
+        """A dataset processed before face_status existed must resume, not fail: the
+        state is derivable from track_id plus score presence."""
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        for frame in document["frames"]:
+            frame.pop("face_status", None)
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        summary = stage.normalize(seeded)
+        table = read_table(seeded.artifact("active_speaker_frames")).to_pylist()
+        statuses = [row["face_status"] for row in table]
+        assert statuses == ["tracked", "tracked", "no_face", "tracked"]
+        assert summary["frames_with_face"] == 3
+
+    def test_validate_accepts_a_tracked_unscored_row(self, seeded):
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(
+            self._row(4, track_id=1, face_status="tracked_unscored",
+                      talknet_score_raw=None, talknet_score=None,
+                      is_active_speaker=False))
+        document["frame_count"] = 5
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        stage.validate(seeded)
+
+    def test_validate_still_rejects_a_tracked_row_without_a_score(self, seeded):
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(
+            self._row(4, face_status="tracked", talknet_score=None))
+        document["frame_count"] = 5
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        with pytest.raises(ValidationError, match="frame 4.*non-finite score"):
+            stage.validate(seeded)
+
+    def test_validate_rejects_an_unscored_row_carrying_evidence(self, seeded):
+        """tracked_unscored with a score means the worker and the schema disagree
+        about what 'no evidence' looks like; that must not pass as absence."""
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(
+            self._row(4, face_status="tracked_unscored", talknet_score=0.7,
+                      is_active_speaker=False))
+        document["frame_count"] = 5
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        with pytest.raises(ValidationError, match="frame 4.*tracked_unscored but carries"):
+            stage.validate(seeded)
+
+    def test_track_summary_skips_unscored_scores(self, seeded):
+        rows = [
+            {"track_id": 0, "timestamp": 0.0, "is_active_speaker": True, "scene_id": 1,
+             "x1": 0.0, "y1": 0.0, "x2": 2.0, "y2": 2.0, "talknet_score": 1.0},
+            {"track_id": 0, "timestamp": 0.04, "is_active_speaker": False, "scene_id": 1,
+             "x1": 0.0, "y1": 0.0, "x2": 2.0, "y2": 2.0, "talknet_score": None},
+        ]
+        summary = track_summary_rows("v", rows)
+        assert summary[0]["frame_count"] == 2
+        assert summary[0]["mean_score"] == pytest.approx(1.0)
+        assert summary[0]["active_ratio"] == pytest.approx(0.5)

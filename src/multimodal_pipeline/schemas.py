@@ -191,6 +191,12 @@ ACOUSTIC_SEGMENTS_SCHEMA = pa.schema(
 # One row per 25 FPS frame of the TalkNet working timeline, including frames with
 # no detected face: the stage's whole purpose is a dense per-frame speaker track,
 # so a consumer must be able to trust that frame N exists exactly once.
+# One row per 25 FPS frame. `face_status` is the difference between an honest empty and
+# a silent one: a frame where S3FD tracked a face but TalkNet produced no usable score
+# (past the two imputable tail frames, or a non-finite score) used to look exactly like
+# a frame with no face -- track_id null, no bbox, no score. It is now its own state, so
+# a consumer reading "no face" is not reading "we lost the score". A malformed bbox is
+# still dropped rather than invented: a garbage box is not a location.
 ACTIVE_SPEAKER_FRAMES_SCHEMA = pa.schema(
     [
         ("schema_version", pa.string()),
@@ -200,6 +206,7 @@ ACTIVE_SPEAKER_FRAMES_SCHEMA = pa.schema(
         ("source_timestamp", pa.float64()),
         ("scene_id", pa.int64()),
         ("track_id", pa.int64()),
+        ("face_status", pa.string()),
         ("x1", pa.float64()),
         ("y1", pa.float64()),
         ("x2", pa.float64()),

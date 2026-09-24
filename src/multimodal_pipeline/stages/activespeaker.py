@@ -26,6 +26,7 @@ and a sparse table would force every consumer to reconstruct the timeline.
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -201,23 +202,62 @@ class ActiveSpeakerStage(WorkerStage):
             "scenes": document.get("scene_count"),
         }
         ctx.scratch["activespeaker"] = summary
+        # Two things the worker knows and the tables cannot show. Both are recorded in
+        # the raw JSON, but nobody reads that during a batch, and each one changes how
+        # the output should be interpreted.
+        fallback_reason = document.get("device_fallback_reason")
+        if fallback_reason:
+            ctx.log(
+                f"TalkNet did not use the requested device "
+                f"'{document.get('requested_device')}': {fallback_reason}",
+                logging.WARNING,
+            )
+        unscored = sum(1 for row in frame_rows
+                       if row["face_status"] == "tracked_unscored")
+        if unscored:
+            # The bounded imputation rule lives in the worker; the stage only reports
+            # what its own table shows, so this wording never duplicates their budget.
+            ctx.log(
+                f"{unscored} frame(s) have a tracked face with no usable TalkNet score "
+                f"(past the imputable tail, or a non-finite score); their scores are "
+                f"null and they are never marked active",
+                logging.WARNING,
+            )
         ctx.log(f"normalised {len(frame_rows)} frames, {summary['frames_with_face']} with a "
                 f"face, {summary['active_frames']} speaking, {len(track_rows)} track(s)")
         return summary
 
     @staticmethod
     def _frame_row(video_id: str, row: dict[str, Any]) -> dict[str, Any]:
-        """One raw frame to a schema-shaped row, keeping absence explicit."""
+        """One raw frame to a schema-shaped row, keeping absence explicit.
+
+        A raw artifact written before `face_status` existed carries no key. Deriving it
+        from what is present (a track id with a score is tracked; a track id without one
+        is tracked_unscored) keeps old datasets normalising instead of failing, which is
+        what a schema addition in a resumable pipeline owes them.
+        """
         bbox = [row.get(key) for key in ("x1", "y1", "x2", "y2")]
         present = row.get("track_id") is not None and all(v is not None for v in bbox)
+        status = row.get("face_status")
+        if row.get("track_id") is None:
+            status = "no_face"
+        elif status not in ("no_face", "tracked", "tracked_unscored"):
+            # A raw artifact written before face_status existed carries no key; derive
+            # it so old datasets normalise instead of failing, which is what a schema
+            # addition in a resumable pipeline owes them.
+            status = "tracked" if row.get("talknet_score") is not None else "tracked_unscored"
         return {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "video_id": video_id,
             "frame_number": row.get("frame_25fps"),
             "timestamp": row.get("timestamp_sec"),
             "source_timestamp": row.get("source_timestamp_sec"),
             "scene_id": row.get("scene_id"),
+            # track_id is passed through even when the bbox is incomplete: a corrupt
+            # raw row must still name its track in validation instead of being
+            # normalised into "no face" and hiding the corruption.
             "track_id": row.get("track_id"),
+            "face_status": status,
             "x1": bbox[0] if present else None,
             "y1": bbox[1] if present else None,
             "x2": bbox[2] if present else None,
@@ -273,8 +313,19 @@ class ActiveSpeakerStage(WorkerStage):
             if row["track_id"] is None:
                 if row["is_active_speaker"]:
                     problems.append(f"frame {index} has no face but is marked active")
+                if row["face_status"] != "no_face":
+                    problems.append(f"frame {index} is {row['face_status']} with no track")
                 continue
-            if row["talknet_score"] is None or not math.isfinite(row["talknet_score"]):
+            if row["face_status"] == "tracked_unscored":
+                # The honest-empty state: a face was located and could not be scored.
+                # Anything else in that row means the worker and the schema disagree
+                # about what "no evidence" looks like.
+                if row["talknet_score"] is not None or row["talknet_score_raw"] is not None:
+                    problems.append(f"frame {index} is tracked_unscored but carries a score")
+                if row["score_imputed"] or row["is_active_speaker"]:
+                    problems.append(f"frame {index} is tracked_unscored but is imputed "
+                                    f"or marked active")
+            elif row["talknet_score"] is None or not math.isfinite(row["talknet_score"]):
                 problems.append(f"frame {index} has a face with a non-finite score")
             coordinates = (row["x1"], row["y1"], row["x2"], row["y2"])
             if any(value is None or not math.isfinite(value) for value in coordinates):

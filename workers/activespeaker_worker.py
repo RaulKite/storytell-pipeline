@@ -65,13 +65,20 @@ class WorkerFailure(RuntimeError):
 
 @dataclass
 class Candidate:
-    """One scored face track at one 25 FPS frame."""
+    """One face track at one 25 FPS frame, scored or not.
+
+    ``raw_score``/``smoothed_score`` are ``None`` when S3FD located this face but TalkNet
+    never produced a usable score for the frame. Carrying the face anyway is the point:
+    dropping it would erase the difference between "nobody was visible" and "we could
+    not score the person who was". Every consumer must treat ``None`` as *no evidence*,
+    never as a zero score.
+    """
 
     track_id: int
     bbox: tuple[float, float, float, float]
-    raw_score: float
+    raw_score: float | None
     score_imputed: bool
-    smoothed_score: float = 0.0
+    smoothed_score: float | None = None
 
 
 # --------------------------------------------------------------------- helpers
@@ -325,23 +332,28 @@ def build_candidates(tracks: Any, scores: Any, scene_ids: Sequence[int]
             frame_index = int(frames[position])
             if not 0 <= frame_index < len(scene_ids):
                 continue
+            raw: float | None = None
             imputed = False
             if position < score_count:
                 raw = float(track_scores[position])
+                if not math.isfinite(raw):
+                    # A NaN/inf score is as unusable as no score, but the face is real.
+                    raw = None
             elif score_count > 0 and position < score_count + MAX_IMPUTED_TAIL_FRAMES:
                 # MFCC windowing leaves the score array 1-2 samples short. Carry the
                 # last score over that bounded tail and disclose it downstream.
-                raw = float(track_scores[score_count - 1])
-                imputed = True
-            else:
-                continue
-            if not math.isfinite(raw):
-                continue
+                carried = float(track_scores[score_count - 1])
+                if math.isfinite(carried):
+                    raw, imputed = carried, True
+            # Anything past the tail keeps raw=None: we may not invent a third score.
+            # The face still gets a row, as tracked_unscored.
             try:
                 bbox = tuple(float(value) for value in bboxes[position][:4])
             except (TypeError, ValueError, IndexError):
                 continue
             if len(bbox) != 4 or not all(math.isfinite(value) for value in bbox):
+                # A garbage box is not a location. Inventing one would put a person
+                # somewhere the detector never saw them, so this face is dropped.
                 continue
             by_frame[frame_index][track_id] = Candidate(track_id, bbox, raw, imputed)
     return by_frame
@@ -360,10 +372,16 @@ def smooth_scores(by_frame: Sequence[dict[int, Candidate]], scene_ids: Sequence[
         scene = scene_ids[index]
         first, stop = max(0, index - half), min(last, index + half)
         for track_id, candidate in candidates.items():
+            if candidate.raw_score is None:
+                # Unscored stays unscored: smoothing cannot create the measurement we
+                # refused to invent, and joining this track's average with nothing
+                # would make its neighbours look less confident than they are.
+                continue
             neighbours = [
                 by_frame[neighbour][track_id].raw_score
                 for neighbour in range(first, stop + 1)
                 if scene_ids[neighbour] == scene and track_id in by_frame[neighbour]
+                and by_frame[neighbour][track_id].raw_score is not None
             ]
             candidate.smoothed_score = sum(neighbours) / len(neighbours)
 
@@ -392,8 +410,16 @@ def select_stable(by_frame: Sequence[dict[int, Candidate]], scene_ids: Sequence[
             wins = 0
             chosen.append(None)
             continue
-        best = max(candidates.values(), key=lambda c: (c.smoothed_score, -c.track_id))
-        if current not in candidates:
+        scored = [c for c in candidates.values() if c.smoothed_score is not None]
+        if not scored:
+            # Faces are visible here but nothing can be said about who is talking.
+            # Selecting one would publish a guess as a label.
+            current = challenger = None
+            wins = 0
+            chosen.append(None)
+            continue
+        best = max(scored, key=lambda c: (c.smoothed_score, -c.track_id))
+        if current not in {c.track_id for c in scored}:
             current = best.track_id
             challenger, wins = None, 0
         elif best.track_id == current:
@@ -456,33 +482,56 @@ def run_talknet(talknet_root: Path, temp_dir: Path, scenes_csv: Path, audio: Pat
 
 def build_document(*, video_id: str, source_fps: float, stamps: Sequence[float],
                    scene_ids: Sequence[int], chosen: Sequence[Candidate | None],
+                   visible: Sequence[dict[int, Candidate]],
                    track_count: int, pickle_encoding: str, device: str,
                    requested_device: str, fallback_reason: str | None,
                    params: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the frame table from two different questions per frame.
+
+    ``chosen`` answers *who is speaking* and can only ever hold a scored candidate;
+    ``visible`` answers *which faces S3FD located*. face_status comes from the second,
+    because a frame where a person was visible but unscored is neither "no face" nor
+    "someone is speaking" -- collapsing those is the bug this table used to have.
+    The lowest unscored track id is reported when several faces share the frame: it is
+    arbitrary but deterministic, and the scores stay null so nothing pretends to know
+    more than it does.
+    """
     frames: list[dict[str, Any]] = []
     for index, candidate in enumerate(chosen):
         stamp = index / OUTPUT_FPS
+        candidates = visible[index]
+        if candidate is not None:
+            face_status, located = "tracked", candidate
+        elif candidates:
+            face_status = "tracked_unscored"
+            located = min(candidates.values(), key=lambda c: c.track_id)
+        else:
+            face_status, located = "no_face", None
+        unscored = located is None or located.smoothed_score is None
         row: dict[str, Any] = {
             "frame_25fps": index,
             "timestamp_sec": round(stamp, 6),
             "source_timestamp_sec": round(nearest_timestamp(stamp, stamps), 6),
             "scene_id": scene_ids[index],
-            "track_id": None,
+            "track_id": located.track_id if located is not None else None,
+            "face_status": face_status,
             "x1": None, "y1": None, "x2": None, "y2": None,
             "talknet_score_raw": None,
             "talknet_score": None,
             "score_imputed": False,
             "is_active_speaker": False,
         }
-        if candidate is not None:
+        if located is not None:
             row.update({
-                "track_id": candidate.track_id,
-                "x1": round(candidate.bbox[0], 3), "y1": round(candidate.bbox[1], 3),
-                "x2": round(candidate.bbox[2], 3), "y2": round(candidate.bbox[3], 3),
-                "talknet_score_raw": round(candidate.raw_score, 4),
-                "talknet_score": round(candidate.smoothed_score, 4),
-                "score_imputed": candidate.score_imputed,
-                "is_active_speaker": candidate.smoothed_score >= params["speaker_threshold"],
+                # A located face is a located face whether or not it was scored; the
+                # scores stay null so absence is never read as a measurement of zero.
+                "x1": round(located.bbox[0], 3), "y1": round(located.bbox[1], 3),
+                "x2": round(located.bbox[2], 3), "y2": round(located.bbox[3], 3),
+                "talknet_score_raw": None if unscored else round(located.raw_score, 4),
+                "talknet_score": None if unscored else round(located.smoothed_score, 4),
+                "score_imputed": located.score_imputed if not unscored else False,
+                "is_active_speaker": face_status == "tracked"
+                                     and located.smoothed_score >= params["speaker_threshold"],
             })
         frames.append(row)
     return {
@@ -606,7 +655,8 @@ def process(args: argparse.Namespace) -> dict[str, Any]:
     }
     document = build_document(
         video_id=args.video_id, source_fps=source_fps, stamps=stamps, scene_ids=scene_ids,
-        chosen=chosen, track_count=len(tracks), pickle_encoding=pickle_encoding,
+        chosen=chosen, visible=by_frame, track_count=len(tracks),
+        pickle_encoding=pickle_encoding,
         device=device, requested_device=args.device, fallback_reason=fallback,
         params=params,
     )
