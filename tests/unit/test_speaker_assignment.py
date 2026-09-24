@@ -201,6 +201,65 @@ class TestCoverage:
         assert coverage_report(TURNS)["speaker_time"] == 0.0
 
 
+class TestSilentVideoIsValid:
+    """A silent video has no segments; that is a correct result, not a failure.
+
+    Before diarization could actually run this stage skipped whenever the HF token was
+    absent, so the empty-transcript path was never reached with a speaker timeline
+    present. With a token, a silent video produces turns and zero segments, and the
+    stage used to reject its own correct output.
+    """
+
+    def test_empty_transcript_validates(self, context):
+        import pyarrow as pa
+        from multimodal_pipeline.schemas import (
+            SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, write_table,
+        )
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+        from multimodal_pipeline.stages.base import StageContext  # noqa: F401
+
+        write_table(context.artifact("speech_segments"),
+                    pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA), SEGMENTS_SCHEMA)
+        write_table(context.artifact("speech_words"),
+                    pa.Table.from_pylist([], schema=WORDS_SCHEMA), WORDS_SCHEMA)
+        write_table(context.artifact("speaker_turns"),
+                    pa.Table.from_pylist(
+                        [{"schema_version": "1.0", "video_id": context.video_id, "turn_index": 0,
+                          "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+                          "speaker_id": "SPEAKER_00", "diarization_type": "exclusive",
+                          "confidence": None}], schema=SPEAKER_TURNS_SCHEMA),
+                    SPEAKER_TURNS_SCHEMA)
+        stage = SpeakerAssignmentStage()
+        result = stage.validate(context)
+        assert result["segments"] == 0
+        # No segments means no rate; the key must not be a ZeroDivisionError.
+        assert result["assigned_segments"] == 0
+        assert result["speakers"] == 1
+
+    def test_execute_writes_metadata_without_turn_type(self, context):
+        """diarization_type is absent when the exclusive artifact is missing."""
+        import pyarrow as pa
+        from multimodal_pipeline.schemas import (
+            SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, read_table, write_table,
+        )
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        write_table(context.artifact("speech_segments"),
+                    pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA), SEGMENTS_SCHEMA)
+        write_table(context.artifact("speech_words"),
+                    pa.Table.from_pylist([], schema=WORDS_SCHEMA), WORDS_SCHEMA)
+        write_table(context.artifact("speaker_turns"),
+                    pa.Table.from_pylist(
+                        [{"schema_version": "1.0", "video_id": context.video_id, "turn_index": 0,
+                          "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+                          "speaker_id": "SPEAKER_00", "diarization_type": "inclusive",
+                          "confidence": None}], schema=SPEAKER_TURNS_SCHEMA),
+                    SPEAKER_TURNS_SCHEMA)
+        SpeakerAssignmentStage().execute(context)
+        meta = read_table(context.artifact("speech_segments")).schema.metadata
+        assert meta is not None and meta[b"speaker_assignment"] == b"max_overlap"
+
+
 class TestDiarizationRttmWrittenWhenEmpty:
     def test_stage_writes_empty_rttm_for_no_turns(self, context):
         """The artifact split must preserve an empty RTTM, not treat falsy as absent."""

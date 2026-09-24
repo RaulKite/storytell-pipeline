@@ -150,8 +150,11 @@ class SpeakerAssignmentStage(Stage):
         known_speakers = {row["speaker_id"] for row in read_table(turns_path).to_pylist() if row["speaker_id"]}
         segments = read_table(ctx.artifact("speech_segments")).to_pylist()
         words = read_table(ctx.artifact("speech_words")).to_pylist()
-        if not segments:
-            raise ValidationError(self.name, ["segments table is empty after assignment"])
+        # An empty transcript is a legitimate outcome, not a broken assignment:
+        # whisperx completes happily on a silent video, and the diarizer may still find
+        # a turn in background noise. This path was unreachable while diarization
+        # skipped for a missing token, so the check rejected correct output as soon as
+        # a real speaker timeline existed.
         check_reference_values([row["speaker_id"] for row in segments], known_speakers,
                                stage=self.name, label="segment speaker_id")
         check_reference_values([row["speaker_id"] for row in words], known_speakers,
@@ -171,6 +174,8 @@ class SpeakerAssignmentStage(Stage):
             "segments": len(segments),
             "words": len(words),
             "assigned_segments": assigned,
-            "assignment_rate": round(assigned / len(segments), 4),
+            # No segments means no rate. Averaging over an empty transcript is
+            # meaningless, so report the absence rather than divide by zero.
+            "assignment_rate": round(assigned / len(segments), 4) if segments else None,
             "speakers": len(known_speakers),
         }
