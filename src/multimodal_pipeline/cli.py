@@ -447,7 +447,13 @@ def inspect_environment(config: Optional[Path] = typer.Option(None, "--config", 
 
 
 def _environment_warnings(config: PipelineConfig) -> list[str]:
-    """Things that will make a stage skip, reported *before* a long run starts."""
+    """Things that will make a stage skip or degrade, reported *before* a long run starts.
+
+    Ordered by how much the operator has to act on them: credentials and endpoints they
+    must supply, then installs they must provide, then the silent-quality-loss cases
+    (a stage that will run with no language model, which produces empty linguistics that
+    look like results).
+    """
     import os
 
     warnings: list[str] = []
@@ -462,11 +468,99 @@ def _environment_warnings(config: PipelineConfig) -> list[str]:
     discovery = openpose_report(config)
     if config.openpose.enabled and not discovery.get("executable"):
         warnings.append(f"OpenPose binary not found under {config.openpose.root}")
+    warnings.extend(_uv_project_warnings(config))
+    warnings.extend(_activespeaker_warnings(config))
+    warnings.extend(_spacy_warnings(config))
+    return warnings
+
+
+def _uv_project_warnings(config: PipelineConfig) -> list[str]:
+    """Warn only about uv project *directories* that are missing.
+
+    A project that exists but has never been synced is not warned about: `uv run
+    --project` resolves and syncs it on first use, verified on this machine against a
+    throwaway project. Only the disabled-stage filter is a judgement call — a stage the
+    operator switched off does not need its environment, and warning about it buries the
+    warnings that matter.
+    """
+    warnings: list[str] = []
     for name, cfg in config.stage_configs.items():
         project = getattr(cfg, "uv_project", None)
-        if project is not None and not config.resolve(project).is_dir():
+        if project is None:
+            continue
+        if not getattr(cfg, "enabled", True):
+            continue
+        if not config.resolve(project).is_dir():
             warnings.append(f"{name}: uv project missing at {config.resolve(project)}")
     return warnings
+
+
+def _activespeaker_warnings(config: PipelineConfig) -> list[str]:
+    """Say up front what ``ActiveSpeakerStage.enabled`` will decide at runtime.
+
+    The reasons are the stage's own strings, reused rather than reworded: two copies of
+    this gate would drift, and the whole point is that the pre-flight warning and the
+    skip reason agree.
+    """
+    cfg = config.activespeaker
+    if not cfg.enabled:
+        return []
+    if cfg.talknet_root is None:
+        return [
+            "activespeaker.talknet_root is not set: active speaker detection will be "
+            "skipped (point it at a TalkNet-ASD checkout to enable it)"
+        ]
+    root = Path(cfg.talknet_root)
+    if not root.is_dir():
+        return [f"activespeaker.talknet_root does not exist: {root}"]
+    if not (root / "run_talknet.py").is_file():
+        return [
+            f"activespeaker.talknet_root has no run_talknet.py: {root} "
+            "(is it a TalkNet-ASD checkout?) — active speaker detection will be skipped"
+        ]
+    return []
+
+
+def _spacy_warnings(config: PipelineConfig) -> list[str]:
+    """Warn when the **English** spaCy model is missing, and only when English is coming.
+
+    The English variant is the one case where the model is known before a run: its input
+    language is always ``en``, and it runs exactly when the translation stage produces
+    segments. So "english_model is not installed + translation is configured" predicts a
+    real, avoidable outcome — ``linguistic/english/*`` would carry empty lemmas/POS/dep —
+    and naming it here is worth a line of output.
+
+    Source-language models are deliberately **not** inventoried. The configured mapping is
+    a default dictionary covering eight languages; warning for every name that is not
+    installed told this operator five things about German, French, Italian, Dutch and
+    Portuguese while their corpus held English and Spanish. The language is only known
+    after transcription, so that warning belongs at the moment the language is known: the
+    spaCy worker already records ``selected_model`` and ``model_selection_status`` in its
+    raw output and the stage logs the model per video, which is where a ``blank`` fallback
+    can be read against the language it was chosen for.
+
+    A configured model that has an installed same-family substitute is not warned about:
+    that is a full pipeline for the language, and the substitution is already recorded in
+    provenance as ``substituted_family``.
+    """
+    from .stages.spacy_source import installed_model_inventory, select_model
+
+    cfg = config.spacy
+    if not cfg.enabled or not cfg.process_english:
+        return []
+    # No translation output means no English text, so the English model would never run.
+    if not (config.translation.enabled and config.translation.endpoint_configured):
+        return []
+    installed = set(installed_model_inventory(config.resolve(cfg.uv_project)))
+    decision = select_model("en", {"en": cfg.english_model}, installed, fallback=cfg.fallback_model)
+    if decision["status"] not in {"fallback_missing_model", "fallback_no_model"}:
+        return []
+    return [
+        f"spaCy model {cfg.english_model} is not installed in "
+        f"{config.resolve(cfg.uv_project)}: English linguistics fall back to "
+        f"'{decision['model']}' — tokenization and sentences only, empty lemmas/POS/"
+        f"dependencies. Run scripts/install_spacy_models.sh {cfg.english_model} to install it."
+    ]
 
 
 # ------------------------------------------------------------------ internals

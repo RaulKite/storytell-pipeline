@@ -40,10 +40,14 @@ so a run needs no shell wrapper and no `source .env`. Variables you export yours
 always win over the file, which keeps CI secrets and one-off overrides working.
 
 `inspect-environment` before a long run is worth the two seconds: it prints JSON on
-stdout with the ffmpeg/OpenPose/GPU inventory it actually found, and its
-`environment_warnings` list names the optional stages that are about to be skipped
-(missing `HF_TOKEN`, unconfigured translation) and a missing OpenPose binary. Stages
-with a required install are not listed there because they do not skip — see
+stdout with the ffmpeg/OpenPose/GPU inventory it actually found. Its
+`environment_warnings` name what will cost you data: missing `HF_TOKEN`, an
+unconfigured translation endpoint, a missing OpenPose binary or input directory, an
+absent uv project directory, a `talknet_root` that will make `activespeaker` skip, and
+a missing English spaCy model (which would produce `linguistic/english/*` tables with
+empty lemmas — the one language degradation knowable before a run, because English
+linguistics always run on English text). Stages with a required install are not listed
+because they do not skip — see
 [Resume, reuse and invalidation](#resume-reuse-and-invalidation).
 
 The five heavy tool environments live in their own uv projects and must be synced
