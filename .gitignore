@@ -50,3 +50,9 @@ data/processed/
 .env
 .env.*
 !.env.example
+
+# Local scratch for the pi harness. `modes.config.json` is the project's autonomy
+# policy and IS versioned; settings/extensions/prompts under .pi are per-machine and
+# would make every clone ask for project trust.
+.pi/*
+!.pi/modes.config.json

@@ -1,0 +1,8 @@
+{
+  "defaultMode": "yolo",
+  "modes": {
+    "yolo": {
+      "extraInstructions": "Project autonomy policy for storytel-pipeline: read AGENTS.md at the repo root and follow its \"Decision policy\" section instead of asking the user. Choose the reversible option, state every assumption in the commit message and in odd/tasks/multimodal-video-pipeline.md, and report failed or skipped checks plainly. Never widen the standing authorization into force-push, history rewrite, remote branch deletion, merges, or work outside this repository."
+    }
+  }
+}
