@@ -668,3 +668,41 @@ Facts that will shape the implementation more than the maths:
   is that raw survives so a later decision can be recomputed without re-running OpenPose.
 - Depends on `openpose` only, so it must inherit openpose's skip semantics and stay
   independent of the audio/transcript branch.
+
+### 20.5 `pose_skeletons` — rendered OpenPose frames (body + hands + face)
+
+Requested by the operator: ask OpenPose to emit the rendered skeleton images when it
+runs. Verified against the installed binary (`/opt/openpose/build/examples/openpose/openpose.bin`)
+rather than from documentation:
+
+- The stage currently passes `--render_pose 0 --display 0` and **no `--write_images`**,
+  so no rendered frame exists anywhere today. The raw `_keypoints.json` files are the
+  only pose output.
+- The flags exist and are compatible with headless operation: `--write_images <dir>`
+  (format via `--write_images_format`), and rendering is per-module — `--render_pose`,
+  `--face_render` and `--hand_render` are separate switches, each accepting `-1` to
+  inherit `render_pose`. So body+hands+face skeletons in one pass is one extra flag
+  group, not a second run: OpenPose renders the same pass it already computes.
+- `--display 0` stays exactly as it is. The help text is explicit that rendering is
+  independent of visual display, and this build has no display to disable anyway.
+
+What is *not* free, and why this is a task rather than a one-line edit:
+
+- **Disk, and it is the whole cost.** One PNG per frame per video, on top of the raw
+  JSON that already dominates `pose/raw/`. At 25 fps a 4-minute clip is 6000 renders;
+  `--output_resolution` (default `-1x-1`, i.e. input resolution) decides whether that is
+  hundreds of MB or a few GB per video. This needs an explicit default and probably a
+  downscale, not the binary's default.
+- **It changes the `openpose` stage fingerprint**, which invalidates every existing
+  pose dataset and re-runs OpenPose (the slowest stage) on all of them. Better as an
+  opt-in config flag, defaulting off, so enabling it is a deliberate decision.
+- **Do not disturb `--keypoint_scale`.** It is not currently passed, which means the JSON
+  coordinates keep the meaning the published `pose/*.parquet` tables assert. Touching it
+  to make images and JSON "match" would silently rescale every already-published
+  number; images and coordinates are allowed to differ in scale, and if they do, that
+  belongs in the artifact metadata.
+- Raw renders belong under `pose/` beside the raw JSON with provenance, and the Parquet
+  tables must keep describing measured keypoints — a rendered PNG is a view, not data.
+- Depends on `openpose` and inherits its skip semantics. Pairs naturally with 20.4
+  (normalised keypoints à la dfMaker): the skeleton images are the human-facing view of
+  the same signal, so the two should agree on which frames had a usable detection.
