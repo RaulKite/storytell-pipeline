@@ -37,13 +37,14 @@ ffmpeg/OpenPose/GPU inventory it actually found and lists, in
 `environment_warnings`, every stage that is about to be skipped and why.
 
 The four heavy tools live in their own uv projects and must be synced
-separately. This is deliberate — see [Why four environments](#why-four-environments).
+separately. This is deliberate — see [Why five environments](#why-five-environments).
 
 ```bash
 (cd environments/whisperx   && uv sync --python 3.12)
 (cd environments/diarization && uv sync --python 3.12)
 (cd environments/spacy      && uv sync --python 3.12)
 (cd environments/acoustic   && uv sync --python 3.12)
+(cd environments/activespeaker && uv sync --python 3.12)   # optional: TalkNet needs its own torch
 scripts/install_spacy_models.sh             # language models you actually need
 ```
 
@@ -127,6 +128,10 @@ data/processed/<video_id>/
 │   ├── hands.parquet             ← 21 points × left/right
 │   ├── face.parquet              ← 70 points
 │   └── raw/<video>_NNNNNNNNNNNN_keypoints.json   ← OpenPose's own output, untouched
+├── speaker/
+│   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense by design)
+│   ├── active_speaker_tracks.parquet   ← one row per TalkNet face track
+│   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
     ├── config.json               ← resolved config, secrets masked, config hash
@@ -159,10 +164,11 @@ metadata
   │    │                                  ├─ translation ── spacy_english
   │    │                                  ├─ spacy_source
   │    └─ acoustic ◄──────────────(also)──┘
-  └─ openpose                     (metadata only — no audio, no transcript)
+  ├─ openpose                     (metadata only — no audio, no transcript)
+  └─ activespeaker                (metadata + audio — independent of the transcript)
 
   metadata, audio, whisperx, diarization, speaker_assignment, translation,
-  spacy_source, spacy_english, acoustic, openpose  ──►  finalization
+  spacy_source, spacy_english, acoustic, openpose, activespeaker  ──►  finalization
 ```
 
 `openpose` depends only on `metadata`, so a transcription failure never stops pose
@@ -172,6 +178,13 @@ stage is blocked only by a failed stage in its own dependency chain, and a *skip
 prerequisite (disabled, or a missing credential) is not a failure — `speaker_assignment`
 degrades with its own reason instead of poisoning the run, so a dataset without a
 Hugging Face token still gets transcript, linguistics, acoustics and pose.
+
+`activespeaker` answers a question the audio-only stages cannot: **which visible face
+is producing the audio**. Pyannote says when someone speaks and OpenPose says where
+bodies are; only TalkNet connects the two. Its frames table is deliberately **dense**
+— exactly one row per 25 FPS frame of its working timeline, including frames where no
+face was found — and every row also carries the nearest original-video timestamp,
+because TalkNet thinks in constant-rate 25 FPS and the rest of the dataset does not.
 
 | Stage | Runs | Needs |
 |---|---|---|
@@ -185,6 +198,7 @@ Hugging Face token still gets transcript, linguistics, acoustics and pose.
 | `spacy_english` | uv env worker | translation output + `en` model |
 | `acoustic` | uv env worker (Parselmouth) | audio |
 | `openpose` | `/opt/openpose` binary | OpenPose install + models, GPU |
+| `activespeaker` | uv env worker (TalkNet-ASD) | TalkNet checkout + `environments/activespeaker` |
 | `finalization` | in-process | everything above |
 
 A stage whose prerequisites are missing is **skipped with a reason**, not failed:
@@ -249,6 +263,20 @@ openpose:
   hands: {enabled: true}
   face:  {enabled: true}
 ```
+
+Install only the spaCy models whose language you actually expect. `spacy_model` in the
+output table records which one ran, and `blank` is a degradation you can see. A *wrong*
+model is worse, because it looks like a result: on Spanish text, `ca_core_news_lg`
+labelled `Muy buena entrada` as three `PROPN` tokens with the first as `ROOT` and
+plausible dependencies attached, where the blank pipeline's empty lemmas were at least
+honest about knowing nothing. Resolution goes configured language → same family → any
+installed model → blank, so an installed model *will* be picked up for a language it
+does not serve. Either install the model that matches the language or leave that family
+out and accept `blank`.
+
+Installing or removing a model invalidates the linguistics stages instead of leaving
+them serving a cached `blank` result: which models exist changes the output as much as
+the configuration does.
 
 ### Secrets
 
@@ -318,10 +346,11 @@ nothing else. A completed run's rerun costs ~0 s.
 
 ---
 
-## Why four environments
+## Why five environments
 
 whisperx pins `torch~=2.8.0`, pyannote.audio pulls its own transformers/torchcodec
-combination, spaCy wants neither, and the orchestrator should import none of them.
+combination, TalkNet needs an *older* torch than both, spaCy wants neither, and the
+orchestrator should import none of them.
 Installing everything together produces an unsatisfiable resolution or — worse — a
 "working" resolution where one tool silently gets another's CUDA build.
 
@@ -336,10 +365,20 @@ touching the pipeline. Verified pins on this machine:
 | `diarization` | pyannote.audio 4.0.7, torch 2.8.0, **torchcodec 0.7.0** |
 | `spacy` | spaCy 3.8.16, pyarrow ≥17 |
 | `acoustic` | praat-parselmouth 0.4.7 (Praat 6.1.38), numpy ≥1.26,<3 |
+| `activespeaker` | **torch 2.5.1 +cu124**, torchvision 0.20.1, facenet-pytorch 2.5.3, scenedetect 0.6.5, numpy 2.0.2 |
 
-Two pins exist because of specific failures, not taste: the driver here is 555.42.06
+Three pins exist because of specific failures, not taste: the driver here is 555.42.06
 (CUDA 12.5) and cu126 wheels are what was verified on it; latest `torchcodec` ships a
-CUDA-13 build that dies with `libnvrtc.so.13`.
+CUDA-13 build that dies with `libnvrtc.so.13`; and TalkNet cannot take a modern torch
+because `talkNet.py` and its S3FD detector call `torch.load()` without `weights_only=`,
+whose default flipped to `True` in torch 2.6 and rejects the project's 2021
+checkpoints. That last one is why this environment is on cu124 while the other two GPU
+environments are on cu126.
+
+TalkNet is also the one stage whose model lives *outside* this repository: point
+`activespeaker.talknet_root` at a checkout, and the two checkpoints either download
+themselves into it or come from `activespeaker.weights_dir` if you keep the checkout
+read-only. Unset, the stage skips with a reason naming the setting.
 
 The `mock` translation provider (`translation.provider: mock`) lets you exercise the
 whole graph, English linguistics included, with no network and no credentials.
@@ -349,8 +388,8 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 561 tests, ~25 s
-uv run --with pytest pytest tests/e2e -q      # 28 tests, ~110 s (needs ffmpeg + uv)
+uv run --with pytest pytest tests/unit -q     # 629 tests, ~25 s
+uv run --with pytest pytest tests/e2e -q      # 30 tests, ~110 s (needs ffmpeg + uv)
 ```
 
 Unit tests avoid mocks wherever a mock would hide the bug: media tests call real
@@ -384,6 +423,12 @@ masking, and the manifest's promise that every listed artifact exists.
 | `OpenPose binary not found under /opt/openpose` | Check `openpose.root`; `inspect-environment` prints the resolved path. |
 | Everything reruns after one config edit | Expected: `--only-stage X --force-stage X` reruns X and its dependants only. Check `status --plan` for the named reason. |
 | `pose/*.parquet` have 0 rows | The video contains no person. That is a valid outcome; the raw JSON in `pose/raw/` confirms it. |
+| `activespeaker.talknet_root is not set` | Clone TalkNet-ASD and set `activespeaker.talknet_root`. Without it the stage skips and the rest of the dataset is unaffected. |
+| `activespeaker.talknet_root has no run_talknet.py` | That path is not a TalkNet-ASD checkout — the stage checks for the entrypoint rather than letting a confusing `torch.load` error surface minutes later. |
+| TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why five environments](#why-five-environments)). |
+| `speaker/active_speaker_frames.parquet` has rows with `track_id = null` | No face was detected in those frames — off-screen, back-turned, or too small. S3FD tracks near-frontal faces only; a person walking away legitimately loses the track. Absence is recorded as a row, not dropped. |
+| `score_imputed = true` on some frames | TalkNet scores fewer frames than it tracks (an unexplained `-1` in its MFCC windowing), so the last score was carried forward rather than measured. At most two frames per track are affected; treat those as unmeasured, not as low confidence. |
+| A track ends but `active_speaker` says no face for its last frames | Frames beyond the two that may be imputed are dropped rather than invented, and the frame table is dense, so they land as `track_id = null` like any frame with no face. Bounded and rare; compare against `speaker/raw/tracks.pckl` if a track's ending matters. |
 | `acoustic/segment_features.parquet` is empty | No voiced audio (silent track, or music with no speech-like f0). |
 | `avg_segments_confidence` is negative | WhisperX reports log-probability-derived segment confidence; word confidences are the 0–1 ones. |
 
@@ -394,10 +439,11 @@ masking, and the manifest's promise that every listed artifact exists.
 ```
 src/multimodal_pipeline/   orchestrator: config, discovery, DAG, state, CLI, normalization
 workers/                   heavy ML entry points, run inside the isolated envs
+                         (whisperx, diarization, spacy, acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                561 tests
-tests/e2e/                 28 CLI-driven tests
+tests/unit/                629 tests
+tests/e2e/                 30 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
 data/input_videos/         synthetic fixtures (committed, ~330 KB)

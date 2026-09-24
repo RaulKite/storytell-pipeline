@@ -158,6 +158,37 @@ openpose:
   # timeout_seconds: null        # kill a wedged run after N seconds
   # extra_args: []               # e.g. ["--hand_size", "1.0"]
 
+# Active speaker detection (TalkNet-ASD): which visible face is producing audio.
+# Needs a TalkNet-ASD checkout and its own uv environment:
+#   git clone https://github.com/RaulKite/TalkNet-ASD /path/to/TalkNet-ASD
+#   (cd environments/activespeaker && uv sync --python 3.12)
+# Disabled by default here because the checkout is external to this repository;
+# when talknet_root is unset the stage reports a skipped reason naming the setting.
+activespeaker:
+  enabled: false
+  uv_project: environments/activespeaker
+  worker: workers/activespeaker_worker.py
+  # talknet_root: /path/to/TalkNet-ASD
+  # TalkNet downloads its two checkpoints into its own working directory. Point
+  # this at a directory holding pretrain_TalkSet.model and sfd_face.pth to keep the
+  # checkout read-only (or to avoid re-downloading ~150 MB per machine).
+  # weights_dir: /path/to/talknet-weights
+  device: auto            # auto | cuda | cpu
+  device_index: 0
+  # TalkNet scores are unbounded logits; the upstream convention treats 0 as the
+  # speaking boundary. Raise it to demand more confidence.
+  speaker_threshold: 0.0
+  # Centered smoothing window in 25 FPS frames, clipped at scene cuts so a talk-head
+  # never averages across a cut. Must be a positive odd integer.
+  score_window: 5
+  # A challenger face must beat the current one by switch_margin for switch_frames
+  # consecutive frames before it takes over. This is what stops the label flickering
+  # between two faces whose scores are within noise.
+  switch_margin: 0.5
+  switch_frames: 3
+  # timeout_seconds: null
+  # extra_args: []
+
 logging:
   level: INFO
   console: true
