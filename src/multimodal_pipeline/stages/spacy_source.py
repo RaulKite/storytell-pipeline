@@ -34,6 +34,44 @@ from .base import StageContext, WorkerStage
 FALLBACK_CAPABILITIES = ("tokenization", "sentencizer")
 
 
+def installed_model_inventory(uv_project: Path) -> dict[str, str]:
+    """spaCy models importable in a uv environment, as ``{name: version}``.
+
+    Model resolution falls back through "configured -> same family -> discovered ->
+    blank", so *which models are installed* changes the output just as much as the
+    configured names do. Leaving them out of the fingerprint meant installing
+    ``es_core_news_lg`` served the stale ``blank`` result forever: the transcript came
+    back with empty lemmas and POS tags, silently, and only a manual ``--force-stage``
+    cleared it.
+
+    Read from the environment's ``site-packages`` rather than by running spaCy: a
+    ``uv run`` probe would cost a process per planned stage on every ``status --plan``,
+    and a spaCy model is a package whose directory name *is* the name
+    ``get_installed_models()`` reports, with its version in ``meta.json``.
+
+    An unreadable environment yields ``{}`` -- the same answer as "no models", which is
+    what the stage would have to work with anyway.
+    """
+    inventory: dict[str, str] = {}
+    try:
+        site_packages = next(
+            (Path(uv_project) / ".venv" / "lib").glob("python*/site-packages")
+        )
+    except (OSError, StopIteration):
+        return inventory
+    for meta in sorted(site_packages.glob("*/meta.json")):
+        name = meta.parent.name
+        # Only spaCy pipelines carry a spacy_version key; unrelated packages with a
+        # meta.json (tokenizers, for instance) must not masquerade as models.
+        try:
+            payload = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("spacy_version"):
+            inventory[name] = str(payload.get("version") or "unknown")
+    return inventory
+
+
 def select_model(language: str | None, configured: dict[str, str], available: set[str],
                  *, fallback: str = "blank") -> dict[str, Any]:
     """Choose the pipeline for a detected language and record *why*.
@@ -79,6 +117,9 @@ class SpacySourceStage(WorkerStage):
         return {
             "stage": self.name,
             "variant": self.variant,
+            # Which models actually exist, not just which ones were asked for: see
+            # installed_model_inventory.
+            "installed_models": installed_model_inventory(ctx.config.resolve(cfg.uv_project)),
             "source_models": cfg.source_models,
             "english_model": cfg.english_model,
             "fallback_model": cfg.fallback_model,

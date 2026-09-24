@@ -35,19 +35,44 @@ sys.exit(0 if sys.argv[1] in set(get_installed_models()) else 1)
 PY
 }
 
+# A model's release version is NOT the spaCy version: es_core_news_lg ships 3.8.0
+# while spaCy itself is 3.8.16, so building the URL from $VERSION 404s. Probe the
+# spaCy minor line (and the one below it, since models lag spaCy by a patch or a
+# minor) instead of guessing once, and install with an explicit --python: 'spacy
+# download' resolves its own target and has been observed to report success while
+# leaving the package out of this very venv.
+CANDIDATES=("${VERSION%.*}.0" "${VERSION%.*}.1" "${VERSION%.*}.2")
+
+target_installed() {
+  "$PY" - "$1" <<'PY'
+import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)
+PY
+}
+
 for model in "${MODELS[@]}"; do
   if installed "$model"; then
     echo "already installed: $model"
     continue
   fi
-  url="https://github.com/explosion/spacy-models/releases/download/${model}-${VERSION}/${model}-${VERSION}-py3-none-any.whl"
-  echo "installing $model ($VERSION)"
-  if ! uv pip install --python "$PY" "$url"; then
-    # spaCy's own installer knows the right URL for every published model/version.
-    echo "wheel URL unavailable, falling back to 'python -m spacy download'"
-    "$PY" -m spacy download "$model"
-  fi
-  installed "$model" || { echo "install reported success but $model is not importable" >&2; exit 1; }
+  echo "installing $model"
+  for version in "${CANDIDATES[@]}"; do
+    url="https://github.com/explosion/spacy-models/releases/download/${model}-${version}/${model}-${version}-py3-none-any.whl"
+    if uv pip install --python "$PY" "$url" >/dev/null 2>&1; then
+      echo "  installed from ${model}-${version}"
+      break
+    fi
+  done
+  # The authoritative check is that THIS interpreter can import it. spaCy's own
+  # success banner is not evidence: it has printed one for a package this venv
+  # cannot see.
+  target_installed "$model" || {
+    echo "could not install $model into $ENV_DIR/.venv" >&2
+    echo "  tried: ${CANDIDATES[*]}" >&2
+    echo "  spaCy publishes model releases at https://github.com/explosion/spacy-models/releases" >&2
+    exit 1
+  }
+  installed "$model" || { echo "$model imports but spaCy does not list it" >&2; exit 1; }
   echo "installed $model (spacy $MAJOR)"
 done
 

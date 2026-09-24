@@ -8,10 +8,13 @@ testable without spaCy, torch or a GPU.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from multimodal_pipeline.stages.spacy_source import SpacySourceStage
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKER = PROJECT_ROOT / "workers" / "spacy_worker.py"
@@ -211,3 +214,88 @@ class TestWorkerCodeDigest:
         from multimodal_pipeline.stages.base import worker_code_digest
 
         assert worker_code_digest(tmp_path / "absent.py") is None
+
+
+class TestInstalledModelInventory:
+    """Installing a language model must invalidate a stage that settled for blank.
+
+    Model resolution is configured -> same family -> discovered -> blank, so which
+    models exist changes the output as much as the configured names. Leaving them out
+    of the fingerprint made an installed `es_core_news_lg` serve a stale `blank`
+    result forever: lemmas and POS tags came back empty and nothing said so.
+    """
+
+    @staticmethod
+    def _model(root, name, version="3.8.0", spacy_version=">=3.8.0,<3.9.0"):
+        directory = root / ".venv" / "lib" / "python3.12" / "site-packages" / name
+        directory.mkdir(parents=True, exist_ok=True)
+        parts = name.split("_", 1)
+        meta = {"name": parts[1] if len(parts) > 1 else name, "version": version}
+        if spacy_version:
+            meta["spacy_version"] = spacy_version
+        (directory / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_reads_names_and_versions_from_the_environment(self, tmp_path):
+        from multimodal_pipeline.stages.spacy_source import installed_model_inventory
+
+        self._model(tmp_path, "en_core_web_lg", "3.8.0")
+        self._model(tmp_path, "es_core_news_lg", "3.8.0")
+        assert installed_model_inventory(tmp_path) == {
+            "en_core_web_lg": "3.8.0", "es_core_news_lg": "3.8.0"}
+
+    def test_ignores_packages_that_are_not_spacy_models(self, tmp_path):
+        """tokenizers and friends also ship a meta.json; they are not pipelines."""
+        from multimodal_pipeline.stages.spacy_source import installed_model_inventory
+
+        self._model(tmp_path, "en_core_web_lg")
+        self._model(tmp_path, "tokenizers", "0.20.0", spacy_version=None)
+        assert installed_model_inventory(tmp_path) == {"en_core_web_lg": "3.8.0"}
+
+    def test_unreadable_environment_is_empty_not_fatal(self, tmp_path):
+        """A missing venv means 'no models', which is what the stage would use anyway."""
+        from multimodal_pipeline.stages.spacy_source import installed_model_inventory
+
+        assert installed_model_inventory(tmp_path / "absent") == {}
+
+    def test_unreadable_meta_json_is_skipped(self, tmp_path):
+        from multimodal_pipeline.stages.spacy_source import installed_model_inventory
+
+        self._model(tmp_path, "en_core_web_lg")
+        broken = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages" / "xx_broken"
+        broken.mkdir(parents=True)
+        (broken / "meta.json").write_text("{not json", encoding="utf-8")
+        assert installed_model_inventory(tmp_path) == {"en_core_web_lg": "3.8.0"}
+
+    def test_a_newly_installed_model_invalidates_the_stage(self, context, tmp_path):
+        stage = SpacySourceStage()
+        context.config.spacy.uv_project = tmp_path
+        before = stage.request_digest(context)
+        self._model(tmp_path, "es_core_news_lg")
+        assert stage.request_digest(context) != before
+
+    def test_reinstalling_the_same_model_does_not_invalidate(self, context, tmp_path):
+        """The inventory is a fingerprint, not a timestamp: re-syncing must not rerun
+        every linguistics stage."""
+        stage = SpacySourceStage()
+        context.config.spacy.uv_project = tmp_path
+        self._model(tmp_path, "es_core_news_lg")
+        before = stage.request_digest(context)
+        self._model(tmp_path, "es_core_news_lg")
+        assert stage.request_digest(context) == before
+
+    def test_a_model_version_bump_invalidates(self, context, tmp_path):
+        stage = SpacySourceStage()
+        context.config.spacy.uv_project = tmp_path
+        self._model(tmp_path, "es_core_news_lg", "3.8.0")
+        before = stage.request_digest(context)
+        self._model(tmp_path, "es_core_news_lg", "3.8.1")
+        assert stage.request_digest(context) != before
+
+    def test_english_stage_inherits_the_binding(self, context, tmp_path):
+        from multimodal_pipeline.stages.spacy_english import SpacyEnglishStage
+
+        stage = SpacyEnglishStage()
+        context.config.spacy.uv_project = tmp_path
+        before = stage.request_digest(context)
+        self._model(tmp_path, "en_core_web_lg")
+        assert stage.request_digest(context) != before
