@@ -1,6 +1,7 @@
 name: unit
 
-# What this covers, stated exactly: the 718-test unit suite on one Linux runner, with
+# What this covers, stated exactly: the unit suite (collected count asserted by
+# tests/unit/test_ci_workflow_claims.py, not remembered here) on one Linux runner, with
 # ffmpeg present so the media tests that need real ffmpeg/ffprobe actually run instead of
 # skipping. Nothing here touches a GPU, OpenPose, /opt/openpose, a Hugging Face token or
 # the translation endpoint, so the following are NOT verified by CI and remain verified
@@ -15,9 +16,10 @@ name: unit
 #     hosted runner, and a green check nobody has measured on that runner is a claim, not
 #     a check.
 #
-# Measured on the development machine before this file was written:
-#   with ffmpeg 7.1.1 on PATH  -> 718 passed
-#   with ffmpeg removed from PATH -> 703 passed, 15 skipped (the suite is ffmpeg-optional)
+# Measured on the development machine, and re-derived on every test run by
+# tests/unit/test_ci_workflow_claims.py rather than trusted from this note:
+#   17 unit tests need real ffmpeg/ffprobe and skip without it (the suite is
+#   ffmpeg-optional). That test rebuilds PATH without ffmpeg and counts the difference.
 
 on:
   push:
@@ -48,8 +50,9 @@ jobs:
         with:
           enable-cache: true
 
-      # Two tests drive real ffmpeg/ffprobe, including the NTSC 30000/1001 frame-rate
-      # case; without ffmpeg they skip, which would quietly drop coverage by 15 tests.
+      # 17 unit tests drive real ffmpeg/ffprobe, including the NTSC 30000/1001 frame-rate
+      # case; without ffmpeg they skip, which would quietly drop that coverage. The number
+      # is asserted by tests/unit/test_ci_workflow_claims.py, which measures it both ways.
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
