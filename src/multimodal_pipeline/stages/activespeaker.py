@@ -299,8 +299,16 @@ class ActiveSpeakerStage(WorkerStage):
         # The dense-timeline guarantee: exactly one row per frame, in order. A gap
         # would silently shift every downstream timestamp mapping.
         indices = [row["frame_number"] for row in rows]
-        if indices != list(range(len(indices))):
-            problems.append("frame_number is not a dense 0..N-1 sequence")
+        break_kind = dense_sequence_break(indices)
+        if break_kind is not None:
+            # Three different faults used to share one string. They have different causes
+            # and different fixes, so the message names the fault and the row, and the
+            # same line goes to the stage log where an operator revalidating a stale
+            # dataset will actually look for it (review finding R3-001).
+            message = (f"frame_number is not a dense 0..N-1 sequence: {break_kind}")
+            ctx.log(f"{ctx.artifact('active_speaker_frames').name}: {message}",
+                    logging.WARNING)
+            problems.append(message)
 
         timestamps = [row["timestamp"] for row in rows]
         # Each row is an instant rather than a span, so start == end is the honest
@@ -392,3 +400,40 @@ def track_summary_rows(video_id: str, frame_rows: list[dict[str, Any]]) -> list[
             "mean_bbox_area": round(sum(areas) / len(areas), 2) if areas else None,
         })
     return rows
+
+
+def dense_sequence_break(indices: list[Any]) -> str | None:
+    """Describe why ``indices`` is not ``0..N-1``, or None when it is.
+
+    The stage's contract is exactly one row per output frame in order, so a violation is
+    always fatal. It used to be fatal *and* silent about its shape: a reordered table, a
+    gap, and a duplicated frame all produced "not a dense 0..N-1 sequence". They have
+    different causes -- a reordering says the writer sorted by something else, a gap says
+    rows were dropped, a duplicate says a frame was emitted twice -- and the operator
+    revalidating a stale dataset needs one of those three, not the umbrella.
+    """
+    if indices == list(range(len(indices))):
+        return None
+    for position, value in enumerate(indices):
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"row {position} has no frame_number"
+    duplicates = sorted({value for value in indices if indices.count(value) > 1})
+    if duplicates:
+        shown = ", ".join(str(value) for value in duplicates[:5])
+        return (f"frame_number {shown} is a duplicate, appearing more than once "
+                f"({len(indices)} rows, {len(set(indices))} distinct)")
+    first_bad = next(i for i, value in enumerate(indices) if value != i)
+    if sorted(indices) == list(range(len(indices))):
+        return (f"row {first_bad} holds frame_number {indices[first_bad]} instead, "
+                f"the rows are out of order")
+    expected = set(range(len(indices)))
+    missing = sorted(expected - set(indices))
+    extra = sorted(set(indices) - expected)
+    parts = []
+    if missing:
+        parts.append(f"{len(missing)} frame number(s) missing (first: {missing[0]}"
+                     + (f", last: {missing[-1]})" if len(missing) > 1 else ")"))
+    if extra:
+        parts.append(f"frame number(s) outside 0..{len(indices) - 1} "
+                     f"(first: {extra[0]})")
+    return ", ".join(parts) or f"row {first_bad} holds {indices[first_bad]}"
