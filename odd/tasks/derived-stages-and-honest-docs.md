@@ -565,6 +565,11 @@ essentially did; the two lines were checked and kept — they are the measured 8
 count ratchet cannot be satisfied any other way. The rule for my own task briefs going
 forward: authorisation to touch a file goes in the surfaces block or nowhere.
 
+**Review outcome.** Candidate `78170e2..db5f579` (lineage `review-bf33262273f63f3d`, high tier again —
+the same `process_boundary: shell_process` in `workers/spacy_worker.py`), four lenses, 169 lines, 658
+total. Approved with **no findings** this time; acknowledgement burned the authority. T18's advisory
+is closed with no follow-up left open.
+
 ## 13. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
