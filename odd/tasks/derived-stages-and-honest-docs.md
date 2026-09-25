@@ -28,7 +28,10 @@ Claim 5 is both a documentation defect and a capability gap: an environment that
 but has never been `uv sync`-ed is invisible to `inspect-environment`, and so are a missing
 `talknet_root` and a spaCy stage running `blank`.
 
-Test counts in README were checked with `--collect-only` and are correct: 681 unit + 30 e2e.
+Test counts in README are now asserted against `pytest --collect-only` by
+`tests/unit/test_readme_claims.py::TestDocumentedTestCounts`. They had drifted twice before
+that ratchet existed (the prose said 681 unit + 30 e2e while the tree collected 766 + 42);
+they currently read 782 unit + 42 e2e.
 
 **Block 2 — the six scoped capabilities** (`multimodal-video-pipeline.md` §20.1–20.6).
 
@@ -78,7 +81,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [ ] **T4** e2e suite: skip cleanly on a machine without OpenPose/ffmpeg 7 instead of
       failing, so a clean install can run the suite.
 - [ ] **T5** CI: CPU-only unit workflow, explicit about what it does not cover.
-- [ ] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
+- [x] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
       path convention with `openpose.root`, add a test.
 - [ ] **T7** `activespeaker`: the stage's first warning logs (closes R3-001).
 - [ ] **T8** dense frames: `frame_reason` distinguishing no-face / past-tail / unscored.
@@ -101,7 +104,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       Diarization) so the operator can compare two engines on the same corpus and choose.
       Added at the end of the queue on the operator's request, 2026-09-24. Done `35119ef`.
 
-## 6. T17 — NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote
+## 5. T17 — NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote
 
 Operator instruction: *"añade al final de la cola una donde lo añadimos, para tener tanto
 el pyannote como este. Después de analizar los resultados decidiré cuál conviene, pero de
@@ -157,7 +160,7 @@ replaced, renamed or reused between the two.
 4. Skips, never fails, when the environment or model is absent — this is an optional second
    opinion, and a corpus must still process with only pyannote, and with only Nemotron.
 
-## 7. T17 result — what was built and what it measured
+## 6. T17 result — what was built and what it measured
 
 Commit `35119ef` (see `git log`). The stage is `diarization_nemotron`, off by default.
 
@@ -260,7 +263,88 @@ decision with a real consequence: switching it silently relabels `speaker_id` in
 `speech/segments.parquet` and `speech/words.parquet` for every dataset produced so far. That
 warrants its own change once the operator has read the two tables.
 
-## 5. Execution notes
+## 7. T6 — `make_fixtures.sh`: a gate that says why, one OpenPose root, and real verification
+
+### What was actually broken, measured first
+
+* The script checked `command -v ffmpeg` but its whole product depends on the **`flite`
+  filter**, which comes from libflite and is absent from many packaged ffmpeg builds.
+  Verified here that the filter is build-specific: `ffmpeg -filters | grep flite` prints
+  `... flite  |->A  Synthesize voice from text using libflite.` on this machine and nothing
+  on a build without it. The failure mode was a lavfi parse error naming neither flite nor
+  the fix.
+* A bad `voice=` fails the same way with a different remedy (`Could not find voice 'x'`,
+  exit 234), so it gets its own diagnosis. Confirmed the voice-listing trick works:
+  `voice=?` makes ffmpeg print `Choose between the voices: awb, kal, kal16, rms, slt`.
+* It located OpenPose through an **`OPENPOSE_ROOT` environment variable** while the
+  pipeline uses `openpose.root` from YAML (`provenance.openpose_report()` discovers the
+  binary and models under it). `grep -rn OPENPOSE_ROOT` returned exactly one hit: this
+  script. Nothing else in the repository has ever read that variable, so a machine with
+  OpenPose anywhere but `/opt/openpose` was told "media not found" by the fixture script
+  while processing videos with OpenPose correctly.
+* Every `ffmpeg` call printed `generated <path>` unconditionally. `-shortest` makes the
+  output as long as the shorter stream, and an invocation that exits 0 having produced an
+  unprobeable file still announced success.
+
+### Decisions
+
+1. **Root resolution order**: `--openpose-root` > `openpose.root` from `--config` >
+   `openpose.root` from the repository's own `config/config.local.yaml` when it exists >
+   `OpenPoseConfig().root` read from the code. The environment variable is deleted, not
+   deprecated — one name for one setting. The default is asked of the real pydantic model
+   rather than re-literalled as `/opt/openpose`, so a change to the schema cannot leave a
+   stale copy here.
+2. **Missing person clip stays a warning, not an error.** The colour-bar corpus is a
+   legitimate corpus and the pose stages legitimately detect nobody; refusing to produce
+   fixtures because a non-redistributable OpenPose sample is absent would break fresh
+   installs for the wrong reason.
+3. **`--openpose-root` is reported in the output with its source** (`from --openpose-root`,
+   `from <config path>`, `from OpenPoseConfig default`) because the entire point of the
+   change is that the script and the pipeline can no longer disagree silently.
+
+### The bug my own first fix contained
+
+`ffmpeg -filters 2>/dev/null | grep -qE 'flite'` under `set -o pipefail` **rejected this
+machine's perfectly good ffmpeg**. grep exits on its first match, ffmpeg then dies of
+SIGPIPE with 141, pipefail reports the whole pipeline as failed, and the negation read it
+as "no flite". A gate that blocks working machines is worse than the silent failure it
+replaced, so the filter list is now captured into a variable before being matched.
+`TestFliteGate::test_accepts_a_build_that_has_the_filter` exists only to keep that
+false-negative dead.
+
+The same run also proved `-shortest` behaviour: `pipeline_demo.mp4` is 9.985 s although the
+request says 14 s, because the TTS clip is 9.985 s. Measured against the committed fixture
+(`data/input_videos/pipeline_demo.mp4` is also 9.985 s), so this is the script's long-standing
+intended behaviour, not a regression — recorded here so nobody "fixes" it by removing
+`-shortest` and producing 14 s of frozen picture.
+
+### Tests
+
+`tests/unit/test_make_fixtures.py`, 16 tests. A shim `ffmpeg`/`ffprobe` is used because the
+defects live in shell control flow and exit codes, and mocking a shell script's control
+flow is what hides them.
+
+| mutation | test that dies |
+|---|---|
+| flite gate removed | `test_rejects_a_build_without_the_flite_filter_and_names_the_fix` |
+| duration verification removed | `test_a_file_that_is_not_media_fails_the_run` |
+| audio-stream check removed | `test_a_video_without_an_audio_stream_is_rejected` |
+| `OPENPOSE_ROOT` read reinstated | `test_the_environment_variable_is_gone` |
+| config root ignored | `test_config_root_is_used_when_no_flag_is_given` |
+
+Two of my own test bugs were found and fixed while writing these: the shim's
+`*-f*null*` pattern also swallowed the `anullsrc` silent-fixture call (so no file was
+produced at all), and the ffprobe durations table matched a bare filename while the script
+passes absolute paths, so an assertion about "a 0-second file" had never actually fired.
+Two tests also encoded *this machine's* filesystem (they depended on whether `/opt/openpose`
+exists) and were rewritten to assert provenance rather than absence.
+
+`TestAgainstRealFfmpeg` runs the real toolchain and checks the fixtures are probeable
+**and actually contain speech** (`volumedetect` mean > −60 dB for `pipeline_demo.mp4`,
+< −60 dB for the silent control), which no shim can establish. Full suite: 782 unit +
+42 e2e pass.
+
+## 8. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with

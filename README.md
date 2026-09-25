@@ -70,6 +70,18 @@ scripts/make_fixtures.sh                    # ~1 s, uses ffmpeg's flite TTS
 uv run multimodal-pipeline process-video -c config/config.local.yaml data/input_videos/pipeline_demo.mp4
 ```
 
+`make_fixtures.sh` needs the ffmpeg **`flite` filter**, which comes from libflite and is
+missing from some packaged ffmpeg builds; when it is absent the script stops and says how
+to check (`ffmpeg -filters | grep flite`) rather than dying inside a lavfi parse error. It
+also verifies every fixture it writes with ffprobe (exists, ≥ 1 s, has both a video and an
+audio stream), because `-shortest` makes the output as long as the shorter stream and an
+ffmpeg that exits 0 on junk used to still print "generated …". The clip with a real person
+is copied from your OpenPose install: the root is `--openpose-root`, else `openpose.root`
+from the config given with `--config`, else from `config/config.local.yaml`, else the
+schema default — the same setting the pipeline already uses, and it prints which one it
+used. `pipeline_demo.mp4` is 9.985 s rather than the 14 s requested because that is how
+long the synthesised speech is; `-shortest` then trims the video to match.
+
 ---
 
 ## Commands
@@ -493,7 +505,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 766 tests, ~25 s
+uv run --with pytest pytest tests/unit -q     # 783 tests, ~25 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -548,7 +560,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                766 tests
+tests/unit/                783 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
