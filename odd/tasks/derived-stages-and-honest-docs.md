@@ -88,7 +88,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       path convention with `openpose.root`, add a test.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
 - [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb` (code+tests+docs as one work unit), review recorded in `406f1c2`; native review approved (high, 4 lenses), evidence in §9.
-- [ ] **T9** spaCy model choice gated on language-detection status, default unchanged.
+- [x] **T9** spaCy model choice sees the language-detection grade, default unchanged — `ba602d7`, evidence in §10.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
 - [ ] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph,
@@ -471,7 +471,54 @@ relaunches cost nothing; the rule is now known. The writer also tried to drive t
 lifecycle from inside itself and reported that it could not, which is correct — the facade
 lives in the parent and the review below is the parent's, not the writer's.
 
-## 10. Execution notes
+## 10. T9 — the language-detection grade stops being decoration
+
+**What was true before:** `whisperx_worker.py` wrote `language_detection`
+(`{status: configured|ok|low, probability, reasons}`) into `speech/raw/whisperx.json` and
+nothing read it — `grep -rn language_detection src/ workers/` returned only the writer. The
+spaCy resolver received the detected language string and none of its reliability.
+
+**The measurement that decided the policy.** All seven auto-detected clips in this corpus are
+graded `low`, because every clip is shorter than WhisperX's 30 s detection window (0.997,
+0.986, 0.883, 0.957, 0.957, 0.238, 0.215). And where the resulting choice was checked it is
+correct: La 1 selected `es_core_news_lg` and its Spanish lemmas were verified; the en clips
+selected `en_core_web_lg`. A policy that refused to build on `low` unconditionally would
+strip the Spanish layer from this corpus's only Spanish clip on the strength of a grade that
+is structurally always pessimistic at this clip length. So:
+
+- `spacy.trust_low_language_detection: true` (default) — today's outcome byte-for-byte, plus a
+  WARNING naming language, probability, the model still selected, and the key that reverses
+  it, and `language_reliability`/`language_reliability_trusted` recorded in the raw document.
+- `false` — the source variant stops using the detection for model choice and lands on the
+  existing honest path (`fallback_no_model` → blank: tokens and sentences, no lemmas/POS/deps).
+
+**Real-data verification, both directions.** Trusted (default): batch 7/7, `validate ok: true`,
+La 1 keeps `es_core_news_lg (substituted_family)`, en clips keep `en_core_web_lg`, the two `nn`
+clips keep `blank` — the identical model table as before, now with the grade beside it; the
+trusted-low warning is in `logs/spacy_source.log`. Untrusted: the flag set to `false` and a
+rerun demoted La 1 to `model='blank' (fallback_no_model)` with a warning naming what was lost
+and the key that brings it back. Config restored, rerun, dataset back to the pre-change table.
+
+**The failed experiment that nearly read as a bug.** The first opt-out run showed
+`trusted: True` — I nearly filed it as a policy bug. Cause: my Python edited a `spacy:` block
+into `config/config.local.yaml` that does not exist in that file; `str.replace` matched
+nothing, wrote the file back unchanged, and the pipeline faithfully ran the unchanged default.
+Diagnosed by loading the config and printing the flag *before* believing the run. The lesson
+is recorded because it is the third time this session a self-inflicted harness failure
+looked like a product result (see §7 and §9): when a measurement contradicts a fresh
+implementation, check your own probe first.
+
+**Design boundary.** `select_model` is untouched — model *availability* and detection
+*quality* are different contracts; the policy is applied at the call site. `SpacyEnglishStage`
+deliberately does not inherit the grade (it forces `en`; a cache key depending on
+source-language detection would be a false dependency — pinned by a digest-unchanged test).
+
+**Verification.** 31 new tests (`tests/unit/test_spacy_language_policy.py`; 90 across the two
+spaCy files), unit 861, e2e 42, suite 903 passed. Parent-run mutations: forcing
+`trusted=True` kills three named tests; letting english inherit the key kills two. README
+warning texts verified verbatim against the worker strings.
+
+## 11. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with
