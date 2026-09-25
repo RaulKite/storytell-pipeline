@@ -40,10 +40,11 @@ from ..schemas import (
     SPEAKER_FUSION_SCHEMA,
     read_table,
     table_columns,
+    table_rows,
     write_table,
 )
 from ..validation import check_intervals
-from .base import Stage, StageContext
+from .base import Stage, StageContext, StageOutcome
 
 #: Which fused artifact each engine writes. Kept next to the config key that selects it so
 #: an engine cannot quietly start overwriting the other engine's file.
@@ -173,13 +174,55 @@ class SpeakerFusionStage(Stage):
         # and it was already checked in aggregate by enabled().
         ctx.input("active_speaker_frames")
 
+    def run(self, ctx: StageContext) -> StageOutcome:
+        """Prune what the configuration alone proves stale, even when the run skips.
+
+        Pruning was a property of `execute`, so any skip — the ASD frames table not written
+        yet on a mid-build dataset, a selected engine's turn table deleted — left an
+        unfusable engine's fused table on disk indefinitely: the reuse test does not send the
+        stage back through `execute` for a different reason, and nothing else ever visits that
+        file. `execute` remains the normal path (it prunes with the tables it just wrote in
+        hand); this covers the other one.
+
+        The gate is the config flag, not the wording of the skip reason, because one skip
+        reason must keep deleting and another must never: ``speaker_fusion.enabled: false`` is
+        the operator switching this stage off over tables they still want, and deleting those
+        would destroy work the pipeline cannot regenerate without TalkNet. Coupling the
+        deletion to the reason string would let a reworded `enabled()` message decide whose
+        tables get deleted.
+        """
+        outcome = super().run(ctx)
+        if outcome.status == "skipped" and ctx.config.speaker_fusion.enabled:
+            # Only prune when at least one engine is still fusible. An empty fusible set is
+            # not evidence that a table went stale, it is the absence of evidence: "no engine
+            # has a turn table" is exactly what a dataset that has not been diarized yet looks
+            # like, and pruning on it would delete the verdicts a previous complete run made
+            # (and they cannot be recomputed until the diarizer runs again). Deselection is
+            # positive evidence and still deletes; a vanished input is not. With one engine
+            # configured — the shipped default — a deleted `speaker_turns.parquet` is
+            # indistinguishable from a mid-build dataset, so the fused table survives and the
+            # next diarization re-fuses it in seconds.
+            fusible = self.selected_outputs(ctx)
+            if fusible:
+                # The fusible engines' own tables survive a run that was unable to recompute
+                # them, which is the same recoverable-state argument.
+                self._prune_stale_outputs(ctx, kept=set(fusible))
+        return outcome
+
     def execute(self, ctx: StageContext) -> dict[str, Any]:
         cfg = ctx.config.speaker_fusion
         frames = self._frame_rows(ctx)
-        counts: dict[str, int] = {}
-        agreements: dict[str, dict[str, int]] = {}
-        skipped: dict[str, str] = {}
 
+        # Phase 1: compute every engine's rows before any output file is opened. Fusing and
+        # writing used to happen in one loop, so an engine that raised halfway through left
+        # the engines before it republished and the engines after it still holding a previous
+        # run's table — byte-for-byte indistinguishable from a fresh one, with `validate`
+        # never reached because the stage failed. Computing first means a run that raises has
+        # written nothing at all and the dataset is exactly what it was. (A write that fails
+        # half-way through phase 2 is a different and rarer class — disk full, permissions —
+        # and is still reported as a failed stage.)
+        prepared: list[tuple[TurnTableSpec, list[dict[str, Any]]]] = []
+        skipped: dict[str, str] = {}
         for spec in self.selected_specs(ctx):
             turns = self._turn_rows(ctx, spec)
             if turns is None:
@@ -188,14 +231,19 @@ class SpeakerFusionStage(Stage):
                 ctx.log(f"speaker_fusion: skipping engine {spec.engine}: "
                         f"{spec.artifact}.parquet not found", logging.WARNING)
                 continue
-            rows = fuse_turn_table(
+            prepared.append((spec, fuse_turn_table(
                 video_id=ctx.video_id,
                 engine=spec.engine,
                 turns=turns,
                 frames=frames,
                 min_active_ratio=cfg.min_active_ratio,
                 min_face_frames=cfg.min_face_frames,
-            )
+            )))
+
+        # Phase 2: publish, then prune.
+        counts: dict[str, int] = {}
+        agreements: dict[str, dict[str, int]] = {}
+        for spec, rows in prepared:
             output = FUSION_OUTPUTS[spec.engine]
             write_table(ctx.artifact(output),
                         pa.Table.from_pylist(rows, schema=SPEAKER_FUSION_SCHEMA),
@@ -226,12 +274,10 @@ class SpeakerFusionStage(Stage):
         # confident nonsense. This runs *after* every write succeeded: pruning first would
         # destroy a good dataset when this run goes on to fail.
         #
-        # Pruning is deliberately a property of a *completed* run only. `run` skips before
-        # `execute` when the operator set `speaker_fusion.enabled: false`, and when the ASD
-        # table is not there yet (a fresh dataset mid-build); deleting fused tables in either
-        # state would destroy work the operator still wants. The narrower consequence is
-        # recorded in the ODD document: if *no* selected engine has a turn table the stage
-        # skips and any earlier fused tables stay on disk until the stage completes again.
+        # Pruning is a property of a run that got this far. A *skipped* run prunes the
+        # narrower set the configuration alone proves stale (see `run` above), and a disabled
+        # stage prunes nothing, because the operator's `speaker_fusion.enabled: false` is a
+        # deliberate pause over tables they still want.
         pruned = self._prune_stale_outputs(ctx, kept=set(counts))
         ctx.scratch["speaker_fusion"] = {"tables": counts, "agreement": agreements,
                                          "skipped_engines": skipped, "pruned_outputs": pruned}
@@ -322,6 +368,21 @@ class SpeakerFusionStage(Stage):
                                       [f"{path.name} missing columns: {', '.join(missing)}"])
             rows = read_table(path).to_pylist()
             self._check_rows(ctx, rows, engine=spec.engine)
+            # Row-level checks say the rows that are here are honest; only this comparison
+            # says *all* of them are. `fuse_turn_table` emits exactly one row per input turn,
+            # so a differing count means the table was written against a different turn table
+            # than the one now on disk — a dropped or hidden turn row validated clean before
+            # this existed, and a consumer joining the fused table to the transcript just saw
+            # one speaker go quiet. Absent turn tables are not reached: `fusible_specs` skips
+            # that engine here exactly as `execute` does.
+            expected = table_rows(ctx.artifact(spec.artifact))
+            if expected != len(rows):
+                raise ValidationError(self.name, [
+                    f"{output} ({path.name}) has {len(rows)} fused row(s) while its input "
+                    f"{spec.artifact} has {expected} turn row(s): {path.name} is stale — it "
+                    f"was not written from these turns (the turn table itself reads fine, so "
+                    f"this is staleness, not corruption); rerun speaker_fusion to recompute "
+                    f"it from {spec.artifact}"])
             summary[output] = {
                 "rows": len(rows),
                 "agreement": _tally(rows),
