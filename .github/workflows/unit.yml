@@ -1,0 +1,85 @@
+name: unit
+
+# What this covers, stated exactly: the 718-test unit suite on one Linux runner, with
+# ffmpeg present so the media tests that need real ffmpeg/ffprobe actually run instead of
+# skipping. Nothing here touches a GPU, OpenPose, /opt/openpose, a Hugging Face token or
+# the translation endpoint, so the following are NOT verified by CI and remain verified
+# only by the live runs recorded in odd/tasks/:
+#
+#   - whisperx, diarization, activespeaker (GPU models)
+#   - openpose (needs a third-party install)
+#   - live translation and the real spaCy model resolution for non-English languages
+#   - tests/e2e, which shells out to `uv` project creation for real and to the OpenPose
+#     binary; it is now skip-clean on a machine that lacks either (see commit
+#     "let the e2e suite skip what this machine lacks"), but it has never been run on a
+#     hosted runner, and a green check nobody has measured on that runner is a claim, not
+#     a check.
+#
+# Measured on the development machine before this file was written:
+#   with ffmpeg 7.1.1 on PATH  -> 718 passed
+#   with ffmpeg removed from PATH -> 703 passed, 15 skipped (the suite is ffmpeg-optional)
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # -p no:randomly is not cosmetic: some tests share module-level state and a
+      # randomised order fails them for reasons unrelated to the change. pytest-randomly
+      # is not installed here, but the flag keeps the command identical to the one in
+      # AGENTS.md, which is what an operator copy-pastes.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Two tests drive real ffmpeg/ffprobe, including the NTSC 30000/1001 frame-rate
+      # case; without ffmpeg they skip, which would quietly drop coverage by 15 tests.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Sync the orchestrator environment
+        run: uv sync --python 3.12
+
+      - name: Report the interpreter and toolchain
+        run: |
+          uv run python -c "import sys, shutil; print('python', sys.version.split()[0]); print('ffmpeg', shutil.which('ffmpeg')); print('ffprobe', shutil.which('ffprobe'))"
+
+      - name: Unit suite
+        run: uv run --with pytest pytest tests/unit -q -p no:randomly
+
+      # The shipped template must keep loading against the schema; a template that
+      # drifted is worse than no template, because it is the first thing a new operator
+      # copies. inspect-environment takes no --json: it is JSON unconditionally.
+      - name: The shipped example config still loads
+        run: |
+          uv run multimodal-pipeline inspect-environment -c config/config.example.yaml > /tmp/env.json
+          uv run python - <<'PY'
+          import json
+          payload = json.load(open("/tmp/env.json"))
+          tools = payload["tools"]
+          assert payload["system"]["python"], payload
+          assert tools["ffmpeg"]["ffmpeg"], "ffmpeg version not probed"
+          print("openpose discovered:", bool(tools["openpose"].get("executable")))
+          print("uv projects present:", {k: v["exists"] for k, v in tools["uv_projects"].items()})
+          PY
+
+      # Fails if the README's checkable claims (license, environment count, CLI flags,
+      # artifact names) have drifted from the tree.
+      - name: README claims match the tree
+        run: uv run --with pytest pytest tests/unit/test_readme_claims.py -q -p no:randomly
