@@ -58,9 +58,20 @@ class TestLayout:
                 "pose", "logs", "provenance"} <= top_levels
 
     def test_raw_and_normalised_outputs_never_collide(self) -> None:
+        """Raw tool output never lands on a normalized table path.
+
+        The invariant is about *namespace*, not spelling: a `*_raw` key has to live in a
+        directory that says so, so the preserved native artifact and the Parquet table
+        derived from it can never be the same file and a cleanup can never mistake one
+        for the other. The segment is matched as a prefix because raw output is
+        namespaced by purpose too -- `pose/raw` and `pose/raw_images` are both raw, and
+        a key pointing at `pose/images` still fails this test.
+        """
         raw = {name for name in ARTIFACT_LAYOUT if name.endswith("_raw")}
+        assert raw, "no *_raw artifacts: this test would pass by checking nothing"
         for name in raw:
-            assert "raw" in Path(ARTIFACT_LAYOUT[name]).parts, name
+            parts = Path(ARTIFACT_LAYOUT[name]).parts
+            assert any(segment.startswith("raw") for segment in parts), name
 
     def test_ensure_dirs_creates_the_full_tree(self, tmp_path: Path) -> None:
         video_paths = VideoPaths(tmp_path / "fresh")

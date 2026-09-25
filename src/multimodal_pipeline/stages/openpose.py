@@ -16,6 +16,14 @@ Facts verified on this machine (2026-09-23) rather than assumed from docs:
 A 4-hour 50 fps recording is ~720k JSON files, so raw parsing is streamed and
 Parquet row groups are written incrementally: memory stays flat regardless of
 video length.
+
+Rendering is a separate concern and is off by default. Verified against this build:
+``--write_images <dir>`` picks the output directory and ``--write_images_format`` the
+container, while rendering is decided per module — ``--render_pose``, ``--face_render``
+and ``--hand_render`` are independent switches, each accepting ``-1`` to inherit
+``--render_pose``. So body+hands+face skeletons in one pass are one extra flag group on
+the run OpenPose already does, not a second run. ``--display 0`` stays: rendering is
+independent of visual display and this build has no display to turn off.
 """
 
 from __future__ import annotations
@@ -37,11 +45,30 @@ from .base import Stage, StageContext
 #: Keypoint rows per frame group: bounds the row buffer, not the run length.
 ROWS_PER_GROUP = 150_000
 
+#: Container for rendered frames. ``jpg`` because one PNG per frame at full
+#: resolution is the disk cost this feature is most likely to blow up on.
+IMAGE_FORMAT = "jpg"
+
+#: File suffixes counted as rendered images. OpenPose chooses the encoder from
+#: ``--write_images_format`` and ``extra_args`` can override it, so counting follows
+#: the files on disk rather than the flag we passed.
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp")
+
+
+def scaled_output_resolution(width: int, height: int, max_side: int) -> tuple[int, int]:
+    """Largest WxH that fits ``max_side`` on the long side, aspect preserved.
+
+    Never upscales: a 320x240 source stays 320x240. OpenPose would happily render a
+    bigger frame, and a bigger frame is only an interpolation of the same pixels.
+    """
+    ratio = min(1.0, float(max_side) / float(max(width, height)))
+    return (max(int(round(width * ratio)), 1), max(int(round(height * ratio)), 1))
+
 
 class OpenPoseStage(Stage):
     name = "openpose"
     inputs = ("metadata", "frame_index")
-    outputs = ("pose_raw", "pose_body", "pose_hands", "pose_face")
+    outputs = ("pose_raw", "pose_images_raw", "pose_body", "pose_hands", "pose_face")
     config_keys = ("openpose",)
 
     # ---------------------------------------------------------------- fingerprint
@@ -59,6 +86,11 @@ class OpenPoseStage(Stage):
             "face_enabled": cfg.face_enabled,
             "gpu": cfg.gpu,
             "disable_multi_thread": cfg.disable_multi_thread,
+            # Both change what is written to pose/, so both invalidate the stage.
+            # ``image_max_side`` is hashed even while rendering is off: enabling the
+            # flag must not silently resurrect a resolution recorded earlier.
+            "write_images": cfg.write_images,
+            "image_max_side": cfg.image_max_side,
             "extra_args": cfg.extra_args,
             # Model file identity: swapping a caffemodel must re-run pose.
             "model_files": discovery.get("models"),
@@ -119,7 +151,10 @@ class OpenPoseStage(Stage):
             "--num_gpu_start", str(cfg.gpu),
             # Headless: this build has no --disable_display flag at all.
             "--display", "0",
-            "--render_pose", "0",
+            # One occurrence only: gflags would let a later duplicate win, and a
+            # command whose meaning depends on flag order is not reviewable. Default
+            # off keeps the literal "0" this stage has always passed.
+            "--render_pose", self.render_pose_value(cfg),
             # Keeping every frame in RAM is the main memory risk on long videos.
             "--disable_multi_thread" if cfg.disable_multi_thread else "--disable_multi_thread=false",
         ]
@@ -130,9 +165,68 @@ class OpenPoseStage(Stage):
         argv += ["--model_pose", cfg.body.model or "BODY_25"]
         argv += ["--hand"] if cfg.hands_enabled else ["--hand=0"]
         argv += ["--face"] if cfg.face_enabled else ["--face=0"]
+        argv += self.render_args(ctx)
         # glog output must go to stderr so it lands in the stage log file.
         argv += ["--logtostderr", "--alsologtostderr"]
         return argv + list(cfg.extra_args)
+
+    @staticmethod
+    def render_pose_value(cfg) -> str:
+        """``-1`` = inherit, i.e. GPU rendering on the CUDA path this build uses."""
+        return "-1" if (cfg.write_images and cfg.body.enabled) else "0"
+
+    def render_args(self, ctx: StageContext) -> list[str]:
+        """The flag group that asks OpenPose for its own rendered frames.
+
+        Returns nothing at all when ``write_images`` is off, which is what keeps the
+        default command byte-identical to the one from before this feature existed.
+        ``--render_pose`` is passed by ``build_command`` itself, in its original
+        position; only the remaining switches are added here.
+        """
+        cfg = ctx.config.openpose
+        if not cfg.write_images:
+            return []
+        # Rendering is per module in this build, so each switch follows the config
+        # that decides whether that module's keypoints are even produced. When body
+        # publishing is off its skeleton is not drawn either, because an image for a
+        # table that was never published is a lie of the same size as the table.
+        argv = [
+            "--write_images", str(ctx.artifact("pose_images_raw")),
+            "--write_images_format", IMAGE_FORMAT,
+            "--face_render", "1" if cfg.face_enabled else "0",
+            "--hand_render", "1" if cfg.hands_enabled else "0",
+        ]
+        resolution = self.output_resolution(ctx)
+        if resolution:
+            argv += ["--output_resolution", resolution]
+        return argv
+
+    def output_resolution(self, ctx: StageContext) -> str | None:
+        """``WxH`` for ``--output_resolution``, or None to leave OpenPose's default.
+
+        Dimensions come from the metadata artifact (ffprobe's video stream), not from
+        a second probe: the stage already depends on that file and its hash.
+        """
+        cfg = ctx.config.openpose
+        if not cfg.write_images or cfg.image_max_side is None:
+            return None
+        path = ctx.artifact("metadata")
+        try:
+            metadata = read_json(path)
+        except (OSError, ValueError):
+            return None
+        width, height = metadata.get("width"), metadata.get("height")
+        if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+            return None
+        w, h = scaled_output_resolution(width, height, cfg.image_max_side)
+        return f"{w}x{h}"
+
+    @staticmethod
+    def count_rendered_images(ctx: StageContext) -> int:
+        images = ctx.artifact("pose_images_raw")
+        if not images.is_dir():
+            return 0
+        return sum(1 for path in images.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES)
 
     def publish_body(self, ctx: StageContext) -> bool:
         return bool(ctx.config.openpose.body.enabled)
@@ -152,17 +246,80 @@ class OpenPoseStage(Stage):
         if not cfg.body.enabled:
             ctx.log("openpose.body.enabled=false: the CLI cannot disable body tracking, so the "
                     "tracker runs but pose/body.parquet is not published", level=30)
+        if cfg.write_images:
+            self.log_render_plan(ctx)
         result = run_command(argv, log_path=ctx.paths.log(self.name), timeout=cfg.timeout_seconds,
                              cwd=str(raw_dir.parent.parent))
+        rendered = self.count_rendered_images(ctx)
+        if cfg.write_images and rendered == 0:
+            # The trap this guard exists for: OpenPose exits 0 having written no
+            # images, and the dataset looks complete from here on. Fail now, before
+            # normalisation, with the flags that decide rendering named.
+            ctx.log(
+                f"openpose.write_images=true but {ctx.artifact('pose_images_raw')} contains no "
+                f"rendered images: --write_images/--render_pose/--face_render/--hand_render "
+                f"produced nothing (exit {result.returncode})", level=40)
+            raise StageError(
+                "OpenPose rendered no images although write_images is enabled: "
+                f"{ctx.artifact('pose_images_raw')} is empty. The run would otherwise be "
+                "recorded as complete with zero skeletons. Flags that decide rendering: "
+                "--write_images, --write_images_format, --render_pose, --face_render, "
+                "--hand_render (each render switch accepts -1 to inherit --render_pose).",
+                details={"rendered_images": 0, "exit_code": result.returncode,
+                         "command": result.argv_masked})
         summary = self.normalize(ctx)
+        if cfg.write_images:
+            ctx.log(f"OpenPose render: {rendered} rendered images in "
+                    f"{ctx.artifact('pose_images_raw').relative_to(ctx.paths.dataset_dir)}")
         return {
             "tool_version": openpose_version(ctx),
             "model_version": cfg.body.model if cfg.body.enabled else None,
             "command": result.argv_masked,
             "executable": argv[0],
             "exit_code": result.returncode,
-            "extra": {"raw_frames": summary.get("raw_frames"), **summary},
+            "extra": {"raw_frames": summary.get("raw_frames"), "rendered_images": rendered,
+                      **summary, **self.render_provenance(ctx, rendered=rendered)},
         }
+
+    def log_render_plan(self, ctx: StageContext) -> None:
+        """One warning per run about the resolution the render will use.
+
+        Only ``--output_resolution`` bounds the cost, and its default is the input
+        resolution: at 25 fps a 4-hour recording is ~360k full-frame images. The
+        stage says so once instead of deciding the downscale for the operator, and it
+        says so again when a requested cap cannot be applied -- silently ignoring
+        ``image_max_side`` would leave the operator believing the run was cheap.
+        """
+        cfg = ctx.config.openpose
+        if cfg.image_max_side is None:
+            ctx.log("openpose.write_images=true with image_max_side=null: OpenPose renders at full "
+                    "input resolution (--output_resolution -1x-1), which costs hundreds of MB to GBs "
+                    "per video; set openpose.image_max_side to cap the longest rendered side",
+                    level=30)
+        elif self.output_resolution(ctx) is None:
+            ctx.log(f"openpose.image_max_side={cfg.image_max_side} ignored: the metadata artifact "
+                    f"has no width/height, so no --output_resolution could be computed and the "
+                    "render runs at full input resolution", level=30)
+
+    def render_provenance(self, ctx: StageContext, *, rendered: int) -> dict[str, Any]:
+        """What was asked for and what arrived, alongside the run's other extras.
+
+        ``validate`` reports the same count, and its report is the part that is
+        persisted per stage; this records the request that produced it, so a later
+        reader can tell "no images" from "no images requested".
+        """
+        cfg = ctx.config.openpose
+        return {"render": {
+            "requested": bool(cfg.write_images),
+            "directory": str(ctx.artifact("pose_images_raw").relative_to(ctx.paths.dataset_dir)),
+            "format": IMAGE_FORMAT if cfg.write_images else None,
+            "render_pose": self.render_pose_value(cfg),
+            "face_render": "1" if (cfg.write_images and cfg.face_enabled) else "0",
+            "hand_render": "1" if (cfg.write_images and cfg.hands_enabled) else "0",
+            "output_resolution": self.output_resolution(ctx),
+            "image_max_side": cfg.image_max_side,
+            "rendered_images": rendered,
+        }}
 
     # ------------------------------------------------------------ normalisation
 
@@ -263,6 +420,7 @@ class OpenPoseStage(Stage):
             raise ValidationError(self.name, ["pose/raw contains no OpenPose JSON output"])
         duration = self._duration(ctx)
         report: dict[str, Any] = {"raw_files": len(raw_files)}
+        report["rendered_images"] = self.validate_renders(ctx, raw_frames=len(raw_files))
         for name, schema, time_col in (
             ("pose_body", BODY_SCHEMA, "timestamp"),
             ("pose_hands", HANDS_SCHEMA, "timestamp"),
@@ -299,6 +457,35 @@ class OpenPoseStage(Stage):
             if unknown:
                 raise ValidationError(self.name, [f"pose_body has keypoints outside BODY_25: {sorted(unknown)[:6]}"])
         return report
+
+    def validate_renders(self, ctx: StageContext, *, raw_frames: int) -> int:
+        """Check ``pose/raw_images`` against the frame count, or excuse it entirely.
+
+        OpenPose writes one rendered frame per processed frame, so a directory that
+        is materially short means a truncated or partially deleted render. One frame
+        of slack is allowed: the pipeline counts JSON files while OpenPose may finish
+        writing the last image after the last JSON it flushed.
+
+        With rendering off, the directory is not checked at all. A dataset that was
+        once produced with the flag on keeps its images, and asking a run that never
+        requested them to account for them would turn an opt-in off-switch into a
+        permanent validation failure -- the fingerprint already forces the rerun that
+        actually decides what is there.
+        """
+        rendered = self.count_rendered_images(ctx)
+        if not self._config(ctx).write_images:
+            return rendered
+        if not ctx.artifact("pose_images_raw").is_dir():
+            raise ValidationError(self.name,
+                                  [f"pose/raw_images missing although openpose.write_images=true "
+                                   f"({ctx.artifact('pose_images_raw')})"])
+        # ``>= raw_frames - 1``: one image per processed frame, one frame of slack.
+        if rendered < raw_frames - 1:
+            raise ValidationError(self.name,
+                                  [f"pose/raw_images has {rendered} images but pose/raw has "
+                                   f"{raw_frames} frame JSON files (expected at least "
+                                   f"{max(raw_frames - 1, 0)}, one render per processed frame)"])
+        return rendered
 
     @staticmethod
     def _config(ctx: StageContext):

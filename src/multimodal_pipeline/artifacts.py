@@ -44,6 +44,11 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "acoustic_frames": "acoustic/frame_features.parquet",
     "acoustic_segments": "acoustic/segment_features.parquet",
     "pose_raw": "pose/raw",
+    # Optional output: OpenPose's own rendered skeletons, only present when
+    # openpose.write_images is on. Kept beside the raw JSON because a render is raw
+    # tool output, not a derived table -- and it stays out of ensure_dirs' "always a
+    # promise" set: an empty directory is not an artifact.
+    "pose_images_raw": "pose/raw_images",
     "pose_body": "pose/body.parquet",
     "pose_hands": "pose/hands.parquet",
     "pose_face": "pose/face.parquet",
@@ -127,6 +132,10 @@ class VideoPaths:
             "linguistic/english/raw",
             "acoustic/raw",
             "pose/raw",
+            # Declared optional output of the openpose stage, so the slot must exist
+            # like pose/raw does: Stage.outputs_present checks existence, and without
+            # this the stage could never be reused with rendering switched off.
+            "pose/raw_images",
             "speaker/raw",
             "logs",
             "provenance",

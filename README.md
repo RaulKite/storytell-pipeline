@@ -159,7 +159,8 @@ data/processed/<video_id>/
 │   ├── body.parquet              ← BODY_25 keypoints, one row per person/keypoint
 │   ├── hands.parquet             ← 21 points × left/right
 │   ├── face.parquet              ← 70 points
-│   └── raw/<video>_NNNNNNNNNNNN_keypoints.json   ← OpenPose's own output, untouched
+│   ├── raw/<video>_NNNNNNNNNNNN_keypoints.json   ← OpenPose's own output, untouched
+│   └── raw_images/<video>_NNNNNNNNNNNNN_rendered.jpg   ← only with write_images: true
 ├── speaker/
 │   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense, face_status, frame_reason)
 │   ├── active_speaker_tracks.parquet   ← one row per TalkNet face track
@@ -259,6 +260,25 @@ stage is blocked only by a failed stage in its own dependency chain, and a *skip
 prerequisite (disabled, or a missing credential) is not a failure — `speaker_assignment`
 degrades with its own reason instead of poisoning the run, so a dataset without a
 Hugging Face token still gets transcript, linguistics, acoustics and pose.
+
+OpenPose can also emit the rendered skeleton frames it draws, and it is **off by
+default**: `openpose.write_images: true` adds `--write_images pose/raw_images` plus the
+per-module switches this build actually exposes (`--render_pose -1` to inherit, and
+`--face_render` / `--hand_render`, each following `face.enabled` / `hands.enabled`), so
+body, hand and face skeletons land in one pass over the frames OpenPose already
+computed. Set it deliberately: both it and `image_max_side` are hashed into the
+`openpose` fingerprint, so enabling them re-runs the slowest stage on every dataset you
+already produced. And bring disk space — OpenPose's own `--output_resolution` default is
+`-1x-1`, full input resolution, which is hundreds of MB to several GB per video; give
+`image_max_side` a pixel budget (640 is enough to read a pose) or the stage logs the
+warning once and renders at source size anyway. What comes back is a *view*, not data:
+`pose/*.parquet` stays the measured keypoints, the JSON in `pose/raw/` stays
+byte-identical, and a run that was asked to render and wrote zero images fails loudly
+instead of completing an empty dataset. Capping the render does not rescale the data:
+measured on a 1280×720 clip with `image_max_side: 640`, the images came back 640×360
+while `--keypoint_scale` kept its default and the JSON coordinates still reached x≈1223
+— so the tables stay in source pixels and the images are a downscaled view of them
+(exit 0, 205 frames, 205 images, 31 MB).
 
 `activespeaker` answers a question the audio-only stages cannot: **which visible face
 is producing the audio**. Pyannote says when someone speaks and OpenPose says where
@@ -575,7 +595,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 866 tests, ~30 s
+uv run --with pytest pytest tests/unit -q     # 914 tests, ~30 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -631,7 +651,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                866 tests
+tests/unit/                914 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
