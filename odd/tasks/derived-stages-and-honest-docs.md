@@ -570,7 +570,47 @@ the same `process_boundary: shell_process` in `workers/spacy_worker.py`), four l
 total. Approved with **no findings** this time; acknowledgement burned the authority. T18's advisory
 is closed with no follow-up left open.
 
-## 13. Execution notes
+## 13. T10 — opt-in OpenPose skeleton renders (§20.5), verified against the binary
+
+`openpose.write_images` (default **off**) asks the run OpenPose already does for its own
+rendered frames: `--write_images pose/raw_images --write_images_format jpg` plus per-module
+`--render_pose -1 / --face_render / --hand_render`, each render switch following the module's
+own enabled config. `openpose.image_max_side` computes `--output_resolution` from the metadata
+width/height (never upscales); with it null the stage warns once that OpenPose's `-1x-1`
+default renders at full input resolution and costs hundreds of MB to GBs per video. Default-off
+argv is byte-identical to the pre-feature command (a test pins the whole literal argv).
+Zero rendered images with the flag on **fails the run** before normalisation — OpenPose exits
+0 silently in that trap. `validate` enforces images ≥ raw frames − 1 when on, and deliberately
+does not check the directory when off (a once-rendered dataset must not fail forever after the
+opt-in is switched off; the fingerprint forces the rerun that actually decides).
+
+**Live verification, real binary (`/opt/openpose`), real clip, twice.** Writer's run and my own
+independent run through the real CLI (`run --only-stage openpose` on a /tmp copy of
+person_demo with write_images+image_max_side=640): exit 0 in 48 s, **205 images**, first file
+`person_demo_000000000000_rendered.jpg`, `file` reports JPEG 640x360, 31 MB for the clip.
+Bonus measurement kept in the README: JSON keypoints still reach x≈1223 with
+`--output_resolution 640x360` — coordinates stay in source pixels because `keypoint_scale`
+was not touched (spec §20.5 forbids touching it).
+
+The stage had **zero tests** before this; it now has 48 (`test_openpose_render.py`,
+`test_config_openpose_render.py`). Unit 866→914. Mutations: forcing `--render_pose` back to
+literal 0 dies on the 3 parametrized render-combo tests; muting the zero-render raise dies on
+`test_zero_rendered_images_fails_the_run`.
+
+**The invariant I widened deliberately.** `test_artifacts.py` asserted every `*_raw` layout id
+has a path segment *equal to* `raw`; `pose/raw_images` broke it. The writer offered four fixes;
+I chose a fifth: match segments *starting with* `raw` and name the invariant's real purpose
+(raw output never lands on a normalized table path) in the docstring. Teeth proven by two
+scratch probes — pointing `acoustic_raw` OR `pose_images_raw` at `pose/images` fails the test.
+The collision half (`test_paths_are_unique`, 40 values) untouched.
+
+**Cost stated, not hidden:** both config keys are hashed into the openpose fingerprint even
+when off, so `status --plan` reports "configuration changed" for all 7 existing datasets — the
+next batch re-runs OpenPose (the slowest stage) once everywhere. That is the price of an honest
+fingerprint and matches the spec's warning; it happens whether or not the operator ever enables
+rendering.
+
+## 14. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with

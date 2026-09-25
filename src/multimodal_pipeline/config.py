@@ -443,8 +443,27 @@ class OpenPoseConfig(_Model):
     face: dict[str, bool] = Field(default_factory=lambda: {"enabled": True})
     # OpenPose keeps every intermediate frame in RAM when multithreading is on.
     disable_multi_thread: bool = True
+    #: Render one skeleton image per processed frame into ``pose/raw_images``.
+    #: Opt-in on purpose: both keys below are mixed into the ``openpose`` stage
+    #: fingerprint, so turning this on invalidates every pose dataset already on
+    #: disk and re-runs OpenPose -- the slowest stage in the pipeline -- on all of
+    #: them. Enabling it has to be a deliberate decision, never an upgrade side
+    #: effect, which is why the default reproduces the pre-feature command exactly.
+    write_images: bool = False
+    #: Longest rendered side in pixels. OpenPose's own ``--output_resolution``
+    #: default is ``-1x-1``, i.e. full input resolution, which costs hundreds of MB
+    #: to GBs per video; ``None`` keeps that default and the stage logs the warning
+    #: once per run instead of silently choosing a downscale for you.
+    image_max_side: int | None = None
     timeout_seconds: float | None = None
     extra_args: list[str] = Field(default_factory=list)
+
+    @field_validator("image_max_side")
+    @classmethod
+    def _image_max_side(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("openpose.image_max_side must be a positive pixel count or null")
+        return value
 
     @property
     def hands_enabled(self) -> bool:

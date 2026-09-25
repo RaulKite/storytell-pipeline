@@ -177,6 +177,19 @@ openpose:
     enabled: true
   # Keeps RAM flat on long recordings at a modest throughput cost.
   disable_multi_thread: true
+  # Ask OpenPose to render its own skeleton images (body + hands + face) into
+  # pose/raw_images, one file per processed frame. Off by default, and turning it on
+  # is a deliberate decision: both keys below are part of the openpose stage
+  # fingerprint, so enabling this invalidates every pose dataset on disk and re-runs
+  # OpenPose -- the slowest stage here -- over all of them.
+  # write_images: false
+  # Longest rendered side in pixels. OpenPose's own default (--output_resolution
+  # -1x-1) renders at FULL input resolution: at 25 fps a 4-minute clip is 6000
+  # images, and that is the difference between hundreds of MB and several GB per
+  # video. Leave it null only when you want the frames at source size; the stage logs
+  # the warning once per run when you do. 640 is a sane starting point for a clip
+  # whose purpose is showing a pose, not inspecting a frame.
+  # image_max_side: 640
   # timeout_seconds: null        # kill a wedged run after N seconds
   # extra_args: []               # e.g. ["--hand_size", "1.0"]
 
