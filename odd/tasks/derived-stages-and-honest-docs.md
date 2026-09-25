@@ -77,13 +77,41 @@ should drive spaCy model choice at all.
 
 Each task closes with at least one work-unit commit carrying its tests and docs.
 
-- [ ] **T1** README: license, four→five, `uv run` in the quick start.
-- [ ] **T2** README: narrow the skip-vs-fail claim, naming the OpenPose exception.
-- [ ] **T3** `inspect-environment`: warn on unsynced environments, missing `talknet_root`,
-      and a spaCy stage that will run `blank`; tests; README claim then holds.
-- [ ] **T4** e2e suite: skip cleanly on a machine without OpenPose/ffmpeg 7 instead of
-      failing, so a clean install can run the suite.
-- [ ] **T5** CI: CPU-only unit workflow, explicit about what it does not cover.
+- [x] **T1** README: license, four→five, `uv run` in the quick start — closed in `c7c59c2`
+      ("make the README's checkable claims checkable"), never ticked here. Verified against the
+      tree this session: `LICENSE` exists (MIT, the same SPDX `pyproject.toml:7` declares), no
+      "*N heavy tools*" sentence survives anywhere, and the quick start is all `uv run`.
+      `tests/unit/test_readme_claims.py` (21 tests) is the ratchet that keeps it true.
+- [x] **T2** README: narrow the skip-vs-fail claim — same commit `c7c59c2`. README:49-51 now
+      says stages with a required install are *not listed* because they do not skip, pointing at
+      the resume/reuse section instead of claiming a universal skip.
+- [x] **T3** `inspect-environment` warnings — `ba11a0b`, 18 tests in
+      `tests/unit/test_environment_warnings.py`. **One part of this task was resolved as
+      not-a-defect, on evidence:** "warn on unsynced environments" is not implemented and must
+      not be. `uv run --project` resolves and syncs an existing uv project on first use,
+      measured on this machine against a throwaway project, so an existing-but-unsynced
+      environment is not a degradation — warning about it would fire on every fresh clone
+      before any run had done anything wrong. Only a *missing* uv project directory warns
+      (`test_absent_uv_project_is_warned`, and `test_present_but_unsynced_project_is_not_warned`
+      pins the deliberate half). Missing/unusable `talknet_root` and the `blank`-model spaCy
+      stage both warn, reusing the stage's own skip strings so the pre-flight message and the
+      runtime reason cannot drift.
+- [x] **T4** e2e skips what the machine lacks — `8cc52ec`. `pytestmark` skips the module
+      without ffmpeg; `openpose_or_skip()` skips rather than fails when the binary is not
+      discovered; `parse_ffmpeg_major()` is extracted so the skip-vs-fail decision is testable
+      with a version this machine does not have (`test_a_machine_without_openpose_skips_instead_of_failing`
+      exercises it with a foreign root). Not verifiable end-to-end on this box, which *has*
+      OpenPose at `/opt/openpose/build/examples/openpose/openpose.bin` — the synthetic
+      skip-path test is the evidence, not a live no-OpenPose run.
+- [x] **T5** CPU-only unit workflow — `9eb3070` added `.github/workflows/unit.yml`; this
+      session found its header had rotted and fixed the class of defect in `462ec16` (11 tests
+      in `tests/unit/test_ci_workflow_claims.py`). The header still claimed "the 718-test unit
+      suite" and a "drop coverage by 15 tests" penalty and called the ffmpeg-dependent tests
+      "two tests"; measured here, three repeat runs each, with the exact command CI runs:
+      **1065 passed / 8 skipped** with ffmpeg, **1048 passed / 25 skipped** without, so **17**
+      tests are ffmpeg-gated, not two. The counts are now banned from the workflow rather than
+      corrected, because no cheap ratchet can derive a passed/skipped split from inside the
+      suite (see §18).
 - [x] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
       path convention with `openpose.root`, add a test.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
@@ -98,10 +126,12 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       evidence in §17. Written to `speaker/fusion_nemotron.parquet` (not the
       `active_speaker_fused_*` name first sketched here: the fused tables sit beside the
       turn tables they were derived from, and `fusion_<engine>` says that in one word).
-- [ ] **T21** fold `speaker_fusion`'s five review advisories into one pass: prune on a *skipped*
-      run only when an engine was deselected rather than the stage disabled, per-engine atomic
-      writes so a mid-run failure cannot leave one fresh and one stale table, and a `validate`
-      check that every input turn produced a row. Evidence in §17.
+- [x] **T21** three of `speaker_fusion`'s five advisories closed — `d7b01ba`, 10 tests.
+      Phase-split writes (a mid-run engine failure now writes nothing), skip-path pruning
+      gated on the config flag rather than the skip wording, and `validate` comparing each
+      fused table's row count with its own turn table. `R2-001` and `R4-001` stay open: their
+      claim text is not recoverable from this machine's transaction store and guessing at a
+      reviewer's intent would be worse than leaving the advisory. Evidence in §18.
 - [ ] **T19** fold T10's three advisories into one small openpose pass (render docs coherence,
       zero-render raise path, stale-images-when-off counted in the report) — best done inside T12.
 - [x] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph, active-speaker
@@ -788,3 +818,60 @@ fusion core, each with named deaths: half-open turn window → 19; ratio denomin
 window → 1; unscored frames averaged as `0.0` → 1; `_mean` returning `0.0` for no scores → 1;
 silencing the gap note → 1; `validate` demanding a skipped engine's table → 1; revert qualifying-
 track selection → 4; remove the prune → 4.
+
+## 18. T5 and T21 — the queue that was already closed, and the numbers that had rotted
+
+**Five of the open checkboxes were already closed and never ticked.** T1 and T2 in `c7c59c2`,
+T3 in `ba11a0b`, T4 in `8cc52ec`, T5 in `9eb3070`. The checklist and the tree had drifted apart,
+which is the same failure this document keeps re-recording in README prose — the difference
+here is that a stale `- [ ]` costs nothing but a wasted afternoon, so nothing hurt and nothing
+noticed. Each was verified against the tree before being ticked (section 4 now says which
+commit carries which and what was actually measured), not ticked because the commit message
+claimed it.
+
+**T3's one genuinely undecided part was decided as not-a-defect.** "Warn on unsynced
+environments" is deliberately *not* implemented: `uv run --project` resolves and syncs an
+existing uv project on first use, so existing-but-unsynced is a normal pre-run state, not a
+degradation, and warning on it would fire on every fresh clone. `test_present_but_unsynced_project_is_not_warned`
+pins the half that is *not* warned about, which is the only reason that judgement survives the
+next person who reads "warn on unsynced environments" as a to-do.
+
+**The CI header had rotted into fiction, and the fix removed the numbers rather than
+correcting them.** `.github/workflows/unit.yml` still described "the 718-test unit suite", a
+"drop coverage by 15 tests" penalty, and "two tests" needing real ffmpeg. Measured on this
+machine with the exact command CI runs, three repeat runs each, split identical every time:
+
+| ffmpeg on PATH | passed | skipped | total |
+| --- | --- | --- | --- |
+| present | 1065 | 8 (optional matplotlib) | 1073 |
+| ffmpeg + ffprobe absent | 1048 | 25 | 1073 |
+
+so **17** tests are ffmpeg-gated, not two. Measuring them required a PATH without ffmpeg and
+`/usr/bin` is root-owned with no sudo here, so the measurement used a 1518-entry symlink farm
+mirroring `/usr/bin` minus the two binaries. Two failed attempts are worth recording: a
+16-tool minimal farm produces **9 unrelated failures** (the suite's subprocess helpers need
+`mktemp`, `dirname`, `sed`…), and a PATH containing only a hand-picked tool list produced 22
+failures of the same kind. The farm is the only faithful way, and it is far too heavy to put
+inside a test — which is why the workflow now *bans* test counts
+(`test_workflow_states_no_test_counts`) instead of carrying unverifiable ones. The README's
+counts stay because `test_readme_claims.py` re-derives them from pytest's own collection; that
+trick only works for *collected* totals, which is exactly why the workflow says which tests
+need which tool rather than how many there are.
+
+**Whether Actions has ever run is still unknown.** No `gh` CLI and no credential on this
+machine, so `9eb3070`'s own claim that e2e "has never been run on a hosted runner" is still
+true and still unverifiable from here. This work made the workflow's prose honest, not its
+status confirmed.
+
+**T21, and a defect the first cut introduced.** Three advisories were actionable; the writer's
+phase-split and `validate`-vs-turn-table fixes are clean, but its skip-path pruning had a hole
+its own tests did not cover: pruning with an *empty* fusible set treats "no engine has a turn
+table" as proof of staleness when it is the absence of evidence. That state is what a
+not-yet-diarized dataset looks like, and on the shipped default (`engines: [pyannote]`, one
+engine) deleting `speaker_turns.parquet` would have wiped every fused table — verdicts that
+cannot be recomputed until the diarizer runs again. Fixed by pruning only when at least one
+engine remains fusible, with a test that dies on the fix (`test_losing_every_turn_table_deletes_nothing`)
+and one that stops the new guard from swallowing a genuine deselection. The remaining two
+advisories (`R2-001`, `R4-001`) are left open on purpose: the approving review's finding text is
+not persisted in this machine's transaction store (only the second lineage keeps readable
+findings), and inventing a reviewer's intent to "fix" would be worse than an open advisory.
