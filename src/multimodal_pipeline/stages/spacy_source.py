@@ -33,6 +33,11 @@ from .base import StageContext, WorkerStage
 #: What a blank/lemma-only fallback pipeline can still provide.
 FALLBACK_CAPABILITIES = ("tokenization", "sentencizer")
 
+#: The WhisperX raw document exists but is not readable JSON. Distinct from ``None``
+#: ("no grade in this dataset") so a corrupt artifact cannot be cached as an absent
+#: grade, and so the worker can name the real reason its check did not run.
+UNREADABLE_GRADE: dict[str, Any] = {"status": "unreadable"}
+
 
 def installed_model_inventory(uv_project: Path) -> dict[str, str]:
     """spaCy models importable in a uv environment, as ``{name: version}``.
@@ -107,6 +112,9 @@ def language_detection_arg(grade: dict[str, Any] | None) -> str:
 
     ``none`` rather than JSON ``null`` so the value a human reads in a stage log says
     what it means, and so it stays distinct from a grade that arrived damaged.
+
+    Every dict is passed through unchanged, which is what lets the ``unreadable``
+    sentinel travel over the same channel as a real grade.
     """
     if grade is None:
         return "none"
@@ -148,17 +156,27 @@ class SpacySourceStage(WorkerStage):
 
     @staticmethod
     def _language_detection(ctx: StageContext) -> dict[str, Any] | None:
-        """WhisperX's reliability grade for its own detection, or ``None``.
+        """WhisperX's reliability grade, a sentinel for a broken document, or ``None``.
 
         The grade lives in ``speech/raw/whisperx.json`` (artifact ``whisperx_raw``),
         not in ``speech/segments.parquet`` — the table carries the detected code, the
         raw document carries how much to trust it. Nothing read it until now.
 
-        ``None`` means "no grade was available", which covers a missing file and a
-        document with no ``language_detection`` key (a dataset produced before the
-        worker started grading). Those must keep working and must stay *distinguishable*
-        in the fingerprint from a real grade, so the absence is recorded as ``None``
-        rather than defaulted to something that looks like a verdict.
+        Three states, deliberately not collapsed into two:
+
+        * ``None`` — no grade exists: the file is missing, the document has no
+          ``language_detection`` key (a dataset produced before the worker started
+          grading), or the value under that key is not a dict. Recorded as ``None``
+          rather than defaulted to something that looks like a verdict.
+        * ``{"status": "unreadable"}`` — the file exists but could not be read or
+          parsed. That is a corrupt upstream artifact, not an absent grade: the two
+          must not share a fingerprint, or a repaired document produces the digest the
+          broken one already cached, and the stage stays silent about the corruption.
+        * the grade dict itself — what the worker applies its policy to.
+
+        The sentinel is the whole record of the corrupt case; the raw file is not
+        digested here. A repair yields a real grade, which differs from both of the
+        other states again, so cache invalidation needs nothing more.
 
         Deliberately not a declared ``inputs`` entry: ``ctx.input()`` raises when an
         artifact is missing, and an old dataset without a raw document is a supported
@@ -170,7 +188,7 @@ class SpacySourceStage(WorkerStage):
         try:
             payload = read_json(path)
         except (OSError, ValueError):
-            return None
+            return UNREADABLE_GRADE
         grade = payload.get("language_detection") if isinstance(payload, dict) else None
         return grade if isinstance(grade, dict) else None
 

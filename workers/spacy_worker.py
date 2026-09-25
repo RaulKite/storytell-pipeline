@@ -110,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
             grade, grade_available = parse_language_detection(
                 getattr(args, "language_detection", None))
             trust_low = bool(getattr(args, "trust_low_language_detection", False))
+            # The orchestrator's sentinel for "whisperx.json exists but is not readable
+            # JSON". It arrives as a grade so the fingerprint records it, but it is not a
+            # verdict: it says the check could not run, not that the detection is bad.
+            unreadable = bool(grade_available and grade.get("status") == "unreadable")
             low_grade = bool(grade_available and grade.get("status") == "low")
             trusted = not (low_grade and not trust_low)
             reliability_record = grade if grade_available else {"status": "absent"}
@@ -131,8 +135,21 @@ def main(argv: list[str] | None = None) -> int:
                     language, _probability_text(grade), _reasons_text(grade),
                     selection.get("model"), selection.get("status"),
                     selection.get("capabilities"))
+            elif unreadable:
+                # A grade dict that reports the document could not be read: the default
+                # behaviour is kept (the language is trusted), but the reason is not "no
+                # grade shipped with this dataset" — someone's upstream artifact is
+                # corrupt, and saying "absent" would send them looking for a missing file.
+                LOGGER.warning(
+                    "the raw WhisperX document for this dataset exists but could not be read, "
+                    "so the reliability of the detected language %r could not be checked; the "
+                    "detection was trusted by default and the model choice was left as-is "
+                    "(model=%r, status=%r). Re-run the whisperx stage to rewrite "
+                    "speech/raw/whisperx.json.",
+                    language, selection.get("model"), selection.get("status"))
             elif not grade_available:
-                # Absent, unreadable or literal "none": the default behaviour is kept,
+                # No grade at all: the flag was not passed, the argv value was the
+                # literal "none", or it did not parse. The default behaviour is kept,
                 # but silently skipping the check would make the policy look stronger
                 # than it is on exactly the datasets that predate the grade.
                 LOGGER.warning(
@@ -207,7 +224,10 @@ def parse_language_detection(raw) -> tuple[dict[str, Any] | None, bool]:
 
     The two-tuple shape is the point: a caller that only looked at ``grade`` could not
     tell "no grade exists" from "the grade exists and is trustworthy", and those get
-    different warnings.
+    different warnings. A grade whose ``status`` is ``unreadable`` is the third case —
+    available, present in the fingerprint, and not a verdict about the detection. It is
+    reported by the orchestrator when the raw document exists but does not parse, and is
+    handled by the caller as "available but not low".
     """
     if raw is None:
         return None, False
