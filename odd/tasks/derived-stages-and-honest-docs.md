@@ -932,3 +932,81 @@ clip whose images came back 640×360 while `--keypoint_scale` kept its default a
 coordinates still reached x≈1223. Restored and verified byte-identical against `HEAD`. The rule
 it teaches: when rewriting a paragraph that contains someone else's measurement, rewrite around
 it, do not retype it.
+
+## 20. T14 — `pose_normalized`: what `dfMaker` actually computes, measured off the reference
+
+§20.4 left two decisions open — which route (R sidecar or Python), and which triple defines
+the frame — and said the reimplementation "must be verified against the reference rather than
+asserted". Neither was guessable from the pipeline, so both were settled against the real tool
+before any pipeline code was written.
+
+**The reference is installed here.** `R 4.1.2` and `Rscript` are on this machine, and CRAN
+carries `multimolang` 0.1.1, whose only import is `arrow` — already present. It was installed
+into a private library at `/tmp/rlibs`; the operator's R library and `R-libs/` were not
+touched. That turned "validate against route 1" from a promise into something runnable, so
+route 2 (pure Python, inside the pipeline's Parquet/provenance/atomic-write discipline) was
+taken with the comparison actually performed rather than intended.
+
+**The algebra, read out of the package, is not the algebra the vignette summary suggests.**
+`dfMaker`'s `fast_scaling` branch divides every coordinate by `vector_i[1]` — one axis, no
+rotation. The linear-transformation branch (`fast_scaling = FALSE`) builds
+
+```
+M   = [ i | j ]                      i = P_ip - origin,  j = P_jp - origin
+x'  = det([p | j]) / det(M)          p = P - origin
+y'  = det([ i | p]) / det(M)
+```
+
+and that is a change of basis, i.e. it *does* rotate. Two details were only visible in the
+source and both change the numbers:
+
+- `transformation_coords = c(type, origin, i, j)`, and **`i_point_index == j_point_index` has
+  its own branch**: `vector_j <- c(vector_i[2], -vector_i[1])`. The `fast_scaling == TRUE`
+  path uses `c(-vector_i[2], vector_i[1])` — the *opposite* perpendicular. A reimplementation
+  that reads one and not the other gets a correct-looking table with every `y'` negated.
+  My first implementation did exactly this: 3271 of 3775 points disagreed with the reference,
+  worst error 14.71. The `14.71` was the tell — a rotation sign error scales with distance
+  from the origin, so it is huge on the feet and zero on the neck.
+- Absence is marked **per coordinate** (`m[,1:2][m[,1:2] == 0] <- NA`), not per point. A point
+  with `x = 0, y = 40` keeps `y` and loses `x`. Point-wise masking agrees with the reference
+  wherever OpenPose never emits a half-zero point, so the difference is invisible on this
+  corpus and would bite on the next one.
+
+**The reference default is a bad frame for this corpus, and it is measurable.**
+`dfMaker`'s default triple is `c(1, 1, 5, 5)`: origin `Neck`, basis `Neck → LShoulder`. Over
+the 695 real frames / 2901 detectable person-frames in `data/processed`:
+
+| basis | person-frames | median &#124;basis&#124; | p95 | median max(&#124;x'&#124;,&#124;y'&#124;) | p99 |
+|---|---|---|---|---|---|
+| `Neck → LShoulder` (dfMaker default) | 2901 | **17.7 px** | 89.7 | 4.18 | **556.27** |
+| `Neck → RShoulder` | 2893 | 17.7 px | 88.9 | 3.90 | 740.12 |
+| `Neck → MidHip` | 2661 | 72.4 px | 190.9 | 0.99 | 3.07 |
+| `MidHip → Neck` | 2661 | 72.4 px | 190.9 | 1.11 | **2.07** |
+
+The basis length is the divisor, so a 17.7 px shoulder segment turns a half-pixel OpenPose
+jitter into a ~0.03 unit swing, and a wrist four segments away lands at p99 = 556 — the
+"normalised" coordinates are *less* stable than the pixels they came from. The spec's
+"sternum? pelvis? neck?" was the right question. `MidHip → Neck` is taken: it is the longest
+two-point torso segment BODY_25 offers, both endpoints are in the top availability band
+(`Neck` 100.0%, `MidHip` 94.2% of frames), and the resulting coordinates sit in a unit-scale
+range without rescaling.
+
+The assumption this rests on, stated because it is not forced by the data: `MidHip` is the
+average of the two hips in BODY_25, so it is a torso centre rather than an anatomical joint,
+and it is the only one of the three candidate origins BODY_25 gives us for free. The cost is
+recorded as a config choice, not a constant: the triple is written into the stage fingerprint
+so changing it invalidates the table instead of quietly redefining every number in it.
+
+**Fixtures, produced by the reference, not by me.**
+`tests/fixtures/pose_normalized/dfmaker_0.1.1_{kabc,cnn}_midhip_neck.csv` — 1000 and 2000
+rows, run through `dfMaker(fast_scaling = FALSE, transformation_coords = c(1, 8, 1, 1))` on
+the first 20 raw JSON frames of each video, then filtered to `type_points == "pose_keypoints"`.
+`points` is kept as OpenPose's 0-based index so a reader can check the mapping without
+consulting `multimolang`. They are the ground truth the Python transform is asserted against.
+
+**What the Python stage reads, and what that costs.** It reads `pose/body.parquet`, not
+`pose/raw/*.json`, so it stays inside the pipeline's read-normalised-tables rule. That is not
+free: normalisation drops every keypoint with `score <= 0`, while `dfMaker` masks `x == 0` or
+`y == 0` per coordinate. Both encode "absent", and on this corpus they coincide — but the
+stage therefore reports the per-frame basis state explicitly rather than leaving a gap for a
+consumer to interpret, which is the same lesson `face_status` learned in §17.
