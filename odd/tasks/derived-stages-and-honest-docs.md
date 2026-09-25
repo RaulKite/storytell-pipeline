@@ -41,9 +41,10 @@ its own install); `scripts/make_fixtures.sh` uses a second OpenPose path convent
 checks for `ffmpeg` but needs the `flite` filter; the dense-sequence check in
 `activespeaker` rejects three different faults with one string and logs nothing (review
 finding R3-001 — the finding's own premise that the stage "emits no warnings at all" was
-stale on arrival, see §8); frames past the imputable tail are indistinguishable from
-`no_face`; and nobody decided whether a `language_detection.status: low` should drive spaCy
-model choice at all.
+stale on arrival, see §8); four different causes leave a tracked face unscored and all four
+write a byte-identical row (the R3 follow-up blamed `track_id = null` and "no row is
+emitted" — both false, see §9); and nobody decided whether a `language_detection.status: low`
+should drive spaCy model choice at all.
 
 ## 3. Design decisions taken here, with the assumption each rests on
 
@@ -86,7 +87,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
       path convention with `openpose.root`, add a test.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
-- [ ] **T8** dense frames: `frame_reason` distinguishing no-face / past-tail / unscored.
+- [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — committed with its own work-unit commit, evidence in §9.
 - [ ] **T9** spaCy model choice gated on language-detection status, default unchanged.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
@@ -383,7 +384,83 @@ ratchet failed until I updated it to the measured 793 — which is the ratchet d
 
 **Committed as `e542dbe`.**
 
-## 9. Execution notes
+## 9. T8 — `frame_reason`: the four unscored causes stop sharing one row
+
+**The debt statement was wrong, and the mapping caught it before any code was written.**
+Follow-up 2 of review R3 says frames past the imputable tail "fall into the same
+`track_id = null` rows as 'no face detected'" and that "no row is emitted for them at all".
+Both halves are false. `workers/activespeaker_worker.py` emits a row for every frame
+(`select_stable` appends one entry per frame, `build_document` iterates it), and for a
+past-the-tail face that row carries a **non-null `track_id`** and `face_status =
+"tracked_unscored"` — the test `test_past_the_imputable_tail_keeps_the_face_without_a_score`
+already locked that. So the surviving defect is narrower and real: **four different causes
+produce byte-identical rows**, and the stage's own warning could only say "(past the
+imputable tail, or a non-finite score)" because that is all the data supported.
+
+**Why the fix cannot live in the stage.** The distinction is two locals inside
+`build_candidates` — `position` (the frame's index inside its track) and `score_count` (how
+many scores that track produced). Neither is ever serialised: the frame dict has 11 keys and
+none of them is either quantity. Given only `track_id`, a bbox, two null scores and
+`score_imputed=False`, no arithmetic recovers which of the four branches ran. The information
+is destroyed at `Candidate` construction, worker line 358. So the worker names the cause at
+the branch that knows it, and the stage carries it.
+
+| `frame_reason` | set where | meaning |
+| --- | --- | --- |
+| `scored` | `position < score_count`, finite | measured |
+| `imputed_tail` | the successful carry branch | last score carried over the bounded tail |
+| `no_face` | `build_document`, no candidates | nobody was on screen (a frame fact, not a track fact) |
+| `score_not_finite` | `position < score_count`, non-finite | a score existed and was NaN/inf |
+| `track_has_no_scores` | `score_count == 0` | the track never produced one |
+| `past_scored_tail` | beyond `score_count + 2` | ran out of scores a while ago |
+| `tail_score_not_finite` | in the window, carried value non-finite | the only value available to carry was broken |
+| `unknown` | raw artifacts predating the field | not recoverable — never a guess at one of the four |
+
+**Three design points worth their comments.** `Candidate(` is constructed in exactly one
+place and `smooth_scores` mutates in place, so `unknown` is unreachable inside the worker and
+means exactly one thing: an old raw artifact. `_frame_row` passes a *present*
+`score_reason` through even when it is nonsense, because rewriting a malformed worker row
+into a legal default here would hide the fault; `validate()` names the frame instead. And
+`validate()` gained a missing-columns guard before its per-row reads — five neighbouring
+stages already had one and this stage was the outlier where a stale table raised a bare
+`KeyError`, which the orchestrator records as a crash rather than as the one line naming the
+column to rerun.
+
+**Real-data verification, because unit fixtures cannot prove this.** The four causes are
+constructed by hand in tests; only TalkNet says whether the branch mapping is right. Full
+batch on the 7-video corpus after the change: 7 completed, 0 failed, 61 s. `validate`
+`ok: true` for all seven. What the worker actually wrote:
+
+| video | rows | reasons |
+| --- | --- | --- |
+| KABC | 105 | 104 scored, 1 imputed_tail |
+| CNN | 103 | 102 scored, 1 imputed_tail |
+| La1 | 200 | 148 scored, 4 imputed_tail, 48 no_face |
+| person_demo | 103 | 25 scored, 1 imputed_tail, 77 no_face |
+| pipeline_demo / _ntsc / _silent | 249/249/100 | all no_face |
+
+Zero `unknown` rows, which is the proof that the worker always reaches a branch that knows.
+La1 is the unchanged-decisions check: 148 + 4 = 152 tracked, 48 without a face, the same
+152/48 measured for the `face_status` work. The new column describes the same rows and moves
+no decision, which is what a diagnostic column owes the dataset.
+
+**Verification.** 85 tests in `tests/unit/test_activespeaker.py` (was 60), full unit 818,
+e2e 42, suite 860 passed. Two mutations run by the parent, independent of the writer's own
+matrix: collapsing `past_scored_tail` into `tail_score_not_finite` kills
+`test_past_the_imputable_tail_keeps_the_face_without_a_score` and
+`test_the_four_unscored_causes_get_four_different_reasons`; disabling the missing-columns
+guard kills `test_a_stale_table_missing_the_column_is_diagnosed_not_crashing` and
+`test_the_missing_column_message_names_every_missing_column`.
+
+**Delegation note.** This was the first writer run in this clone that completed at all; the
+launch failures recorded in `AGENTS.md` did not recur. Its `## Allowed edit surfaces` block
+was rejected twice before it was accepted — the validator wants bare paths, one per line,
+with no prose inside that section (explanatory text belongs under its own heading). Two
+relaunches cost nothing; the rule is now known. The writer also tried to drive the RDD review
+lifecycle from inside itself and reported that it could not, which is correct — the facade
+lives in the parent and the review below is the parent's, not the writer's.
+
+## 10. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with
