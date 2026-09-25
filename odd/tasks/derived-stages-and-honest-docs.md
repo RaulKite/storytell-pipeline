@@ -132,8 +132,9 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       fused table's row count with its own turn table. `R2-001` and `R4-001` stay open: their
       claim text is not recoverable from this machine's transaction store and guessing at a
       reviewer's intent would be worse than leaving the advisory. Evidence in §18.
-- [ ] **T19** fold T10's three advisories into one small openpose pass (render docs coherence,
-      zero-render raise path, stale-images-when-off counted in the report) — best done inside T12.
+- [x] **T19** T10's three openpose advisories closed — `241535e`, 14 tests. The zero-render
+      advisory turned out to be the visible symptom of a bigger defect measured against the real
+      binary (below). Evidence in §19.
 - [x] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph, active-speaker
       strip, speaker-turn strip, pose skeleton) — `950284b` (this commit, amended before any push), evidence in §15.
 - [ ] **T12** §20.6 README: install from nothing, what each stage decides, one worked
@@ -875,3 +876,59 @@ and one that stops the new guard from swallowing a genuine deselection. The rema
 advisories (`R2-001`, `R4-001`) are left open on purpose: the approving review's finding text is
 not persisted in this machine's transaction store (only the second lineage keeps readable
 findings), and inventing a reviewer's intent to "fix" would be worse than an open advisory.
+
+## 19. T19 — the OpenPose render advisories, and what the real binary did with `--write_images`
+
+T19 was scoped as three small advisories from `review-684c629a7f5b317a`: render docs coherence
+(`R2-render-resolution-mismatch`), the zero-render raise path (`R3-001`), and stale images being
+counted when the opt-in is off (`R4-stale-render-images`). Closing the second one required
+measuring the thing it assumed, and the assumption was wrong.
+
+**The root cause under all three: `count_rendered_images` counts files, and both of its
+consumers read that count as evidence about the current run.** So a rendering run now empties
+`pose/raw_images` first (only that directory, only when rendering was asked for), and `validate`
+reports `render_requested` beside `rendered_images` because the off-path count still describes
+whoever wrote last. That off-path leniency is deliberately kept — its original reasoning was
+correct and a test pins it: failing an opt-in-off run over images it never requested turns a
+switch-off into a permanent validation error.
+
+**What the binary actually does (measured 2026-09-26, `/opt/openpose`, 249-frame clip,
+`--write_images <dir> --write_images_format jpg --output_resolution 320x240`):**
+
+| module switches | images written | size (PIL) | content | avg bytes |
+| --- | --- | --- | --- | --- |
+| body+face+hands on | 249 | 320×240 | skeletons | 20 730 |
+| `--render_pose 0 --face_render 0 --hand_render 0` | **249** | **640×480** | **the source frame** | 39 331 |
+
+The second row is the defect. `--write_images` writes one image per processed frame even with
+every renderer off, and on that path **`--output_resolution` is ignored** — the source is 640×480,
+`image_max_side: 320` was asked for, and the files came back 640×480. They are the raw frames:
+extracted frame 0 with ffmpeg and compared pixel-wise, mean absolute difference **0.69 grey
+levels** over a 255 range. So the request exits 0 with a full directory of maximum-cost,
+zero-skeleton images, and the guard that exists to catch "asked to render, got nothing" tests
+`rendered == 0` and therefore **cannot ever see it**. The refusal moved to config time, where it
+costs nothing: verified live, refusing left the 249 existing images untouched (mtimes unchanged).
+`face.enabled` alone still renders normally — also verified against the binary, because a
+predicate that over-refuses would be its own defect.
+
+Two of my own measurement errors are on the record here. A hand-written JPEG SOF parser reported
+the skeleton-off images as `640x480` and the skeleton-on images as `240x320`; PIL said `640×480`
+and `320×240`. The parser had height and width the wrong way round (SOF stores H then W) — the
+"resolution is ignored" finding survived only because the *second* image agreed with the ask, and
+the correct claim came from PIL, not from my parser. And this model cannot view images, so the
+"they are the source frames" claim had to be made pixel-wise rather than by looking.
+
+The T10-era claim that this needed the real tool is stronger than it sounded. A mock decides
+whether files appear, so it can only confirm the guard it was written to imitate; nothing about
+`--write_images` writing undecorated full-resolution frames could have come out of a fake.
+
+14 new tests, red before green (8 die against the pre-fix stage; over-refusal triangulated by
+narrowing the predicate to `body.enabled`, which dies on the face-only case). 1100 unit passed /
+8 skipped, 1108 collected; 42 e2e passed.
+
+**An error worth recording, because it is this document's own failure mode:** while rewriting the
+README render section, an edit chain deleted a measured claim belonging to T10 — the 1280×720
+clip whose images came back 640×360 while `--keypoint_scale` kept its default and JSON
+coordinates still reached x≈1223. Restored and verified byte-identical against `HEAD`. The rule
+it teaches: when rewriting a paragraph that contains someone else's measurement, rewrite around
+it, do not retype it.
