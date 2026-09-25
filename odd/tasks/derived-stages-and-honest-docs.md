@@ -87,7 +87,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
       path convention with `openpose.root`, add a test.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
-- [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — committed with its own work-unit commit, evidence in §9.
+- [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb`+`PENDING_ACK`, native review approved (high, 4 lenses), evidence in §9.
 - [ ] **T9** spaCy model choice gated on language-detection status, default unchanged.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
@@ -451,6 +451,17 @@ matrix: collapsing `past_scored_tail` into `tail_score_not_finite` kills
 `test_the_four_unscored_causes_get_four_different_reasons`; disabling the missing-columns
 guard kills `test_a_stale_table_missing_the_column_is_diagnosed_not_crashing` and
 `test_the_missing_column_message_names_every_missing_column`.
+
+**Native review.** START on base `8b6fb315…` committed-only, lineage `review-e6f720fdcf7f223b`,
+tier **high** (`process_boundary: shell_process` in `workers/activespeaker_worker.py`), 656
+changed lines, four lenses (risk, resilience, readability, reliability), correction budget 200.
+Group capture ran all four reviewers via the host relay (prompts ~66 KB each) and closed
+**approved** on the last admitted event; acknowledgement burned the authority
+(`burn_evidence: gentle-ai.review-acknowledged/v1`, `authority: burned`,
+`delivery: ordinary-repository-policy`). No findings, so no correction round was spent.
+The closure again deferred its candidate-view worktree cleanup with the same git failure seen
+in T7; the views are left in place for the same reason — the owning pi process (pid 2865097)
+is this session's parent and alive.
 
 **Delegation note.** This was the first writer run in this clone that completed at all; the
 launch failures recorded in `AGENTS.md` did not recur. Its `## Allowed edit surfaces` block
