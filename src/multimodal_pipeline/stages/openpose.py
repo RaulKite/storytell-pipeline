@@ -24,16 +24,21 @@ and ``--hand_render`` are independent switches, each accepting ``-1`` to inherit
 ``--render_pose``. So body+hands+face skeletons in one pass are one extra flag group on
 the run OpenPose already does, not a second run. ``--display 0`` stays: rendering is
 independent of visual display and this build has no display to turn off.
+
+Those flags are two different axes, and reading them as one is the classic misreading here.
+``--render_pose`` / ``--face_render`` / ``--hand_render`` choose the rendering *engine* and whether
+a module is drawn at all (``-1`` inherits, which on this build resolves to the GPU rendering
+path); they say nothing about size. Frame size is the other axis, ``--output_resolution``, whose
+default ``-1x-1`` means "whatever the input is", i.e. full input resolution. So a provenance
+record of ``render_pose: "-1"`` is a statement about the engine, not a missing resolution.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..artifacts import read_json
-from ..config import stable_hash
 from ..exceptions import StageError, ValidationError
 from ..normalization import openpose_frame_number, openpose_frame_rows
 from ..provenance import openpose_report
@@ -53,6 +58,22 @@ IMAGE_FORMAT = "jpg"
 #: ``--write_images_format`` and ``extra_args`` can override it, so counting follows
 #: the files on disk rather than the flag we passed.
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp")
+
+#: ``--render_pose`` is the rendering-engine axis, not a size. ``-1`` means "inherit", which on
+#: this build resolves to the GPU rendering path; ``0`` draws nothing. Frame size belongs to
+#: ``--output_resolution`` alone (its default ``-1x-1`` = full input resolution). Strings, because
+#: that is how they reach argv.
+RENDER_POSE_INHERIT = "-1"
+RENDER_POSE_OFF = "0"
+
+#: The same two axes, emitted with every run's provenance so a reader of the JSON alone cannot
+#: take ``render_pose: "-1"`` for a resolution that failed to be computed.
+RENDER_AXES = {
+    "render_pose": "rendering engine/mode, not a size: -1 = inherit = GPU rendering path on "
+                   "this build, 0 = nothing drawn",
+    "output_resolution": "frame size WxH: null = OpenPose default (-1x-1) = full input "
+                         "resolution",
+}
 
 
 def scaled_output_resolution(width: int, height: int, max_side: int) -> tuple[int, int]:
@@ -172,8 +193,11 @@ class OpenPoseStage(Stage):
 
     @staticmethod
     def render_pose_value(cfg) -> str:
-        """``-1`` = inherit, i.e. GPU rendering on the CUDA path this build uses."""
-        return "-1" if (cfg.write_images and cfg.body.enabled) else "0"
+        """The rendering-engine switch: ``-1`` = inherit, i.e. GPU rendering on the CUDA path.
+
+        Nothing about frame size is decided here; ``output_resolution()`` owns that axis.
+        """
+        return RENDER_POSE_INHERIT if (cfg.write_images and cfg.body.enabled) else RENDER_POSE_OFF
 
     def render_args(self, ctx: StageContext) -> list[str]:
         """The flag group that asks OpenPose for its own rendered frames.
@@ -196,14 +220,18 @@ class OpenPoseStage(Stage):
             "--face_render", "1" if cfg.face_enabled else "0",
             "--hand_render", "1" if cfg.hands_enabled else "0",
         ]
+        # The size axis is appended here; the engine axis (--render_pose) is added by
+        # build_command, so the two never arrive mixed up in one flag group.
         resolution = self.output_resolution(ctx)
         if resolution:
             argv += ["--output_resolution", resolution]
         return argv
 
     def output_resolution(self, ctx: StageContext) -> str | None:
-        """``WxH`` for ``--output_resolution``, or None to leave OpenPose's default.
+        """``WxH`` for ``--output_resolution``, or None to leave OpenPose's ``-1x-1`` default.
 
+        None is not "no resolution": the render then runs at full input resolution. This is the
+        frame-size axis and has nothing to do with ``--render_pose``, which is the engine axis.
         Dimensions come from the metadata artifact (ffprobe's video stream), not from
         a second probe: the stage already depends on that file and its hash.
         """
@@ -228,6 +256,85 @@ class OpenPoseStage(Stage):
             return 0
         return sum(1 for path in images.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES)
 
+    def clear_render_dir(self, ctx: StageContext) -> int:
+        """Empty ``pose/raw_images`` before a rendering run and report how many files went.
+
+        ``count_rendered_images`` counts what is on disk, so without this it counts every run
+        that ever wrote there -- which is what defeats the zero-render guard in ``execute``: flip
+        ``write_images`` off and back on, the fingerprint re-runs the stage, and a run in which
+        OpenPose draws nothing still sees the previous run's thousands of images, passes the
+        guard, and is recorded complete with zero skeletons from this run.
+
+        Only ``pose/raw_images``, and only when rendering was asked for: with the flag off the
+        stage has no business erasing images it was never asked to redo, even though it still
+        counts them. ``pose/raw`` (the JSON keypoints) is never touched from here.
+        """
+        images = ctx.artifact("pose_images_raw")
+        if not images.is_dir():
+            images.mkdir(parents=True, exist_ok=True)
+            return 0
+        removed = 0
+        for path in sorted(images.rglob("*"), reverse=True):
+            if not path.is_file():
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                # A file that survives here puts the defeated guard straight back, so this is a
+                # failed run rather than a warning: the render count would describe that leftover.
+                raise StageError(
+                    f"cannot clear rendered frame {path} before the render: "
+                    "openpose.write_images=true needs an empty pose/raw_images so the rendered "
+                    "count describes this run"
+                ) from exc
+            removed += 1
+        return removed
+
+    @staticmethod
+    def draws_any_module(cfg) -> bool:
+        """Whether at least one skeleton would be drawn on the frames OpenPose writes.
+
+        The three render switches are the only thing that puts ink on a frame, and each follows
+        one config key (``--render_pose`` by ``render_pose_value``, ``--face_render`` and
+        ``--hand_render`` by ``face_enabled``/``hands_enabled``). So this is decidable without
+        running anything: no pixel inspection, no post-run stat.
+        """
+        return bool(cfg.body.enabled or cfg.face_enabled or cfg.hands_enabled)
+
+    def refuse_undrawn_render(self, ctx: StageContext) -> None:
+        """Refuse ``write_images=true`` when no module is enabled to be drawn.
+
+        Measured on this build (249-frame clip): with ``--render_pose 0 --face_render 0
+        --hand_render 0`` the binary still writes one image per processed frame -- all 249 --
+        and they are the *source* frames at full source resolution, because on that path
+        ``--output_resolution`` is ignored. The run exits 0 with a full image directory, so the
+        zero-render guard in ``execute`` can never fire for it: that guard sees ``rendered == 0``,
+        which is now only ever a run that wrote no files at all. Config-time refusal is the only
+        place left, and the request is unambiguous from config alone.
+
+        Called before the render directory is cleared, so refusing costs nothing the operator
+        had already paid for.
+        """
+        cfg = ctx.config.openpose
+        if not cfg.write_images or self.draws_any_module(cfg):
+            return
+        message = (
+            "openpose.write_images=true but openpose.body.enabled, openpose.face.enabled and "
+            "openpose.hands.enabled are all false, so nothing would be drawn: in this build "
+            "--write_images still writes one image per processed frame with --render_pose 0 "
+            "--face_render 0 --hand_render 0, and --output_resolution does not bound those "
+            "images, so the run would produce full-resolution frames containing no skeleton. "
+            "Enable a module (body.enabled, face.enabled or hands.enabled) or set "
+            "openpose.write_images=false."
+        )
+        ctx.log(message, level=40)
+        raise StageError(message, details={
+            "write_images": True,
+            "body_enabled": bool(cfg.body.enabled),
+            "face_enabled": bool(cfg.face_enabled),
+            "hands_enabled": bool(cfg.hands_enabled),
+        })
+
     def publish_body(self, ctx: StageContext) -> bool:
         return bool(ctx.config.openpose.body.enabled)
 
@@ -238,6 +345,9 @@ class OpenPoseStage(Stage):
 
     def execute(self, ctx: StageContext) -> dict[str, Any]:
         cfg = ctx.config.openpose
+        # Before the directory is emptied and before the binary: a render with nothing to draw
+        # must not even cost the operator their previous frames.
+        self.refuse_undrawn_render(ctx)
         raw_dir = ctx.artifact("pose_raw")
         raw_dir.mkdir(parents=True, exist_ok=True)
         argv = self.build_command(ctx, raw_dir)
@@ -247,6 +357,13 @@ class OpenPoseStage(Stage):
             ctx.log("openpose.body.enabled=false: the CLI cannot disable body tracking, so the "
                     "tracker runs but pose/body.parquet is not published", level=30)
         if cfg.write_images:
+            removed = self.clear_render_dir(ctx)
+            if removed:
+                # Disk churn on a rerun is the operator's to see: these are files they may have
+                # believed were still the current render.
+                ctx.log(f"openpose.write_images=true: removed {removed} file(s) left in "
+                        f"{ctx.artifact('pose_images_raw')} by an earlier run, so the rendered "
+                        "count below describes this run only", level=30)
             self.log_render_plan(ctx)
         result = run_command(argv, log_path=ctx.paths.log(self.name), timeout=cfg.timeout_seconds,
                              cwd=str(raw_dir.parent.parent))
@@ -254,7 +371,8 @@ class OpenPoseStage(Stage):
         if cfg.write_images and rendered == 0:
             # The trap this guard exists for: OpenPose exits 0 having written no
             # images, and the dataset looks complete from here on. Fail now, before
-            # normalisation, with the flags that decide rendering named.
+            # normalisation, with the flags that decide rendering named. The directory was
+            # emptied above, so `rendered == 0` here really means this run rendered nothing.
             ctx.log(
                 f"openpose.write_images=true but {ctx.artifact('pose_images_raw')} contains no "
                 f"rendered images: --write_images/--render_pose/--face_render/--hand_render "
@@ -284,6 +402,9 @@ class OpenPoseStage(Stage):
     def log_render_plan(self, ctx: StageContext) -> None:
         """One warning per run about the resolution the render will use.
 
+        Resolution is the ``--output_resolution`` axis. ``--render_pose`` is the engine axis and
+        never bounds what a frame costs.
+
         Only ``--output_resolution`` bounds the cost, and its default is the input
         resolution: at 25 fps a 4-hour recording is ~360k full-frame images. The
         stage says so once instead of deciding the downscale for the operator, and it
@@ -306,7 +427,13 @@ class OpenPoseStage(Stage):
 
         ``validate`` reports the same count, and its report is the part that is
         persisted per stage; this records the request that produced it, so a later
-        reader can tell "no images" from "no images requested".
+        reader can tell "no images" from "no images requested". When ``requested`` is
+        false the count is a leftover from some earlier run: the directory is
+        deliberately not cleared then.
+
+        ``axes`` exists because the flag names read like one axis. ``render_pose`` is the
+        rendering engine (``-1`` = inherit = GPU rendering on this build); ``output_resolution``
+        is the frame size (``null`` = OpenPose's default = full input resolution).
         """
         cfg = ctx.config.openpose
         return {"render": {
@@ -319,13 +446,13 @@ class OpenPoseStage(Stage):
             "output_resolution": self.output_resolution(ctx),
             "image_max_side": cfg.image_max_side,
             "rendered_images": rendered,
+            "axes": dict(RENDER_AXES),
         }}
 
     # ------------------------------------------------------------ normalisation
 
     def normalize(self, ctx: StageContext) -> dict[str, Any]:
         """Stream raw per-frame JSON into three Parquet tables with row groups."""
-        raw_dir = ctx.artifact("pose_raw")
         timings = self.frame_timings(ctx)
         writers = {
             "body": ChunkedParquetWriter(ctx.artifact("pose_body"), BODY_SCHEMA,
@@ -420,6 +547,9 @@ class OpenPoseStage(Stage):
             raise ValidationError(self.name, ["pose/raw contains no OpenPose JSON output"])
         duration = self._duration(ctx)
         report: dict[str, Any] = {"raw_files": len(raw_files)}
+        # Reported as a pair on purpose: rendered_images says how many files are on disk, and
+        # only render_requested says whether the run being validated asked for them.
+        report["render_requested"] = bool(self._config(ctx).write_images)
         report["rendered_images"] = self.validate_renders(ctx, raw_frames=len(raw_files))
         for name, schema, time_col in (
             ("pose_body", BODY_SCHEMA, "timestamp"),
@@ -471,6 +601,10 @@ class OpenPoseStage(Stage):
         requested them to account for them would turn an opt-in off-switch into a
         permanent validation failure -- the fingerprint already forces the rerun that
         actually decides what is there.
+
+        The count is therefore about whoever wrote last, which is why ``validate`` reports it
+        beside ``render_requested`` instead of on its own. A count of *this* run comes from
+        ``execute``, which empties the directory first when rendering is on.
         """
         rendered = self.count_rendered_images(ctx)
         if not self._config(ctx).write_images:

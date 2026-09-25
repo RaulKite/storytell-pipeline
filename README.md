@@ -380,11 +380,24 @@ already produced. And bring disk space — OpenPose's own `--output_resolution` 
 warning once and renders at source size anyway. What comes back is a *view*, not data:
 `pose/*.parquet` stays the measured keypoints, the JSON in `pose/raw/` stays
 byte-identical, and a run that was asked to render and wrote zero images fails loudly
-instead of completing an empty dataset. Capping the render does not rescale the data:
+instead of completing an empty dataset — that last check only means anything because a
+rendering run empties `pose/raw_images` first, so the count it inspects belongs to that run
+and not to whatever rendered there last. Turning rendering off deletes nothing. Capping the
+render does not rescale the data:
 measured on a 1280×720 clip with `image_max_side: 640`, the images came back 640×360
 while `--keypoint_scale` kept its default and the JSON coordinates still reached x≈1223
 — so the tables stay in source pixels and the images are a downscaled view of them
 (exit 0, 205 frames, 205 images, 31 MB).
+
+A second request is refused *before* the binary is invoked, because no post-run check can
+catch it: `write_images: true` with `body.enabled`, `face.enabled` and `hands.enabled` all
+false asks for images that nothing will draw. On this build `--write_images` still writes one
+image per processed frame with every renderer off **and** `--output_resolution` does not bound
+those files. Measured on a 249-frame clip: that request wrote all 249 images at the full source
+640×480 while asking for 320×240, and they were the source frames themselves — mean absolute
+difference 0.69 grey levels against the frame ffmpeg extracts. Maximum cost, zero skeletons,
+exit 0 with a full image directory, so the zero-image guard above cannot see it. Enabling any
+one module (face alone is enough — verified) still runs normally.
 
 `activespeaker` answers a question the audio-only stages cannot: **which visible face
 is producing the audio**. Pyannote says when someone speaks and OpenPose says where
@@ -702,7 +715,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1094 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1108 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -758,7 +771,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1094 tests
+tests/unit/                1108 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

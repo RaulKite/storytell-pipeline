@@ -436,6 +436,253 @@ class TestExecuteRenderReport:
         assert not [line for line in stage_ctx.log.at(30) if "image_max_side" in line]
 
 
+class TestRenderCountBelongsToThisRun:
+    """(g) the counted images are the ones this run made, or the count is labelled.
+
+    ``count_rendered_images`` counts files on disk. Before the render directory was emptied per
+    run, that count described *every* run that had ever written there, and both consumers read it
+    as evidence about the current one: the zero-render guard passed because some earlier run had
+    produced images, and the off-path report counted files that predate the run being reported.
+    """
+
+    def test_leftover_images_cannot_hide_a_zero_render(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The defeated guard: write once, flip the flag off and on, render nothing.
+
+        Flipping ``write_images`` re-runs the stage (the fingerprint changes), so a run in which
+        OpenPose draws no frame at all used to find the previous run's images on disk, pass the
+        guard, and be recorded complete with zero skeletons from this run.
+        """
+        render_config(stage_ctx, write_images=True)
+        seed_images(stage_ctx, 4)  # leftover from the earlier render
+        install_fake_run(monkeypatch, stage_ctx, writes=0)
+        seed_raw(stage_ctx, 3)
+        seed_frame_index(stage_ctx, 3)
+        seed_tables(stage_ctx, 3)
+
+        with pytest.raises(StageError) as excinfo:
+            OpenPoseStage().execute(stage_ctx)
+
+        assert "rendered no images" in str(excinfo.value)
+        assert stage_ctx.log.at(40)
+
+    def test_a_rendering_run_counts_only_what_it_rendered(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ):
+        """3 files from an earlier run, 2 from this one: the summary must say 2."""
+        render_config(stage_ctx, write_images=True)
+        seed_images(stage_ctx, 3)
+        install_fake_run(monkeypatch, stage_ctx, writes=2)
+        seed_raw(stage_ctx, 2)
+        seed_frame_index(stage_ctx, 2)
+        seed_tables(stage_ctx, 2)
+
+        extras = OpenPoseStage().execute(stage_ctx)
+
+        assert extras["extra"]["rendered_images"] == 2
+        assert OpenPoseStage().count_rendered_images(stage_ctx) == 2
+
+    def test_clearing_is_logged_at_warning_with_the_count_removed(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A rerun deleting the operator's previous frames is disk churn they get to see."""
+        render_config(stage_ctx, write_images=True)
+        seed_images(stage_ctx, 5)
+        install_fake_run(monkeypatch, stage_ctx, writes=2)
+        seed_raw(stage_ctx, 2)
+        seed_frame_index(stage_ctx, 2)
+        seed_tables(stage_ctx, 2)
+
+        OpenPoseStage().execute(stage_ctx)
+
+        cleared = [line for line in stage_ctx.log.at(30) if "removed" in line]
+        assert len(cleared) == 1, stage_ctx.log.lines
+        assert "5" in cleared[0]
+        assert "raw_images" in cleared[0]
+
+    def test_the_previous_run_of_keypoint_json_survives_the_clear(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Only ``pose/raw_images`` is cleared; ``pose/raw`` is the stage's own real output."""
+        render_config(stage_ctx, write_images=True)
+        seed_images(stage_ctx, 3)
+        seed_raw(stage_ctx, 2)
+        install_fake_run(monkeypatch, stage_ctx, writes=2)
+        seed_frame_index(stage_ctx, 2)
+        seed_tables(stage_ctx, 2)
+
+        OpenPoseStage().execute(stage_ctx)
+
+        assert len(list(stage_ctx.artifact("pose_raw").glob("*.json"))) == 2
+
+    def test_rendering_off_deletes_nothing(self, stage_ctx, monkeypatch: pytest.MonkeyPatch):
+        """With the flag off the stage was never asked to redo those images.
+
+        Invariant guard: it passes before the fix as well, and exists to stop a future
+        "consistency" cleanup from wiping the only renders an operator has.
+        """
+        seed_images(stage_ctx, 7)
+        install_fake_run(monkeypatch, stage_ctx, writes=0)
+        seed_raw(stage_ctx, 4)
+        seed_frame_index(stage_ctx, 4)
+        seed_tables(stage_ctx, 4)
+
+        extras = OpenPoseStage().execute(stage_ctx)
+
+        assert OpenPoseStage().count_rendered_images(stage_ctx) == 7
+        assert extras["extra"]["rendered_images"] == 7
+        assert extras["extra"]["render"]["requested"] is False
+        assert not [line for line in stage_ctx.log.at(30) if "removed" in line]
+
+    def test_an_off_path_report_labels_the_count_it_could_not_own(self, stage_ctx) -> None:
+        """The off-path count stays, but it is not allowed to read as a fresh render."""
+        seed_raw(stage_ctx, 3)
+        seed_tables(stage_ctx, 3)
+        seed_images(stage_ctx, 1)  # leftover from an earlier opt-in run
+
+        report = OpenPoseStage().validate(stage_ctx)
+
+        assert report["rendered_images"] == 1
+        assert report["render_requested"] is False
+
+    def test_an_on_path_report_says_the_run_asked_for_its_images(self, stage_ctx) -> None:
+        render_config(stage_ctx, write_images=True)
+        seed_raw(stage_ctx, 2)
+        seed_tables(stage_ctx, 2)
+        seed_images(stage_ctx, 2)
+
+        report = OpenPoseStage().validate(stage_ctx)
+
+        assert report["render_requested"] is True
+        assert report["rendered_images"] == 2
+
+    def test_the_provenance_says_which_axis_is_which(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``render_pose: "-1"`` is the engine, not a resolution that went missing.
+
+        Both axes are recorded, so a reader of the persisted provenance alone can tell the
+        rendering engine (``-1`` = inherit = GPU on this build) from the frame size (null =
+        OpenPose's default = full input resolution).
+        """
+        render_config(stage_ctx, write_images=True, image_max_side=None)
+        install_fake_run(monkeypatch, stage_ctx, writes=2)
+        seed_raw(stage_ctx, 2)
+        seed_frame_index(stage_ctx, 2)
+        seed_tables(stage_ctx, 2)
+
+        extras = OpenPoseStage().execute(stage_ctx)
+
+        render = extras["extra"]["render"]
+        assert render["render_pose"] == "-1"
+        assert render["output_resolution"] is None
+        axes = render["axes"]
+        assert "engine" in axes["render_pose"]
+        assert "-1" in axes["render_pose"]
+        assert "size" in axes["output_resolution"]
+        assert "full input resolution" in axes["output_resolution"]
+
+
+class TestRenderWithNothingToDraw:
+    """(h) ``write_images=true`` with every module off is refused before anything runs.
+
+    Measured on this build (249-frame clip, ``openpose.bin``): with
+    ``--render_pose 0 --face_render 0 --hand_render 0`` the binary still writes one image per
+    processed frame -- 249 files -- and they are the *source frames* (mean absolute difference
+    0.69 grey levels from the ffmpeg-extracted frame), at the full 640x480 source resolution
+    because ``--output_resolution`` does not bound that path. So the run exits 0, produces a
+    directory of undecorated full-resolution frames, and the zero-render guard in ``execute``
+    can never fire for it: ``rendered`` is 249, not 0. The operator pays the maximum cost for
+    the minimum content, and nothing downstream can tell the difference.
+
+    Whether anything will be drawn is decidable from config alone, because ``render_pose_value``
+    returns ``"0"`` exactly when ``write_images and body.enabled`` is false and the other two
+    render switches follow ``face_enabled``/``hands_enabled``. So this is a config-time guard:
+    no pixel inspection, no post-run stat.
+    """
+
+    @staticmethod
+    def set_modules(ctx, *, body: bool, hands: bool, face: bool) -> None:
+        """Module switches, written the way the config exposes them."""
+        ctx.config.openpose.body.enabled = body
+        ctx.config.openpose.hands = {"enabled": hands}
+        ctx.config.openpose.face = {"enabled": face}
+
+    @staticmethod
+    def prepare_run(monkeypatch: pytest.MonkeyPatch, ctx, writes: int) -> list:
+        calls = install_fake_run(monkeypatch, ctx, writes=writes)
+        seed_raw(ctx, writes)
+        seed_frame_index(ctx, writes)
+        seed_tables(ctx, writes)
+        return calls
+
+    def test_write_images_with_every_module_off_is_refused_before_the_binary_runs(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must happen while the subprocess is still unspawned."""
+        self.set_modules(stage_ctx, body=False, hands=False, face=False)
+        render_config(stage_ctx, write_images=True)
+        calls = self.prepare_run(monkeypatch, stage_ctx, writes=3)
+
+        with pytest.raises(StageError) as excinfo:
+            OpenPoseStage().execute(stage_ctx)
+
+        assert calls == [], f"the binary was invoked before the guard could refuse: {calls}"
+        # It is the config-time refusal, not the post-run zero-render guard talking.
+        assert "rendered no images" not in str(excinfo.value)
+
+    def test_the_refusal_names_the_flags_and_the_fix(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refusal that does not say which flag to change is a second debugging session."""
+        self.set_modules(stage_ctx, body=False, hands=False, face=False)
+        render_config(stage_ctx, write_images=True)
+        calls = self.prepare_run(monkeypatch, stage_ctx, writes=3)
+
+        with pytest.raises(StageError) as excinfo:
+            OpenPoseStage().execute(stage_ctx)
+
+        assert calls == []
+        message = str(excinfo.value)
+        for flag in ("write_images", "--render_pose", "--face_render", "--hand_render"):
+            assert flag in message, f"{flag} not named in the refusal: {message}"
+        # The other half of the message: why it is refused, and what to do instead.
+        assert "--output_resolution" in message
+        assert "body.enabled" in message and "face" in message and "hands" in message
+        assert "write_images=false" in message
+
+    @pytest.mark.parametrize("hands,face", [(False, True), (True, False), (True, True)])
+    def test_one_enabled_module_still_runs(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch, hands: bool, face: bool
+    ) -> None:
+        """The predicate must not over-refuse: with ``face_enabled`` it *will* draw.
+
+        ``--render_pose 0`` on its own says nothing about the other renderers, so a run that
+        draws a face or hand skeleton is a legitimate render even with body publishing off.
+        """
+        self.set_modules(stage_ctx, body=False, hands=hands, face=face)
+        render_config(stage_ctx, write_images=True)
+        calls = self.prepare_run(monkeypatch, stage_ctx, writes=2)
+
+        extras = OpenPoseStage().execute(stage_ctx)
+
+        assert len(calls) == 1
+        assert extras["extra"]["rendered_images"] == 2
+
+    def test_all_modules_off_with_rendering_disabled_still_runs(
+        self, stage_ctx, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The flag off is the supported configuration; only the request is refused."""
+        self.set_modules(stage_ctx, body=False, hands=False, face=False)
+        calls = self.prepare_run(monkeypatch, stage_ctx, writes=0)
+
+        extras = OpenPoseStage().execute(stage_ctx)
+
+        assert len(calls) == 1
+        assert extras["extra"]["render"]["requested"] is False
+
+
 class TestValidationCountRule:
     """(e) one image per processed frame, with one frame of slack."""
 
