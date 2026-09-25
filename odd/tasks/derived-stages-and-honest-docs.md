@@ -89,6 +89,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
 - [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb` (code+tests+docs as one work unit), review recorded in `406f1c2`; native review approved (high, 4 lenses), evidence in §9.
 - [x] **T9** spaCy model choice sees the language-detection grade, default unchanged — `ba602d7`, evidence in §10.
+- [ ] **T18** `_language_detection` must not read a corrupt `whisperx_raw` as "no grade": record the read failure distinctly (advisory `R4-raw-read-failure-cache`, from T9's review) and decide whether the raw digest belongs in the fingerprint.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
 - [ ] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph,
@@ -518,7 +519,25 @@ spaCy files), unit 861, e2e 42, suite 903 passed. Parent-run mutations: forcing
 `trusted=True` kills three named tests; letting english inherit the key kills two. README
 warning texts verified verbatim against the worker strings.
 
-## 11. Execution notes
+## 11. T9 review outcome — approved, one advisory kept as work
+
+Lineage `review-087287de62cf6552`, tier **high** (`process_boundary: shell_process` in
+`workers/spacy_worker.py`), 939 changed lines over the full T9 range (base
+`406f1c23…`), four lenses, correction budget 200. All four reviewers ran through the host
+relay (~74 KB prompt each) and it closed **approved**; acknowledgement burned the authority
+(`burn_evidence: gentle-ai.review-acknowledged/v1`, `authority: burned`,
+`delivery: ordinary-repository-policy`). No correction was opened or spent.
+
+**Advisory `R4-raw-read-failure-cache`** (resilience, WARNING, informational,
+`stages/spacy_source.py:171-172`) is real and was kept, not argued away: `_language_detection`
+catches `OSError`/`ValueError` and returns `None`, which is the same value as "the raw document
+carries no grade". A corrupt raw is therefore cached as a *missing* grade, and because the
+request does not digest `whisperx_raw` itself, repairing that file later does not invalidate
+the spaCy stage. T9 deliberately recorded absence as `None` so old datasets keep working;
+this finding is the case that absence was hiding. Filed as **T18** rather than fixed under a
+receipt that is already burned — the receipt says nothing about a changed candidate.
+
+## 12. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with
