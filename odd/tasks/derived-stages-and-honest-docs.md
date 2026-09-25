@@ -38,8 +38,10 @@ they currently read 782 unit + 42 e2e.
 **Block 3 — debt with no §20 entry**: no CI at all; `tests/e2e/test_cli_smoke.py` *fails*
 rather than skips on a machine without OpenPose/ffmpeg 7 (so a clean machine cannot verify
 its own install); `scripts/make_fixtures.sh` uses a second OpenPose path convention and
-checks for `ffmpeg` but needs the `flite` filter; `activespeaker` emits no warnings at all
-(review finding R3-001); frames past the imputable tail are indistinguishable from
+checks for `ffmpeg` but needs the `flite` filter; the dense-sequence check in
+`activespeaker` rejects three different faults with one string and logs nothing (review
+finding R3-001 — the finding's own premise that the stage "emits no warnings at all" was
+stale on arrival, see §8); frames past the imputable tail are indistinguishable from
 `no_face`; and nobody decided whether a `language_detection.status: low` should drive spaCy
 model choice at all.
 
@@ -83,7 +85,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [ ] **T5** CI: CPU-only unit workflow, explicit about what it does not cover.
 - [x] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
       path convention with `openpose.root`, add a test.
-- [ ] **T7** `activespeaker`: the stage's first warning logs (closes R3-001).
+- [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
 - [ ] **T8** dense frames: `frame_reason` distinguishing no-face / past-tail / unscored.
 - [ ] **T9** spaCy model choice gated on language-detection status, default unchanged.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
@@ -344,7 +346,44 @@ exists) and were rewritten to assert provenance rather than absence.
 < −60 dB for the silent control), which no shim can establish. Full suite: 782 unit +
 42 e2e pass.
 
-## 8. Execution notes
+## 8. T7 — R3-001: the dense check now says which fault it saw
+
+**The finding was half-obsolete, and saying so is part of closing it.** R3-001 was filed with
+the premise that "`activespeaker` emits no warnings anywhere". That stopped being true at
+`f5f3414`: `normalize()` logs a device-fallback warning and an unscored-frames warning today.
+The finding's substance survives, and it is the denser of the two: the dense-timeline check
+rejected the frame table with one umbrella string for three different faults, and the stage
+log recorded nothing at all.
+
+**What changed.** `dense_sequence_break(indices)` is a pure function returning a diagnosis or
+`None`. `validate()` reports `not a dense 0..N-1 sequence: <why>` and writes the same line to
+`logs/<stage>.log` at WARNING. The three shapes are distinguishable now:
+
+| input | diagnosis |
+| --- | --- |
+| `[0,1,3,2]` | row 2 holds frame_number 3 instead, the rows are out of order |
+| `[0,1,2,7]` | 1 frame number(s) missing (first: 3), frame number(s) outside 0..3 (first: 7) |
+| `[0,1,1,2]` | frame_number 1 is a duplicate, appearing more than once (4 rows, 3 distinct) |
+| `[0,None,2]` | row 1 has no frame_number |
+
+**The correction log for this task is unusually long, and it is all mine.** Four of my own
+claims were wrong and were caught by running the code rather than by reading it: row index of
+first divergence in `[0,1,3,2]` is 2 not 3; the gap is reported as "1 missing (first: 3)" not
+a count of four missing; the duplicate message did not contain the word "duplicate"; and
+`validate()` reads the parquet `normalize()` writes, so a test helper that mutated the worker
+JSON and skipped `normalize()` failed with "parquet missing" instead of the diagnosis it
+claimed to assert. The last one is the same mistake I made twice in T6 — asserting against a
+state the pipeline never produces.
+
+**Verification.** `tests/unit/test_activespeaker.py` 60 tests, 10 of them new. Mutations: drop
+`ctx.log` → `test_the_rejection_is_written_to_the_stage_log` dies; collapse the message back to
+the umbrella string → 3 die; make the pure function return one generic reason → 8 die.
+Full suite after the change: 793 unit + 42 e2e = 835 collected, 834 passed and the README count
+ratchet failed until I updated it to the measured 793 — which is the ratchet doing its job.
+
+**Committed as `e542dbe`.**
+
+## 9. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with
