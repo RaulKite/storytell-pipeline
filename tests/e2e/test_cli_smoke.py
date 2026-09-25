@@ -10,6 +10,7 @@ CPU-only machine would run them.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,77 @@ def config_text(root: Path, video_dir: Path) -> str:
         "acoustic": {"enabled": False},
         "openpose": {"enabled": False},
     })
+
+
+def parse_ffmpeg_major(version_line: str) -> int:
+    """The major version from a ``ffmpeg -version`` first line.
+
+    Extracted so the skip-versus-fail decision can be tested with a version this machine
+    does not have. Asserting "ffmpeg must be 7" on a machine running 6 tests the machine
+    rather than the pipeline, and a clean install then cannot use this suite to check
+    itself.
+    """
+    match = re.search(r"version\s+n?(\d+)", version_line)
+    if not match:
+        raise AssertionError(f"unparseable ffmpeg version string: {version_line!r}")
+    return int(match.group(1))
+
+
+def openpose_or_skip(config_path: Path) -> str:
+    """The discovered OpenPose executable for ``config_path``, or skip the calling test.
+
+    Skipping is the right outcome when OpenPose is simply not installed here: an e2e test
+    that fails because a third-party binary is absent tells an operator nothing about
+    whether *their* install is correct, and this file is the closest the repository has to
+    install verification. A discovered-but-unreadable path is a real defect and must still
+    fail, so the caller asserts on the returned value.
+    """
+    payload = stdout_json(cli("inspect-environment", "-c", str(config_path)))
+    discovered = payload["tools"]["openpose"].get("executable")
+    if not discovered:
+        pytest.skip(
+            "no OpenPose binary discovered for "
+            f"{config_path} (default root /opt/openpose present: {Path('/opt/openpose').is_dir()})"
+        )
+    return str(discovered)
+
+
+class TestSkipInsteadOfFail:
+    """The two guards that make this suite usable as install verification.
+
+    Both exist because this file *failed* on a machine without OpenPose, and would have
+    failed on ffmpeg 6, when neither is a defect in the pipeline. The helpers are called
+    with a foreign version string and a foreign root so the skip paths are exercised on a
+    machine that would otherwise never reach them.
+    """
+
+    @pytest.mark.parametrize(
+        ("line", "major"),
+        [
+            ("ffmpeg version 7.1.1 Copyright (c) 2000-2025", 7),
+            ("ffmpeg version 6.1.1-3ubuntu5 Copyright", 6),
+            ("ffmpeg version n7.0.2", 7),
+            ("ffmpeg version 8.0", 8),
+        ],
+    )
+    def test_ffmpeg_major_parses_from_the_reported_string(self, line: str, major: int) -> None:
+        assert parse_ffmpeg_major(line) == major
+
+    def test_an_unparseable_version_fails_loudly(self) -> None:
+        with pytest.raises(AssertionError, match="unparseable ffmpeg version"):
+            parse_ffmpeg_major("ffmpeg: command not found")
+
+    def test_a_machine_without_openpose_skips_instead_of_failing(self, tmp_path: Path) -> None:
+        example = yaml.safe_load((PROJECT_ROOT / "config" / "config.example.yaml").read_text())
+        example["openpose"]["root"] = str(tmp_path / "definitely-not-openpose")
+        stray = tmp_path / "config"
+        stray.mkdir(parents=True)
+        broken = stray / "config.example.yaml"
+        broken.write_text(yaml.safe_dump(example))
+
+        with pytest.raises(pytest.skip.Exception) as raised:
+            openpose_or_skip(broken)
+        assert "no OpenPose binary discovered" in str(raised.value)
 
 
 @pytest.fixture(scope="module")
@@ -151,14 +223,45 @@ class TestHelpAndEnvironment:
         assert "hf_fromdotenvfile" not in (result.stdout + result.stderr)
 
     def test_inspect_environment_reports_the_toolchain(self) -> None:
+        """Runs on any machine with ffmpeg: what is *found* is reported, honestly.
+
+        Version- and install-specific claims live in their own tests below, so a machine
+        that differs from the one this pipeline was verified on cannot fail its way past
+        its own install check. That distinction is the point: this file is the closest
+        thing the repository has to install verification, and a test that fails because
+        OpenPose is not installed tells an operator nothing about whether they installed
+        the pipeline correctly.
+        """
         example = PROJECT_ROOT / "config" / "config.example.yaml"
         result = cli("inspect-environment", "-c", str(example))
         assert result.returncode == 0, result.stderr[-2000:]
         payload = stdout_json(result)
         assert payload["system"]["python"]
-        assert "7." in payload["tools"]["ffmpeg"]["ffmpeg"]
-        assert "7." in payload["tools"]["ffmpeg"]["ffprobe"]
-        assert payload["tools"]["openpose"]["executable"], "OpenPose must be discovered"
+        assert payload["tools"]["ffmpeg"]["ffmpeg"], "ffmpeg version was not probed"
+        assert payload["tools"]["ffmpeg"]["ffprobe"], "ffprobe version was not probed"
+        assert payload["tools"]["ffmpeg"]["resolved_ffmpeg"], "ffmpeg is not resolvable"
+        assert "openpose" in payload["tools"]
+        assert "uv_projects" in payload["tools"]
+
+    def test_the_ffmpeg_major_this_pipeline_was_verified_against(self) -> None:
+        """Parselmouth-free behaviour was characterised against ffmpeg 7.1.1.
+
+        Skipped rather than failed on another major: the claim under test is "the version
+        we verified against is what gets reported", which a machine on a different major
+        cannot answer. The README names 7.x as the verified pin.
+        """
+        result = cli("inspect-environment", "-c", str(PROJECT_ROOT / "config" / "config.example.yaml"))
+        payload = stdout_json(result)
+        reported = payload["tools"]["ffmpeg"]["ffmpeg"]
+        major = parse_ffmpeg_major(reported)
+        if major != 7:
+            pytest.skip(f"ffmpeg major {major} here; the verified pin is 7.x")
+        assert "7." in reported and "7." in payload["tools"]["ffmpeg"]["ffprobe"]
+
+    def test_openpose_is_discovered_where_it_is_installed(self) -> None:
+        """Skipped when this machine has no OpenPose; failing when it has a broken install."""
+        discovered = openpose_or_skip(PROJECT_ROOT / "config" / "config.example.yaml")
+        assert Path(discovered).is_file(), f"discovered OpenPose executable is not a file: {discovered}"
 
     def test_the_example_config_matches_the_schema(self) -> None:
         """A shipped example that does not load is worse than no example."""
