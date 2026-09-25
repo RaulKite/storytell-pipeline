@@ -185,6 +185,29 @@ Parquet table costs seconds; re-running WhisperX large-v3 or OpenPose costs minu
 Raw artifacts stay **byte-identical** to what the tool produced — provenance is
 written to a sidecar (`*.provenance.json`) rather than stamped into the raw file.
 
+### What a stage emits, as a picture
+
+Four figures under [`docs/assets/`](docs/assets/README.md), drawn from the Parquet tables
+themselves by `scripts/make_dataset_figures.py` — and built from a **synthetic** dataset,
+never from processed video: the pipeline's real input is copyrighted broadcast material,
+so no derived frame is committed here. The stage graph comes from `STAGE_ORDER` and
+`STAGE_DEPENDENCIES` (dashed = the stage has its own enable check and may skip). The
+active-speaker strip puts the dense frame table on one axis — ticks coloured by
+`frame_reason`, the score trace, the `is_active_speaker` band — which is where "nothing
+was measured" and "the last score was carried" finally look different from each other.
+
+![Pipeline stage graph](docs/assets/stage_graph.png)
+![Active-speaker frames strip](docs/assets/active_speaker_strip.png)
+![Speaker turns against word timings](docs/assets/speaker_turn_strip.png)
+![BODY_25 skeletons from pose/body.parquet](docs/assets/pose_skeleton_strip.png)
+
+Regenerate all four (matplotlib is not a project dependency, so `--with` supplies it; the
+output is byte-identical for a given seed, and a test asserts these committed bytes):
+
+```bash
+uv run --with matplotlib python scripts/make_dataset_figures.py --synthetic --seed 7 --out docs/assets
+```
+
 ---
 
 ## Two diarization engines, on purpose
@@ -595,7 +618,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 914 tests, ~30 s
+uv run --with pytest pytest tests/unit -q     # 957 tests, ~30 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -651,9 +674,10 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                914 tests
+tests/unit/                957 tests
 tests/e2e/                 42 CLI-driven tests
-scripts/                   fixture + spaCy model installers
+scripts/                   fixture + spaCy model installers, dataset figure renderer
+docs/assets/               committed figures (synthetic-schema demos, regenerable)
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
 data/input_videos/         synthetic fixtures (committed, ~330 KB)
 ```

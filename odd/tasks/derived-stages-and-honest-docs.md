@@ -92,10 +92,14 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T18** corrupt `whisperx_raw` reads as an `unreadable` sentinel, never as "no grade" (advisory `R4-raw-read-failure-cache`) — `dbe30f3`, evidence in §12.
 - [x] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip — `4fe3d7d`, evidence in §13.
+- [ ] **T20** fuse Nemotron turns with ASD output (`speaker/active_speaker_fused_nemotron
+      .parquet`) — the operator asked for it as an extra option beside the pyannote fusion.
+      Design consequence for T13: the fusion core must take *which* turn table to consume as a
+      parameter; T20 is T13's second instantiation, not a second fusion.
 - [ ] **T19** fold T10's three advisories into one small openpose pass (render docs coherence,
       zero-render raise path, stale-images-when-off counted in the report) — best done inside T12.
-- [ ] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph,
-      active-speaker strip, speaker-turn strip, pose skeleton from T10).
+- [x] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph, active-speaker
+      strip, speaker-turn strip, pose skeleton) — `950284b` (this commit, amended before any push), evidence in §15.
 - [ ] **T12** §20.6 README: install from nothing, what each stage decides, one worked
       example dataset, how to consume it.
 - [ ] **T13** §20.1 `diarization_v2`: fuse pyannote turns with per-frame active speaker,
@@ -623,7 +627,43 @@ opened a correction; none reopens this candidate. They join the queue as **T19**
 openpose docs/resilience pass, best folded into T12's documentation sweep since that touches the
 same story).
 
-## 14. Execution notes
+## 15. T11 — figures the repo can actually show (§20.5/20.6)
+
+`scripts/make_dataset_figures.py` renders four figures from the Parquet tables themselves:
+stage graph (parsed from `STAGE_ORDER`/`STAGE_DEPENDENCIES` — imported, not hand-copied, so a
+new stage appears without anyone editing a drawing), active-speaker strip (ticks coloured by
+`frame_reason`, score trace, `is_active_speaker` band), speaker turns against word ticks, and
+BODY_25 stick figures with a confidence floor. matplotlib comes via `--with` only; the module
+imports it lazily so `pytest tests/unit` stays matplotlib-free (proved: moving the import to
+module scope breaks collection). pyarrow reads, pandas never appears (a test enforces it).
+
+**The committed-asset decision.** The pipeline eats copyrighted broadcast video, so
+`docs/assets/*.png` are generated from a seeded **synthetic** dataset (`--synthetic --seed 7`)
+with column shapes asserted equal to the real `schemas.py` constants — a guard harness that
+raises on any file read during a synthetic render proves no broadcast-derived table was
+touched. The `--dataset` mode exists for the operator's own inspection of real data and writes
+wherever told. Byte-determinism is pinned by a test comparing the committed bytes to a fresh
+render: a renderer or matplotlib-version change must come with a regeneration commit.
+
+**Parent verification (my own eyes, not the writer's).** Full suite 949 passed + 8 skipped
+(the skips are the matplotlib-rendering tests, correct without `--with matplotlib`).
+Determinism: four sha256s identical across committed and a fresh run, byte for byte. PNG
+content proven synthetic by pixel census: 6.1–19.2 % non-white, 624–1133 distinct colours,
+white background, top colours are tab10 defaults — a photo or rendered video frame cannot look
+like that. Mutations I ran myself: renaming bone endpoint `RHeel` → dies on
+`test_every_bone_endpoint_is_a_real_keypoint` + `test_the_skeleton_has_no_floating_part` +
+the committed-asset reproducibility test; renaming synthetic column `source_timestamp` → 24
+failures naming the schema mismatch. Restored green. (First mutation attempt renamed `RToe`,
+which does not exist in BODY_25 — my error, no test died for the right reason; the corrected
+probe is the one recorded.) Real-dataset run on La1 rendered all four (frame_reason counts
+scored=148/imputed_tail=4/no_face=48 — exactly the §21 measurement again), /tmp only, data/
+untouched (309 files before and after).
+
+One honest limitation: this model cannot view images, so layout was verified through
+matplotlib's Agg renderer (0 overlapping labels, 0 off-canvas) rather than by eye. A human
+glance at the four PNGs is still worth one minute.
+
+## 16. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with
