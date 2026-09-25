@@ -224,6 +224,30 @@ activespeaker:
   # timeout_seconds: null
   # extra_args: []
 
+# Audio/visual agreement (T13 + T20): fuse a diarizer's turns with the per-frame active
+# speaker table. Pure python -- no GPU, no extra uv environment -- so it costs a re-read
+# of two Parquet files. Its output is a SECOND diarization result beside the existing ones:
+# speaker_turns.parquet and every artifact built on it keep their meaning.
+#
+# The point is the disagreement, not a better label. A diarizer answers *when does a voice
+# speak*; activespeaker answers *which visible face is talking at 25 FPS*. They disagree on
+# an off-screen narrator, a cutaway, two faces with one voice, and a mouth that moves while
+# silent -- so each fused row carries an explicit agreement state instead of one flattened
+# speaker label. Read `agreement` and `agreement_detail` first.
+speaker_fusion:
+  enabled: true
+  # Which turn tables to fuse. Each selected engine writes its own file
+  # (speaker/fusion_<engine>.parquet) because pyannote's SPEAKER_00 and Nemotron's
+  # speaker_0 are unrelated id spaces and must never be joined. Selecting nemotron without
+  # diarization_nemotron.enabled is harmless: that engine is skipped with a logged reason.
+  engines: [pyannote]
+  # Share of the winning track's frames *inside the turn* that must be flagged active for a
+  # face_matched verdict. Raise it to require a sustained speaker; 1.0 allows no gaps.
+  min_active_ratio: 0.5
+  # Frames a track must be active on before it counts as evidence. One frame is a sighting,
+  # not a speaker, however good its ratio looks.
+  min_face_frames: 2
+
 logging:
   level: INFO
   console: true

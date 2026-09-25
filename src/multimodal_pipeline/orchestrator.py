@@ -44,6 +44,7 @@ from .stages.metadata import MetadataStage
 from .stages.activespeaker import ActiveSpeakerStage
 from .stages.openpose import OpenPoseStage
 from .stages.speaker_assignment import SpeakerAssignmentStage
+from .stages.speaker_fusion import SpeakerFusionStage
 from .stages.spacy_english import SpacyEnglishStage
 from .stages.spacy_source import SpacySourceStage
 from .stages.translation import TranslationStage
@@ -66,6 +67,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         AcousticStage,
         OpenPoseStage,
         ActiveSpeakerStage,
+        SpeakerFusionStage,
         FinalizationStage,
     )
 }
@@ -454,7 +456,12 @@ def stage_names() -> tuple[str, ...]:
 
 
 def enabled_stage_names(config: PipelineConfig) -> list[str]:
-    """Stages that configuration allows to run (for ``status`` reporting)."""
+    """Stages that configuration allows to run (for ``status`` reporting).
+
+    Every stage with its own enable check has to appear here or the status table lists it
+    as enabled when `Stage.enabled` will report a skip reason — the mapping's default is
+    True, so a new optional stage is invisible to this view unless it is added.
+    """
     mapping = {
         "whisperx": config.whisperx.enabled,
         "diarization": config.diarization.enabled,
@@ -463,5 +470,6 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         "spacy_english": config.spacy.enabled and config.spacy.process_english,
         "acoustic": config.acoustic.enabled,
         "openpose": config.openpose.enabled,
+        "speaker_fusion": config.speaker_fusion.enabled,
     }
     return [name for name in STAGE_ORDER if mapping.get(name, True)]

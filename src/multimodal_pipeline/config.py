@@ -533,6 +533,76 @@ class ActiveSpeakerConfig(_Model):
         return value
 
 
+class SpeakerFusionConfig(_Model):
+    """Fuse diarization turns with the per-frame active-speaker table (§20.1 / T13).
+
+    A *second* diarization result, kept beside the existing ones. Nothing here is read by
+    ``speaker_assignment``, so enabling it relabels no existing artifact — which is the
+    whole reason it is a new stage rather than a change to ``diarization``.
+
+    ``engines`` is the T20 requirement made explicit: the fusion core takes *which* turn
+    table to read as a parameter, so ``["pyannote"]`` and ``["pyannote", "nemotron"]`` are
+    two calls of the same code. Each selected engine is one output table.
+    """
+
+    enabled: bool = True
+    #: Turn tables to fuse, from ``fusion.TURN_TABLES``. Selecting ``nemotron`` costs
+    #: nothing but a table when the diarizer ran; a selected engine whose turn table is
+    #: absent is skipped with a logged reason rather than failing the stage.
+    engines: list[str] = Field(default_factory=lambda: ["pyannote"])
+    #: Share of a winning track's in-window frames that must be flagged active for a
+    #: ``face_matched`` verdict. Lower it to accept a face that talks intermittently.
+    min_active_ratio: float = 0.5
+    #: Frames a track must be flagged active on before it counts as evidence at all.
+    #: One frame is a sighting, not a match; raise it to require a sustained speaker.
+    min_face_frames: int = 2
+
+    @field_validator("engines")
+    @classmethod
+    def _engines(cls, value: list[str]) -> list[str]:
+        from .fusion import FUSION_ENGINES, TURN_TABLES
+
+        if not value:
+            raise ValueError(
+                "speaker_fusion.engines must name at least one turn table "
+                f"(allowed: {', '.join(FUSION_ENGINES)})"
+            )
+        unknown = [name for name in value if name not in TURN_TABLES]
+        if unknown:
+            raise ValueError(
+                f"speaker_fusion.engines has unknown entries {sorted(unknown)} "
+                f"(allowed: {', '.join(FUSION_ENGINES)})"
+            )
+        duplicates = sorted({name for name in value if value.count(name) > 1})
+        if duplicates:
+            # A repeated engine writes the same table twice and doubles the row counts in
+            # it, which validates fine and is simply wrong data.
+            raise ValueError(
+                f"speaker_fusion.engines lists {', '.join(duplicates)} more than once"
+            )
+        return list(value)
+
+    @field_validator("min_active_ratio")
+    @classmethod
+    def _min_active_ratio(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError(
+                "speaker_fusion.min_active_ratio must be a share in (0, 1]: it is the "
+                "fraction of a turn's in-range frames that must be active"
+            )
+        return value
+
+    @field_validator("min_face_frames")
+    @classmethod
+    def _min_face_frames(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                "speaker_fusion.min_face_frames must be >= 1: a track needs at least one "
+                "active frame before it can be evidence at all"
+            )
+        return value
+
+
 class LoggingConfig(_Model):
     level: str = "INFO"
     console: bool = True
@@ -553,6 +623,7 @@ class PipelineConfig(_Model):
     acoustic: AcousticConfig = Field(default_factory=AcousticConfig)
     openpose: OpenPoseConfig = Field(default_factory=OpenPoseConfig)
     activespeaker: ActiveSpeakerConfig = Field(default_factory=ActiveSpeakerConfig)
+    speaker_fusion: SpeakerFusionConfig = Field(default_factory=SpeakerFusionConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     # ``--project-root`` is resolved at load time; relative uv projects/workers
@@ -571,6 +642,7 @@ class PipelineConfig(_Model):
             "acoustic": self.acoustic,
             "openpose": self.openpose,
             "activespeaker": self.activespeaker,
+            "speaker_fusion": self.speaker_fusion,
         }
 
     def resolve(self, path: Path | str) -> Path:

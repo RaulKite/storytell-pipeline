@@ -58,6 +58,12 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "activespeaker_scenes_csv": "speaker/raw/scenes.csv",
     "active_speaker_frames": "speaker/active_speaker_frames.parquet",
     "active_speaker_tracks": "speaker/active_speaker_tracks.parquet",
+    # Audio/visual agreement: diarization turns x the ASD frames table. One file per
+    # selected engine, so the two speaker-id namespaces stay in two files and a consumer
+    # cannot accidentally join them. Declared always, written only for selected engines --
+    # the manifest already reports unproduced artifacts as `artifacts_not_generated`.
+    "speaker_fusion_pyannote": "speaker/fusion_pyannote.parquet",
+    "speaker_fusion_nemotron": "speaker/fusion_nemotron.parquet",
     "pipeline_log": "logs/pipeline.log",
     "provenance_config": "provenance/config.json",
     "provenance_tools": "provenance/tools.json",
@@ -79,6 +85,7 @@ STAGE_LOG_NAMES = (
     "acoustic",
     "openpose",
     "activespeaker",
+    "speaker_fusion",
     "finalization",
 )
 

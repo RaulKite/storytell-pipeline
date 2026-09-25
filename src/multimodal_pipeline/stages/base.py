@@ -46,6 +46,9 @@ STAGE_ORDER: tuple[str, ...] = (
     "acoustic",
     "openpose",
     "activespeaker",
+    # Audio/visual agreement. Last of the media stages because it consumes the diarizers'
+    # turn tables *and* the ASD frames table.
+    "speaker_fusion",
     "finalization",
 )
 
@@ -70,6 +73,12 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # not cost the visual speaker signal (the same reasoning that keeps openpose
     # metadata-only).
     "activespeaker": ("metadata", "audio"),
+    # Depends on all three producers whose tables it reads, and on nothing else. Depending
+    # on `diarization` alone would let a pyannote failure poison the Nemotron fusion, and
+    # depending on `speaker_assignment` would tie a visual verdict to transcript bookkeeping
+    # it never reads. Either diarizer can be off: the stage fuses what exists and skips the
+    # engine whose table is absent (see SpeakerFusionStage.enabled).
+    "speaker_fusion": ("diarization", "diarization_nemotron", "activespeaker"),
     "finalization": tuple(name for name in STAGE_ORDER if name != "finalization"),
 }
 
