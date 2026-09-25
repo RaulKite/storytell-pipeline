@@ -663,6 +663,16 @@ One honest limitation: this model cannot view images, so layout was verified thr
 matplotlib's Agg renderer (0 overlapping labels, 0 off-canvas) rather than by eye. A human
 glance at the four PNGs is still worth one minute.
 
+**Review outcome.** Candidate `8832868..3d4fe69` (lineage `review-03c67ba49ce289bc`, high tier —
+`process_boundary: shell_process` on the script), four lenses over 1543 lines. Approved,
+acknowledgement burned. Two non-blocking advisories: `R2-001` (make_dataset_figures.py:467-469,
+readability — the empty-file error names the output PNG while sibling errors name the source
+table; the message could lead to the table instead) and `R4-partial-output` (:717-725,
+resilience — a panel's timestamp label takes the first non-None timestamp in a frame, so a
+partially-timestamped frame labels itself from one row while other rows say nothing). Both ride
+as small polish inside T12's documentation sweep — same file, same story, no separate commit
+each. Neither reopens this candidate.
+
 ## 16. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
