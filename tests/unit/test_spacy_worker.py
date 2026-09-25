@@ -407,3 +407,73 @@ class TestSelectModel:
         result = self._select("en", {"en_core_web_sm"}, configured={})
         assert result["model"] == "en_core_web_sm"
         assert result["status"] == "discovered"
+
+    def test_the_resolver_takes_no_detection_reliability(self):
+        """`select_model` answers "which installed model serves this language"; the
+        worker's trust policy answers "should this language be served at all".
+
+        Folding the second question into the first would make every resolver test depend
+        on an ASR confidence number, and would let a detection grade silently re-route
+        model choice in a function whose provenance status only talks about availability.
+        So the policy strips the language *before* the call, and this signature is what
+        keeps the two from creeping back together.
+        """
+        import inspect
+
+        from multimodal_pipeline.stages.spacy_source import select_model as orchestrator_select
+        from multimodal_pipeline.stages.spacy_source import select_model as worker_mirror
+
+        for resolver in (orchestrator_select, worker_mirror):
+            parameters = inspect.signature(resolver).parameters
+            assert list(parameters) == ["language", "configured", "available", "fallback"]
+            assert "reliability" not in str(parameters)
+            assert "language_detection" not in str(parameters)
+
+    def test_the_worker_mirror_of_the_resolver_is_the_one_under_test(self, worker) -> None:
+        """The copy in the worker must keep answering the same questions the same way, or
+        the resolver tests above stop describing what actually runs."""
+        from multimodal_pipeline.stages.spacy_source import select_model as orchestrator_select
+
+        available = {"es_core_news_sm", "en_core_web_lg"}
+        configured = {"en": "en_core_web_lg", "es": "es_core_news_lg"}
+        for language in ("es", "en", "de", "qq", None):
+            assert worker.select_model(language, configured, available, fallback="blank") \
+                == orchestrator_select(language, configured, available, fallback="blank")
+
+
+class TestLanguageDetectionFlag:
+    """The worker's reader for WhisperX's grade, which arrives as one argv string.
+
+    Every failure path here must answer "no grade", because the alternative is losing a
+    transcript over a confidence number — the same rule the whisperx worker follows. What
+    matters is that "absent" and "present and trustworthy" are not the same answer: the
+    worker warns on the first and stays quiet on the second.
+    """
+
+    def test_a_grade_object_comes_back_with_availability(self, worker) -> None:
+        grade = {"status": "low", "probability": 0.883,
+                 "reasons": ["audio is 8.0s, below the 30s detection window"]}
+        assert worker.parse_language_detection(json.dumps(grade)) == (grade, True)
+
+    def test_the_none_literal_means_no_grade_rather_than_a_verdict(self, worker) -> None:
+        assert worker.parse_language_detection("none") == (None, False)
+        assert worker.parse_language_detection("NONE") == (None, False)
+
+    def test_a_missing_flag_means_no_grade(self, worker) -> None:
+        assert worker.parse_language_detection(None) == (None, False)
+        assert worker.parse_language_detection("") == (None, False)
+
+    @pytest.mark.parametrize("payload", ["{not json", "{\"status\":",
+                                         "[1, 2]", '"low"', "7", "null"])
+    def test_unparseable_or_non_object_payloads_are_not_grades(self, worker, payload) -> None:
+        """A JSON list or scalar is *parseable* and still not a grade; treating it as one
+        would hand the policy a `.get` that does not exist."""
+        assert worker.parse_language_detection(payload) == (None, False)
+
+    def test_an_unknown_status_is_available_but_not_low(self, worker) -> None:
+        """An unexpected status from a future whisperx must not be read as "low" and
+        demote a clip, nor be assumed trustworthy in silence: the worker only demotes on
+        the one status the policy names."""
+        grade, available = worker.parse_language_detection(json.dumps({"status": "suspicious"}))
+        assert available is True
+        assert grade["status"] != "low"

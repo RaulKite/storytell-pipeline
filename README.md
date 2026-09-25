@@ -371,6 +371,7 @@ spacy:
   english_model: en_core_web_lg
   source_models: {en: en_core_web_lg, es: es_dep_news_trf, ...}
   fallback_model: blank    # any language still gets tokens + sentences
+  trust_low_language_detection: true   # false = no full pipeline on a shaky detection
 
 acoustic:
   time_step: 0.01          # 10 ms, Praat's default pitch granularity
@@ -398,6 +399,59 @@ out and accept `blank`.
 Installing or removing a model invalidates the linguistics stages instead of leaving
 them serving a cached `blank` result: which models exist changes the output as much as
 the configuration does.
+
+#### How far to trust the detected language
+
+The language the resolver is handed is WhisperX's *detection*, and WhisperX grades its
+own work: `speech/raw/whisperx.json` carries `language_detection` with status
+`configured` (you pinned `whisperx.language`), `ok`, or `low` — `low` when the audio is
+shorter than WhisperX's 30 s detection window or the probability is missing or below
+0.5. `spacy.trust_low_language_detection` decides what `spacy_source` does with `low`.
+
+**`true` (default)** keeps the model the detection selected and logs a warning naming the
+language, the probability, the model that was still chosen, and the key that reverses it:
+
+```text
+language 'es' was auto-detected with low reliability (probability 0.88; audio is 8.0s,
+below the 30s detection window); the full pipeline for it was still selected
+(model='es_core_news_lg', status='configured') because
+spacy.trust_low_language_detection = true — set spacy.trust_low_language_detection =
+false to require a trustworthy detection before building the linguistic layer.
+```
+
+Both texts are copied from what the worker logs, not paraphrased.
+
+The default is `true` because the grade is pessimistic on short clips: on this
+pipeline's corpus every auto-detected clip is `low` — seven out of seven, because every
+clip is under 30 s — and the resulting choice is measurably correct where it was checked
+(Spanish lemmas from a real Spanish pipeline on the Spanish clip, `en_core_web_lg` on the
+English ones). Demoting `low` unconditionally would take the linguistic layer off the
+only Spanish clip in the corpus on the strength of a grade that never says `ok` here.
+
+**`false`** refuses to build a full linguistic layer on a sub-window guess. No language
+reaches the resolver, so it reports what it can do without one and the raw document says
+so (`model_selection_status: fallback_no_model`, model `blank`, capabilities
+tokenisation + sentencizer — no lemmas, POS tags or dependencies). The warning names the
+demotion and the key that reverses it:
+
+```text
+language 'es' was auto-detected with low reliability (probability 0.88; audio is 8.0s,
+below the 30s detection window). spacy.trust_low_language_detection = false, so the
+detection was not used to choose a model: the source variant was demoted to model='blank'
+(status='fallback_no_model', capabilities=tokenization,sentencizer), which still yields
+tokens and sentences but no lemmas, POS tags or dependencies. Set
+spacy.trust_low_language_detection = true to accept a low-confidence detection again.
+```
+
+Both branches record the decision in provenance — `language_reliability` (the grade
+itself, or `{"status": "absent"}`) and `language_reliability_trusted` — in
+`linguistic/source/raw/spacy_source.json` and in the worker result. `spacy_english` is
+excluded: it forces `en`, so it has no detection to trust and never sees the grade.
+
+If no grade is available — a dataset produced before WhisperX graded anything, or a raw
+file that could not be read — the model choice is left exactly as it was and the worker
+warns that reliability could not be checked. A missing check is never reported as a
+passed one.
 
 ### Secrets
 
@@ -521,7 +575,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 818 tests, ~30 s
+uv run --with pytest pytest tests/unit -q     # 861 tests, ~30 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -577,7 +631,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                818 tests
+tests/unit/                861 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)

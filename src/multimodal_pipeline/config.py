@@ -367,6 +367,23 @@ class SpacyConfig(_Model):
     # Used when no language-specific model is configured/installed. ``blank``
     # keeps tokenisation/sentence splitting working for any language.
     fallback_model: str = "blank"
+    # WhisperX grades its own auto-detection (``language_detection`` in
+    # ``speech/raw/whisperx.json``) as ``configured`` / ``ok`` / ``low``. This key
+    # decides what the source-language linguistics stage does with ``low``.
+    #
+    # Default true preserves today's behaviour: in this corpus every clip is shorter
+    # than WhisperX's 30 s detection window, so *every* auto-detection is graded
+    # ``low`` — and the model each one produced was checked and is correct (the La 1
+    # clip's Spanish lemmas come from a real Spanish pipeline, the English clips from
+    # ``en_core_web_lg``). Refusing those would strip the full pipeline from the only
+    # Spanish clip in the corpus on the strength of a grade that is always pessimistic
+    # here; the choice is kept and the low grade is logged as a warning instead.
+    #
+    # Set false to refuse to build a full linguistic layer on a sub-window guess:
+    # a ``low`` detection then demotes the source variant to the honest-empty path
+    # (no language is handed to the resolver, so it reports ``fallback_no_model`` and
+    # a blank pipeline yields tokens + sentences with no lemmas, POS or dependencies).
+    trust_low_language_detection: bool = True
     max_length: int = 1_000_000
     python_version: str = "3.12"
 

@@ -33,6 +33,12 @@ class SpacyEnglishStage(SpacySourceStage):
         base["segments_digest"] = self._digest(ctx, "translation_segments")
         base["words_digest"] = None
         base["english_model"] = ctx.config.spacy.english_model
+        # Source-language detection says nothing about this pass: it forces `en`
+        # (status `english_default`). Leaving the grade in the request would make this
+        # stage's cache depend on a WhisperX re-grade that cannot change its output,
+        # and would imply a dependency the worker never honours.
+        base.pop("language_detection", None)
+        base.pop("trust_low_language_detection", None)
         return base
 
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
@@ -58,6 +64,8 @@ class SpacyEnglishStage(SpacySourceStage):
             "--source-models", json.dumps(cfg.source_models),
             "--english-model", cfg.english_model,
             "--fallback-model", cfg.fallback_model,
+            # No --language-detection here on purpose: this variant forces `en`, so the
+            # source-language grade is not an input to it.
             "--max-length", str(cfg.max_length),
             "--request-hash", request_digest,
         ]

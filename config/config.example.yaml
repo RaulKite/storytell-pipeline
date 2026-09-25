@@ -133,6 +133,10 @@ spacy:
   # 'blank' keeps tokenisation + sentence boundaries for any language, with the
   # reduced capability set recorded in provenance instead of silently assumed.
   fallback_model: blank
+  # WhisperX grades its own auto-detection (low = short audio or probability < 0.5).
+  # true keeps today's behaviour and logs a warning; false refuses a full linguistic
+  # layer on a low-confidence detection and demotes the source variant to blank.
+  trust_low_language_detection: true
   max_length: 1000000
   python_version: "3.12"
 
