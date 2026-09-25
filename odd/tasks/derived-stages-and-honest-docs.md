@@ -97,6 +97,65 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       separate from TalkNet's.
 - [ ] **T16** §20.3 `stories`: prototype the prompt against the live endpoint, read the
       output, then decide the schema and build the stage.
+- [ ] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
+      Diarization) so the operator can compare two engines on the same corpus and choose.
+      Added at the end of the queue on the operator's request, 2026-09-24.
+
+## 6. T17 — NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote
+
+Operator instruction: *"añade al final de la cola una donde lo añadimos, para tener tanto
+el pyannote como este. Después de analizar los resultados decidiré cuál conviene, pero de
+momento, que nos dé las dos opciones de diarización."*
+
+So the requirement is **both engines, side by side**, and the choice is deferred to the
+operator after seeing results. That single sentence decides the design: nothing may be
+replaced, renamed or reused between the two.
+
+### Verified before writing code
+
+* **Model card and blog read** (huggingface.co/blog/nvidia/nemotron-diarization and the
+  model page). Release 2026-09-23. 100M parameters, 31-layer Transformer encoder with RoPE,
+  up to 8 speakers, arrival-ordered channels.
+* **Not gated.** `GET /api/models/nvidia/Nemotron-3-Diarization` with the project's
+  `HF_TOKEN` returns `"gated": false, "private": false`. Unlike
+  `pyannote/speaker-diarization-community-1`, **no EULA click is required** — worth
+  stating because the pyannote path is the number-one setup failure in this repository's
+  troubleshooting table.
+* **Licence is `openmdw-1.1`**, not MIT/Apache. "Ready for commercial or non-commercial
+  use", but it is a different licence from the pipeline's own MIT, so the two must not be
+  conflated in the README.
+* **Hardware is fine here.** The blog's prose says Ampere/Hopper/Blackwell, which made this
+  agent suspect the RTX 4090 was excluded (`nvidia-smi --query-gpu=compute_cap` → 8.9, Ada
+  Lovelace). The **model card** lists Ada Lovelace explicitly, *GeForce RTX 4090 first*.
+  The prose was the narrower claim; the card is authoritative.
+* **Input is exactly what the pipeline already produces**: 16 kHz single-channel, `.wav`
+  accepted. That is `audio/audio.wav`, no new conversion stage.
+* **Output shape differs from pyannote in a way that matters.** `diarize()` returns strings
+  `"start end speaker_id"` per segment, and **segments may overlap across channels** —
+  the blog's own example has speaker_0 and speaker_1 active simultaneously. pyannote's
+  exclusive `speaker_turns.parquet` cannot hold that, so a second table is mandatory rather
+  than a convenience.
+* **Five latency operating points**, all in 80 ms encoder frames, and the five values must
+  come from one table row and be validated with `_check_streaming_parameters()`. Offline
+  style (30.4 s buffer) is the accuracy point and the right default for batch video.
+* **Install route is still open** — see the two probes below. transformers **5.17.0
+  (latest release on PyPI) does not contain `nemotron3_diarization`**; it exists only on
+  `main` (checked via the GitHub contents API). So either pin a git commit (reproducible,
+  but not a versioned release) or use `nemo-toolkit[asr]` (the route the blog shows).
+
+### Design consequences
+
+1. New stage `diarization_nemotron`, its own uv environment, its own artifacts, its own
+   table. `speech/speaker_turns.parquet` and every existing artifact keep meaning *pyannote
+   only* — silently redefining them would relabel every dataset already produced.
+2. `speaker_id` namespaces must not collide: pyannote emits `SPEAKER_00`, Nemotron emits
+   `speaker_0`. Both are stored verbatim in their own table and the README states they are
+   different id spaces that must not be joined.
+3. Nemotron's model version must enter the stage fingerprint, the way the spaCy installed-
+   model inventory had to (see §16 of the main feature doc): pinning a git commit of
+   transformers changes the output and must invalidate the cache.
+4. Skips, never fails, when the environment or model is absent — this is an optional second
+   opinion, and a corpus must still process with only pyannote, and with only Nemotron.
 
 ## 5. Execution notes
 
