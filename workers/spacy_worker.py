@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 import time
@@ -27,6 +28,11 @@ import unicodedata
 from typing import Any, Sequence
 
 FALLBACK_CAPABILITIES = ("tokenization", "sentencizer")
+
+#: Worker diagnostics go through logging so they reach the per-stage log file that
+#: ``run_command`` captures (stdout+stderr merged) instead of vanishing with the process.
+#: With no configured handler, ``logging.lastResort`` still writes WARNING to stderr.
+LOGGER = logging.getLogger("spacy_worker")
 
 #: Explicit alignment verdicts; a consumer must never have to guess.
 ALIGNED = "aligned"
@@ -57,6 +63,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--english-model", default="en_core_web_trf")
     parser.add_argument("--fallback-model", default="blank")
     parser.add_argument("--max-length", type=int, default=1_000_000)
+    parser.add_argument("--language-detection", default=None,
+                        help="WhisperX language_detection grade as compact JSON, or 'none'")
+    parser.add_argument("--trust-low-language-detection", action="store_true",
+                        help="keep the configured model when the detection was graded low")
     parser.add_argument("--request-hash", default=None)
     parser.add_argument("--result-json", default=None)
     return parser.parse_args(argv)
@@ -90,10 +100,55 @@ def main(argv: list[str] | None = None) -> int:
             word_source: list[dict] = []
             selection = {"model": args.english_model, "requested_model": args.english_model,
                          "status": "english_default", "language": "en", "capabilities": "full"}
+            # Nothing was detected here: this variant forces English, so there is no
+            # guess to grade and no policy to apply. Recorded as such rather than as
+            # "absent", which would read like a missing WhisperX grade.
+            trusted = True
+            reliability_record: dict[str, Any] = {"status": "not_applicable"}
         else:
             texts = None
-            selection = select_model(language, configured, installed_models(),
-                                     fallback=args.fallback_model)
+            grade, grade_available = parse_language_detection(
+                getattr(args, "language_detection", None))
+            trust_low = bool(getattr(args, "trust_low_language_detection", False))
+            low_grade = bool(grade_available and grade.get("status") == "low")
+            trusted = not (low_grade and not trust_low)
+            reliability_record = grade if grade_available else {"status": "absent"}
+            # The policy is applied *here*, not inside select_model: that resolver's
+            # contract is "which installed model serves this language", and quietly
+            # teaching it about detection quality would make a model-availability
+            # decision depend on an ASR confidence number.
+            selection = select_model(language if trusted else None, configured,
+                                     installed_models(), fallback=args.fallback_model)
+            if not trusted:
+                LOGGER.warning(
+                    "language %r was auto-detected with low reliability (probability %s; %s). "
+                    "spacy.trust_low_language_detection = false, so the detection was not used "
+                    "to choose a model: the source variant was demoted to model=%r "
+                    "(status=%r, capabilities=%s), which still yields tokens and sentences but "
+                    "no lemmas, POS tags or dependencies. Set "
+                    "spacy.trust_low_language_detection = true to accept a low-confidence "
+                    "detection again.",
+                    language, _probability_text(grade), _reasons_text(grade),
+                    selection.get("model"), selection.get("status"),
+                    selection.get("capabilities"))
+            elif not grade_available:
+                # Absent, unreadable or literal "none": the default behaviour is kept,
+                # but silently skipping the check would make the policy look stronger
+                # than it is on exactly the datasets that predate the grade.
+                LOGGER.warning(
+                    "no WhisperX language_detection grade was available, so the reliability of "
+                    "the detected language %r could not be checked; the model choice was left "
+                    "as-is (model=%r, status=%r). Re-run the whisperx stage to record a grade.",
+                    language, selection.get("model"), selection.get("status"))
+            elif grade_available and low_grade:
+                LOGGER.warning(
+                    "language %r was auto-detected with low reliability (probability %s; %s); "
+                    "the full pipeline for it was still selected (model=%r, status=%r) because "
+                    "spacy.trust_low_language_detection = true — set "
+                    "spacy.trust_low_language_detection = false to require a trustworthy "
+                    "detection before building the linguistic layer.",
+                    language, _probability_text(grade), _reasons_text(grade),
+                    selection.get("model"), selection.get("status"))
             word_source = pq.read_table(args.words).to_pylist() if args.words else []
 
         nlp = load_pipeline(spacy, selection, args.english_model, args.max_length, args.fallback_model)
@@ -107,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
             model_version_value=model_version(selection["model"]),
             texts=texts,
             language=language,
+            language_reliability=reliability_record,
+            language_reliability_trusted=trusted,
         )
         raw_output.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
         payload.update({
@@ -115,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
             "model_version": document["model_version"],
             "selected_model": document["selected_model"],
             "model_selection_status": selection["status"],
+            "language_reliability": document.get("language_reliability"),
+            "language_reliability_trusted": document.get("language_reliability_trusted"),
             "tokens": len(document["tokens"]),
             "sentences": len(document["sentences"]),
             "duration_seconds": round(time.time() - started, 3),
@@ -132,6 +191,50 @@ def main(argv: list[str] | None = None) -> int:
 
 def english_texts(rows: list[dict]) -> dict[str, str]:
     return {str(row["segment_id"]): str(row.get("english_text") or "") for row in rows}
+
+
+#: Literal the orchestrator passes when the dataset carries no grade at all.
+NO_GRADE = "none"
+
+
+def parse_language_detection(raw) -> tuple[dict[str, Any] | None, bool]:
+    """WhisperX's reliability grade as ``(grade, available)``.
+
+    ``(None, False)`` covers every way a grade can fail to arrive — the flag was never
+    passed (an older orchestrator), the literal ``none`` (no raw document in this
+    dataset), unparseable JSON, or JSON that is not an object. None of them may cost a
+    transcript: the caller keeps today's model choice and says the check could not run.
+
+    The two-tuple shape is the point: a caller that only looked at ``grade`` could not
+    tell "no grade exists" from "the grade exists and is trustworthy", and those get
+    different warnings.
+    """
+    if raw is None:
+        return None, False
+    text = str(raw).strip()
+    if not text or text.lower() == NO_GRADE:
+        return None, False
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None, False
+    if not isinstance(parsed, dict):
+        return None, False
+    return parsed, True
+
+
+def _probability_text(grade: dict[str, Any] | None) -> str:
+    probability = (grade or {}).get("probability")
+    if isinstance(probability, (int, float)):
+        return f"{float(probability):.2f}"
+    return "unknown"
+
+
+def _reasons_text(grade: dict[str, Any] | None) -> str:
+    reasons = (grade or {}).get("reasons")
+    if isinstance(reasons, list) and reasons:
+        return "; ".join(str(reason) for reason in reasons)
+    return "no reasons recorded"
 
 
 def installed_models() -> set[str]:
@@ -235,7 +338,8 @@ def model_version(model_name: str) -> str | None:
 
 def build_document(*, variant: str, video_id, segments: list[dict], segment_words: list[dict],
                    nlp, selection: dict[str, Any], model_version_value, texts,
-                   language) -> dict[str, Any]:
+                   language, language_reliability: dict[str, Any] | None = None,
+                   language_reliability_trusted: bool = True) -> dict[str, Any]:
     """Run spaCy per segment; emit native features plus timing verdicts.
 
     Token/sentence ids are derived from the segment id so they stay stable and
@@ -320,6 +424,11 @@ def build_document(*, variant: str, video_id, segments: list[dict], segment_word
         "requested_model": selection.get("requested_model"),
         "model_selection_status": selection.get("status"),
         "model_version": model_version_value,
+        # How much the language above was trusted, next to the model it produced: a
+        # reader of this document must be able to see that a full pipeline rests on a
+        # sub-window guess, without going back to the WhisperX raw file.
+        "language_reliability": language_reliability or {"status": "absent"},
+        "language_reliability_trusted": bool(language_reliability_trusted),
         "capabilities": ",".join(capabilities),
         "tokens": tokens_out,
         "sentences": sentences_out,

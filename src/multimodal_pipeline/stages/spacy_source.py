@@ -102,6 +102,17 @@ def select_model(language: str | None, configured: dict[str, str], available: se
             "language": language_key, "capabilities": ",".join(FALLBACK_CAPABILITIES)}
 
 
+def language_detection_arg(grade: dict[str, Any] | None) -> str:
+    """The grade as one compact argv value, or ``none`` when there is none.
+
+    ``none`` rather than JSON ``null`` so the value a human reads in a stage log says
+    what it means, and so it stays distinct from a grade that arrived damaged.
+    """
+    if grade is None:
+        return "none"
+    return json.dumps(grade, separators=(",", ":"), ensure_ascii=False)
+
+
 class SpacySourceStage(WorkerStage):
     name = "spacy_source"
     raw_artifact = "spacy_source_raw"
@@ -123,12 +134,45 @@ class SpacySourceStage(WorkerStage):
             "source_models": cfg.source_models,
             "english_model": cfg.english_model,
             "fallback_model": cfg.fallback_model,
+            # WhisperX's own grade for the language it detected. The stage does not
+            # interpret it (the worker applies the policy); it is read here so that a
+            # re-grade that changes nothing else still invalidates this stage.
+            "language_detection": self._language_detection(ctx),
+            "trust_low_language_detection": cfg.trust_low_language_detection,
             "max_length": cfg.max_length,
             "uv_project": str(ctx.config.resolve(cfg.uv_project)),
             "worker": str(ctx.config.resolve(cfg.worker)),
             "segments_digest": self._digest(ctx, "speech_segments"),
             "words_digest": self._digest(ctx, "speech_words"),
         }
+
+    @staticmethod
+    def _language_detection(ctx: StageContext) -> dict[str, Any] | None:
+        """WhisperX's reliability grade for its own detection, or ``None``.
+
+        The grade lives in ``speech/raw/whisperx.json`` (artifact ``whisperx_raw``),
+        not in ``speech/segments.parquet`` — the table carries the detected code, the
+        raw document carries how much to trust it. Nothing read it until now.
+
+        ``None`` means "no grade was available", which covers a missing file and a
+        document with no ``language_detection`` key (a dataset produced before the
+        worker started grading). Those must keep working and must stay *distinguishable*
+        in the fingerprint from a real grade, so the absence is recorded as ``None``
+        rather than defaulted to something that looks like a verdict.
+
+        Deliberately not a declared ``inputs`` entry: ``ctx.input()`` raises when an
+        artifact is missing, and an old dataset without a raw document is a supported
+        state, not an error.
+        """
+        path = ctx.artifact("whisperx_raw")
+        if not path.is_file():
+            return None
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError):
+            return None
+        grade = payload.get("language_detection") if isinstance(payload, dict) else None
+        return grade if isinstance(grade, dict) else None
 
     @staticmethod
     def _digest(ctx: StageContext, artifact: str) -> str | None:
@@ -158,7 +202,7 @@ class SpacySourceStage(WorkerStage):
 
     def worker_argv(self, ctx: StageContext, raw_path: Path, request_digest: str) -> list[str]:
         cfg = ctx.config.spacy
-        return [
+        argv = [
             "--variant", self.variant,
             "--video-id", ctx.video_id,
             "--segments", str(ctx.input("speech_segments")),
@@ -167,9 +211,15 @@ class SpacySourceStage(WorkerStage):
             "--source-models", json.dumps(cfg.source_models),
             "--english-model", cfg.english_model,
             "--fallback-model", cfg.fallback_model,
+            # Compact JSON, or the literal "none": the worker must be able to tell "no
+            # grade shipped with this dataset" from a grade it failed to parse.
+            "--language-detection", language_detection_arg(self._language_detection(ctx)),
             "--max-length", str(cfg.max_length),
             "--request-hash", request_digest,
         ]
+        if cfg.trust_low_language_detection:
+            argv.append("--trust-low-language-detection")
+        return argv
 
     # ------------------------------------------------------------ normalisation
 
