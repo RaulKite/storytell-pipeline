@@ -82,3 +82,12 @@ frames instead. Fix the artifact, or fix the claim — never leave the claim.
 
 A test you have not seen fail is not evidence. For logic worth trusting, break it once
 and name the test that dies.
+
+### Commit authorship
+
+Every commit is authored as the operator: `Raul Sanchez <raul@um.es>`, which is the
+repository's own git config. Do not add a `Co-Authored-By:` trailer naming Claude, Anthropic
+or any model, and do not name the model in the subject or body as a contributor. Three
+commits in this repository carry that trailer (`35119ef`, `31fde87`, `612e30f`) and it was
+an error, not a convention: the history reads as the operator's work, and the commit message
+already records what was measured and decided.
