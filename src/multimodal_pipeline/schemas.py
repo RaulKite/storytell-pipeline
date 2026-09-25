@@ -93,6 +93,69 @@ SPEAKER_TURNS_NEMOTRON_SCHEMA = pa.schema(
     ]
 )
 
+# --- audio/visual agreement (diarization turns x active speaker) -----------
+#
+# One row per diarization turn of ONE engine, with what the 25 FPS active-speaker table
+# measured inside that turn's window. This is a *second* diarization result, kept beside
+# speaker_turns / speaker_turns_nemotron rather than replacing either: the existing tables
+# are the input to speaker_assignment and to every dataset already produced, and a fused
+# label quietly substituted for an audio turn would relabel all of them.
+#
+# Why a state column instead of one speaker label: the diarizer answers *when does a voice
+# speak* and TalkNet answers *which visible face is talking*. They disagree exactly where it
+# matters — off-screen narrator, cutaway, two faces one voice, silent moving mouth — and
+# flattening that to a single label would destroy the only information the comparison
+# produces. `agreement` is a closed five-value vocabulary (see fusion.AGREEMENT_STATES).
+#
+# Why the three count columns instead of one ratio: `frames_in_turn` counts every dense ASD
+# row in the window *including* the no_face rows, so 0 means "nothing was measured here"
+# while frames_in_turn > 0 with face_frames_in_turn == 0 means "measured: nobody was on
+# screen". Those two read identically in a single-ratio table, which is the mistake
+# `frame_reason` exists to fix upstream. The invariant the stage validates is
+# face_active_frames <= face_frames_in_turn <= frames_in_turn.
+#
+# Why `engine` is not a join key: pyannote's `SPEAKER_00` and Nemotron's arrival-ordered
+# `speaker_0` (see the note on SPEAKER_TURNS_NEMOTRON_SCHEMA) are unrelated clusters over
+# unrelated channels, so identical digits name different people. `engine` names the
+# namespace a row's speaker_id came from, each engine is written to its own file, and a
+# consumer that joined pyannote rows to Nemotron rows on speaker_id would get nonsense.
+# TalkNet's track_id is a third id space again and is never equated with a speaker id.
+SPEAKER_FUSION_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        # Which diarizer produced the turn — and therefore which speaker-id namespace
+        # `speaker_id` belongs to. Not a cross-engine join key.
+        ("engine", pa.string()),
+        ("turn_id", pa.string()),
+        ("speaker_id", pa.string()),
+        ("start_time", pa.float64()),
+        ("end_time", pa.float64()),
+        ("duration", pa.float64()),
+        ("diarization_type", pa.string()),
+        # Carried from the turn table. Nullable because a pyannote turn has no such
+        # measurement: a 0.0 there would read as "measured, no overlap".
+        ("overlap_s", pa.float64()),
+        # TalkNet track with the strongest claim on this turn, or null when no track in
+        # the window was ever flagged active. An ASD track id, not a speaker id.
+        ("face_track_id", pa.int64()),
+        # Frames of the winning track flagged active inside this window.
+        ("face_active_frames", pa.int64()),
+        # Frames in the window where any face was located at all.
+        ("face_frames_in_turn", pa.int64()),
+        # Dense ASD rows in the window, no_face rows included: the difference between
+        # "nobody visible" and "not measured".
+        ("frames_in_turn", pa.int64()),
+        ("face_mean_score", pa.float64()),
+        ("face_score_max", pa.float64()),
+        # The verdict, from the closed vocabulary in fusion.AGREEMENT_STATES.
+        ("agreement", pa.string()),
+        # The measured numbers in words — the column a human reads first, so it names the
+        # threshold the track cleared or missed and any tie that was broken.
+        ("agreement_detail", pa.string()),
+    ]
+)
+
 # --- translation ----------------------------------------------------------
 
 TRANSLATION_SCHEMA = pa.schema(
@@ -334,6 +397,10 @@ TABLE_SCHEMAS: dict[str, pa.schema] = {
     "speech_words": WORDS_SCHEMA,
     "speaker_turns": SPEAKER_TURNS_SCHEMA,
     "speaker_turns_nemotron": SPEAKER_TURNS_NEMOTRON_SCHEMA,
+    # Both engines share this schema; the `engine` column says which one a row came from,
+    # and each engine is written to its own file so the namespaces stay apart on disk too.
+    "speaker_fusion_pyannote": SPEAKER_FUSION_SCHEMA,
+    "speaker_fusion_nemotron": SPEAKER_FUSION_SCHEMA,
     "translation_segments": TRANSLATION_SCHEMA,
     "linguistic_source_tokens": TOKENS_SCHEMA,
     "linguistic_source_sentences": SENTENCES_SCHEMA,

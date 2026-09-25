@@ -164,6 +164,8 @@ data/processed/<video_id>/
 ├── speaker/
 │   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense, face_status, frame_reason)
 │   ├── active_speaker_tracks.parquet   ← one row per TalkNet face track
+│   ├── fusion_pyannote.parquet         ← pyannote turns × per-frame active speaker (see below)
+│   ├── fusion_nemotron.parquet         ← same fusion, Nemotron turns, if that engine is selected
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
@@ -259,6 +261,83 @@ opinion is not a prerequisite.
 
 ---
 
+## Audio × visual agreement: `speaker_fusion`
+
+`speaker_fusion` is the third thing in this space, and it is not a tie-breaker. It fuses a
+diarizer's turn table with `activespeaker`'s per-frame table and writes
+`speaker/fusion_pyannote.parquet` (plus `fusion_nemotron.parquet` when you select that
+engine) **beside** the existing tables. `speaker_assignment` still reads pyannote, so
+nothing already produced changes label. That is deliberate: a fused verdict quietly written
+into `speaker_turns.parquet` would relabel every dataset in the corpus.
+
+It runs no model and needs no uv environment of its own — two Parquet files in, one out, in
+process, like `speaker_assignment`. Re-tuning the thresholds costs seconds, not a TalkNet
+re-run.
+
+**The disagreement is the product.** A diarizer answers *when does a voice speak*; TalkNet
+answers *which visible face is talking* at 25 FPS. They agree often and diverge exactly
+where it matters — an off-screen narrator, a cutaway, two faces with one voice, a mouth that
+moves while silent. So each turn keeps its audio timing and speaker and gains an explicit
+`agreement` state instead of one flattened label:
+
+| `agreement` | What was measured |
+|---|---|
+| `face_matched` | a track cleared both `min_face_frames` and `min_active_ratio` |
+| `face_partial` | a best track exists, below one of the two — the detail names which |
+| `no_face_visible` | the ASD table covers the window and located **no** face in it: voice with nothing visible (off-screen narrator, audio bed) |
+| `face_never_active` | faces were visible and measured, and no track was ever flagged active: a silent mouth or a cutaway face |
+| `no_frames_measured` | the ASD table covers **no time** in the window: nothing was measured, which is not evidence about who spoke |
+
+The last two are the reason the table has three count columns instead of a ratio.
+`frames_in_turn` counts every dense ASD row in the window **including** the `no_face` rows,
+so `frames_in_turn = 0` (not measured) and `frames_in_turn > 0` with
+`face_frames_in_turn = 0` (measured: nobody there) cannot collide — the same lesson
+`face_status` and `frame_reason` already learned. The validated invariant is
+`face_active_frames ≤ face_frames_in_turn ≤ frames_in_turn`.
+
+`agreement_detail` is the column to read first; it carries the numbers and the knob that
+decided them. This is a real row from the La 1 clip, measured on a copy of
+`data/processed/` under `/tmp`:
+
+```text
+track 4 active on 80/80 frames in turn (ratio 1.00 >= min_active_ratio 0.5, 80 >= min_face_frames 2), mean score 2.35; no face located on 44/124 measured frames of the window
+```
+
+The trailing clause is not decoration. That turn really does contain 44 frames with nobody on
+screen — the ratio describes the frames where a face was visible, and a detail that reported
+only "80/80, ratio 1.00" would read as though the whole five seconds were a face on camera.
+
+Two engines, **one implementation**: the core takes *which* turn table to read as a
+parameter, so Nemotron is a second call of the same code, not a second fusion.
+`speaker_fusion.engines` selects the calls, and each engine's table is written to its own
+file, because `SPEAKER_00` and `speaker_0` remain unrelated namespaces — do not join the two
+fused tables on `speaker_id` any more than you join the two turn tables. `face_track_id` is a
+third id space again (a TalkNet track), never a speaker id. `overlap_s` is carried from the
+turn table and stays `null` on pyannote rows, because a `0.0` there would read as "measured:
+no overlap".
+
+```yaml
+speaker_fusion:
+  enabled: true
+  engines: [pyannote]     # or [pyannote, nemotron]; each writes its own file
+  min_active_ratio: 0.5   # share of the track's in-turn frames that must be active
+  min_face_frames: 2      # one frame is a sighting, not a speaker
+```
+
+A selected engine whose turn table was never produced is **skipped with a logged reason**
+while the other engine still fuses; if *no* selected engine has a table, or `activespeaker`
+never ran, the whole stage skips rather than emitting an empty table that a consumer would
+read as "every turn failed to match". A video with no speech is the exception that proves
+the rule: zero turns is legitimate, so it is logged, not failed.
+
+The reverse case is handled too, because it is the dangerous one. A completed run deletes any
+fused table its configuration can no longer compute — deselect Nemotron, or delete its turn
+table, and `fusion_nemotron.parquet` goes, with a warning naming the reason. Left in place it
+would look exactly like a current table, and nothing downstream would notice: both the reuse
+test and validation look only at engines that are fusible right now.
+
+---
+
 ## Stage graph
 
 ```
@@ -272,8 +351,12 @@ metadata
   ├─ openpose                     (metadata only — no audio, no transcript)
   └─ activespeaker                (metadata + audio — independent of the transcript)
 
+  diarization + diarization_nemotron + activespeaker  ──►  speaker_fusion
+                                  (turns × frames — it reads tables, it runs no model)
+
   metadata, audio, whisperx, diarization, speaker_assignment, translation,
-  spacy_source, spacy_english, acoustic, openpose, activespeaker  ──►  finalization
+  spacy_source, spacy_english, acoustic, openpose, activespeaker, speaker_fusion
+                                                                        ──►  finalization
 ```
 
 `openpose` depends only on `metadata`, so a transcription failure never stops pose
@@ -347,6 +430,7 @@ track's score count survives into the table, so nothing downstream could recover
 | `acoustic` | uv env worker (Parselmouth) | audio |
 | `openpose` | `/opt/openpose` binary | OpenPose install + models, GPU |
 | `activespeaker` | uv env worker (TalkNet-ASD) | TalkNet checkout + `environments/activespeaker` |
+| `speaker_fusion` | in-process Parquet arithmetic | diarization turns **and** `activespeaker` output |
 | `finalization` | in-process | everything above |
 
 What happens to a stage whose prerequisites are absent depends on **which kind of
@@ -618,7 +702,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 957 tests, ~30 s
+uv run --with pytest pytest tests/unit -q     # 1073 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -674,7 +758,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                957 tests
+tests/unit/                1073 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

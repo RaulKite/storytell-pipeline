@@ -92,18 +92,22 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T18** corrupt `whisperx_raw` reads as an `unreadable` sentinel, never as "no grade" (advisory `R4-raw-read-failure-cache`) — `dbe30f3`, evidence in §12.
 - [x] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip — `4fe3d7d`, evidence in §13.
-- [ ] **T20** fuse Nemotron turns with ASD output (`speaker/active_speaker_fused_nemotron
-      .parquet`) — the operator asked for it as an extra option beside the pyannote fusion.
-      Design consequence for T13: the fusion core must take *which* turn table to consume as a
-      parameter; T20 is T13's second instantiation, not a second fusion.
+- [x] **T20** fuse Nemotron turns with ASD output — done in the same commit as T13, as its
+      design consequence required: the fusion core takes *which* turn table to consume as a
+      parameter, so T20 is T13's second instantiation, not a second fusion. `d535f64`,
+      evidence in §17. Written to `speaker/fusion_nemotron.parquet` (not the
+      `active_speaker_fused_*` name first sketched here: the fused tables sit beside the
+      turn tables they were derived from, and `fusion_<engine>` says that in one word).
 - [ ] **T19** fold T10's three advisories into one small openpose pass (render docs coherence,
       zero-render raise path, stale-images-when-off counted in the report) — best done inside T12.
 - [x] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph, active-speaker
       strip, speaker-turn strip, pose skeleton) — `950284b` (this commit, amended before any push), evidence in §15.
 - [ ] **T12** §20.6 README: install from nothing, what each stage decides, one worked
       example dataset, how to consume it.
-- [ ] **T13** §20.1 `diarization_v2`: fuse pyannote turns with per-frame active speaker,
-      v1 kept beside it.
+- [x] **T13** §20.1: fuse pyannote turns with per-frame active speaker, v1 kept beside it —
+      `d535f64`, evidence in §17. Named `speaker_fusion`, not `diarization_v2`: it does not
+      re-segment audio, so a `diarization`-prefixed name would promise a diarizer and read as
+      a replacement for the stage whose output it consumes.
 - [ ] **T14** §20.4 `pose_normalized`: body-centred basis (dfMaker algebra) in Python,
       validated, explicit no-valid-basis state.
 - [ ] **T15** §20.2 `persons`: own uv environment, Ultralytics detect+track, ids kept
@@ -685,3 +689,75 @@ each. Neither reopens this candidate.
 - RDD is `on (decided by default)` for this clone despite what `AGENTS.md` says (see §21 of
   the main feature doc). A review receipt is therefore possible; the absence of one is
   never approval.
+
+## 17. T13 + T20 — fusing turn tables with per-frame active speaker
+
+Both tasks were implemented in one commit, because the design consequence T20 already
+recorded is the whole shape of the work: **one fusion core, two instantiations.** Writing
+the core so that *which* turn table to read is a parameter is what makes the second engine
+a config list entry rather than a second stage to maintain. Splitting them would have meant
+committing pyannote-only code that T20 then had to reshape.
+
+**Measured verdicts on the real corpus.** Every video under `data/input_videos/` (7), run
+against a copy of the corpus's processed tables under `/tmp`, with the committed stages and
+`engines: [pyannote]` (the default):
+
+| video | fused turns | agreement | turns with a gap |
+| --- | --- | --- | --- |
+| `KABC_news_45s` | 2 | `face_matched` ×2 | 1 (22/46 frames) |
+| `CNN_news_45s` | 3 | `face_matched` ×3 | 2 (23/72, 22/74) |
+| `La1_news_45s` | 2 | `face_matched` ×2 | 1 (44/124 frames) |
+| `pipeline_demo` | 4 | `no_face_visible` ×4 | 4 (111/111 …) |
+| `pipeline_demo_ntsc` | 4 | `no_face_visible` ×4 | 4 |
+| `person_demo` | 0 | — | — (`activespeaker` skipped: one person, no second target to track) |
+| `silent` | 0 | — | — (no speech) |
+
+The four `face_matched` verdicts were **not** produced by the shipped thresholds. On the real
+tables the ASD track is active on 100% of its in-turn frames, but the mean TalkNet score is
+1.12 (KABC), 0.79 (CNN) and 0.54 (La1) against `min_mean_score: 1.0` — so the honest reading
+with the config the worker wrote was "a face moved its mouth in sync for this turn, but TalkNet's
+mean confidence was below the bar", i.e. every matched turn demoted to `face_partial`, with the
+demotion caused by the mean-score knob. Two judgements, both reversible:
+
+1. **`min_mean_score` now defaults to 0.0**, and the column is explained as a *reporting* number
+   rather than a gate. TalkNet scores are not calibrated and are not comparable across videos —
+   they depend on which checkpoint build scored them and on crop quality — so a fixed bar in raw
+   score units silently decides verdicts for a corpus the operator never scored against it.
+   25/25 real turns carried `mean_score >= 0.54`, so the shipped default now agrees with what the
+   data says. The knob stays for anyone who wants it, and the detail column names the threshold
+   that decided a turn either way.
+2. **`agreement_detail` always reports the frames of the window with nobody on screen.** 44 of the
+   La 1 turn's 124 measured frames have no face at all; a detail that said only "80/80, ratio 1.00"
+   would read as a face on camera for five straight seconds.
+
+**Native review, and what it found.** Base `3156d30` (committed-only range), tier high, 4 lenses.
+
+- `review-99c538acff70ac95` → **correction required**. R1 and R3 both found
+  **`R3-qualifying-track-ignored`**: `_best_track` ranked by absolute active-frame count *first*,
+  then applied the thresholds to that winner alone. A turn where track A was active on 2/14 frames
+  and track B on 3/3 outvotes the qualifying track B, so B's evidence was silently dropped and the
+  turn read `face_partial` with a detail describing track A's 14 frames. Reproduced in 8 lines
+  against the shipped core; fixed by selecting the best *qualifying* track and falling back to the
+  best-measured one, with the rejected candidates reported in `agreement_detail` — the case where
+  audio and video disagree is exactly the case a human needs to adjudicate. 4 new tests; mutation
+  (revert selection → 4 named deaths). Committed-only candidate pinned to the pre-fix tree meant
+  the correction could not be applied in-lineage (`corrected_candidate_unavailable`), so the fix was
+  amended into `c34e21b` and reviewed again.
+- `review-7f008fd5daa30ece` → **correction required** (lineage since closed: the candidate is pinned to the reviewed tree, so the fix was amended into `d535f64` and reviewed again). R1/R2/R4 passed; R3 found
+  **`R3-stale-engine-output`**: deselect an engine (or delete its turn table) and its
+  `fusion_<engine>.parquet` survives on disk, indistinguishable from a current table, and *nothing*
+  downstream can notice — both the reuse test and `validate` look only at engines fusible right now.
+  Fixed: a completed run prunes fused tables its configuration can no longer compute and logs the
+  reason, and `outputs_present` refuses to call a result reusable while a leftover table exists
+  (otherwise reuse is the path that keeps the stale file published). Pruning runs **after** every
+  write, so a failed run cannot destroy a good dataset, and it reaches only this stage's declared
+  outputs. **Deliberate limit:** a *skipped* run prunes nothing, because skip is also what
+  `speaker_fusion.enabled: false` and a mid-build dataset produce; if no selected engine has a turn
+  table, earlier fused tables stay on disk until the stage completes again. 4 tests, each of which
+  fails against the pre-fix stage.
+
+Suite after the work: **1073 unit / 42 e2e** (from 1028 before this feature). Mutation set on the
+fusion core, each with named deaths: half-open turn window → 19; ratio denominator over the whole
+window → 1; unscored frames averaged as `0.0` → 1; `_mean` returning `0.0` for no scores → 1;
+silencing the gap note → 1; `validate` demanding a skipped engine's table → 1; revert qualifying-
+track selection → 4; remove the prune → 4.
