@@ -1081,3 +1081,301 @@ class TestStaleEngineOutputIsNotLeftBehind:
         SpeakerFusionStage().run(context)
         assert not context.artifact("speaker_fusion_nemotron").exists()
         assert turn_table.is_file() and frames.is_file() and turns.is_file()
+
+
+def fuse_second_engine_raises(monkeypatch, *, failing: str):
+    """Make one engine's fusion blow up, and only that engine's.
+
+    The stand-in is deliberate: the defect under test is not the arithmetic (the pure core
+    has its own tests) but *when* the stage touches the filesystem relative to the moment an
+    engine fails. Anything that raises inside the second `fuse_turn_table` call would do; the
+    real core is kept for the first engine so the successful path stays the real one.
+    """
+    import multimodal_pipeline.stages.speaker_fusion as module
+
+    real = module.fuse_turn_table
+
+    def fake(*, engine: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if engine == failing:
+            raise RuntimeError(f"simulated failure while fusing {engine}")
+        return real(engine=engine, **kwargs)
+
+    monkeypatch.setattr(module, "fuse_turn_table", fake)
+
+
+class TestMidRunEngineFailureLeavesNoHalfWrittenTable:
+    """One failed engine must not leave the dataset half-published.
+
+    `execute` fuses and writes engine by engine. If the second engine raises mid-loop, the
+    first engine's table has already been rewritten and the prune step — which runs after the
+    loop — never happens, so the dataset now holds one table computed against today's turn
+    tables and one from some earlier run, with nothing on disk telling them apart. `validate`
+    is never reached, because the stage failed, so no downstream reader is warned.
+
+    Computing every engine's rows before opening any output file moves the failure into phase
+    one: a run that raises has written nothing, and the dataset is exactly what it was.
+    """
+
+    def _fuse_both(self, context):
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", overlap_s=0.4, nemotron=True)],
+                   nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        assert SpeakerFusionStage().run(context).status == "completed"
+
+    def test_a_later_engine_failing_leaves_the_earlier_table_as_it_was(self, context,
+                                                                       monkeypatch):
+        self._fuse_both(context)
+        before = context.artifact("speaker_fusion_pyannote").read_bytes()
+        # Re-diarize so a *fresh* pyannote table is provably different from the one on disk;
+        # without this the rewritten bytes would equal the old ones and prove nothing.
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="SPEAKER_07")])
+        fuse_second_engine_raises(monkeypatch, failing="nemotron")
+
+        with pytest.raises(RuntimeError, match="simulated failure while fusing nemotron"):
+            SpeakerFusionStage().run(context)
+
+        # The failed run published nothing: engine 1 still holds the previous run's rows.
+        assert context.artifact("speaker_fusion_pyannote").read_bytes() == before
+        rows = read_table(context.artifact("speaker_fusion_pyannote")).to_pylist()
+        assert [row["speaker_id"] for row in rows] == ["SPEAKER_00"]
+        assert context.artifact("speaker_fusion_nemotron").is_file()
+
+    def test_a_failing_engine_writes_no_table_at_all(self, context, monkeypatch):
+        """Same failure on a fresh dataset: neither fused table may exist afterwards.
+
+        A half-written dataset is worse than an empty one, because `outputs_present` and
+        `validate` both look only at engines that are fusible right now — a lone fresh table
+        plus a stale neighbour reads as a completed fusion.
+        """
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", overlap_s=0.4, nemotron=True)],
+                   nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        fuse_second_engine_raises(monkeypatch, failing="nemotron")
+
+        with pytest.raises(RuntimeError, match="simulated failure while fusing nemotron"):
+            SpeakerFusionStage().run(context)
+
+        assert not context.artifact("speaker_fusion_pyannote").exists()
+        assert not context.artifact("speaker_fusion_nemotron").exists()
+
+
+class TestSkippedRunStillPrunesWhatTheConfigProvesStale:
+    """A skip is not a reason to keep publishing a table the config can no longer justify.
+
+    Pruning lived inside `execute`, so any skip — the ASD frames table not written yet on a
+    mid-build dataset, a selected engine's turn table deleted — left the stale fused table on
+    disk forever, and the reuse test never re-enters the stage for a different reason.
+
+    What must *not* change is the operator's protection: `speaker_fusion.enabled: false` is a
+    deliberate off switch over tables they still want, so the gate is the config flag, never
+    the wording of the skip reason.
+    """
+
+    def _fuse_both(self, context):
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", overlap_s=0.4, nemotron=True)],
+                   nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        assert SpeakerFusionStage().run(context).status == "completed"
+
+    def test_a_skip_still_removes_the_table_the_config_proves_stale(self, context):
+        self._fuse_both(context)
+        context.artifact("speaker_turns_nemotron").unlink()
+        context.artifact("active_speaker_frames").unlink()
+        messages = log_recorder(context)
+
+        outcome = SpeakerFusionStage().run(context)
+
+        assert outcome.status == "skipped"
+        assert not context.artifact("speaker_fusion_nemotron").exists()
+        # The other engine is still fusible: a skip that cannot recompute it must not delete
+        # it either, or a half-built dataset would lose the verdicts it already has.
+        assert context.artifact("speaker_fusion_pyannote").is_file()
+        assert any("removed stale fusion_nemotron.parquet" in message for message in messages)
+
+    def test_a_skip_that_proves_nothing_stale_deletes_nothing(self, context):
+        """The ASD table going missing is not evidence that either fused table is wrong.
+
+        Both engines are still selected and both turn tables are present, so nothing here
+        tells us a table was written from anything other than these inputs. Deleting them
+        would turn a recoverable mid-build state into lost work.
+        """
+        self._fuse_both(context)
+        context.artifact("active_speaker_frames").unlink()
+        messages = log_recorder(context)
+
+        outcome = SpeakerFusionStage().run(context)
+
+        assert outcome.status == "skipped"
+        assert context.artifact("speaker_fusion_pyannote").is_file()
+        assert context.artifact("speaker_fusion_nemotron").is_file()
+        assert not any("removed stale" in message for message in messages)
+
+    def test_a_disabled_stage_prunes_nothing(self, context):
+        """`enabled: false` is the operator switching the stage off over tables they kept.
+
+        Nemotron is deselected *while the stage is off*, so the table on disk is provably
+        stale by the same evidence that made the deselected engine's table deletable in
+        `TestStaleEngineOutputIsNotLeftBehind` — and it still has to survive. This is why the
+        gate is the config flag rather than the skip reason: coupling the deletion decision to
+        the wording of `enabled()` would let a reworded reason silently decide whose tables
+        get deleted.
+        """
+        self._fuse_both(context)
+        context.config.speaker_fusion.engines = ["pyannote"]
+        context.config.speaker_fusion.enabled = False
+        messages = log_recorder(context)
+
+        outcome = SpeakerFusionStage().run(context)
+
+        assert outcome.status == "skipped"
+        assert context.artifact("speaker_fusion_pyannote").is_file()
+        assert context.artifact("speaker_fusion_nemotron").is_file()
+        assert not any("removed stale" in message for message in messages)
+
+
+class TestValidateComparesEachTableWithItsOwnTurnTable:
+    """A fused table is only correct row-for-row against the turns it came from.
+
+    `validate` checked every row of the fused table and never its size, so a table with one
+    turn row silently dropped — truncated, or written from an older turn table — validated
+    clean and a consumer joining it to the transcript simply saw one speaker go quiet.
+    """
+
+    def _fuse_two_turns(self, context):
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08, turn_id="turn000001"),
+                             turn_row(start=1.0, end=1.08, turn_id="turn000002")])
+        stage = SpeakerFusionStage()
+        assert stage.run(context).status == "completed"
+        assert read_table(context.artifact("speaker_fusion_pyannote")).num_rows == 2
+        return stage
+
+    def test_a_fused_table_that_lost_a_turn_row_is_rejected(self, context):
+        import pyarrow.parquet as pq
+
+        stage = self._fuse_two_turns(context)
+        path = context.artifact("speaker_fusion_pyannote")
+        pq.write_table(pq.read_table(path).slice(0, 1), path)
+
+        # Both counts, both artifacts, the remedy — and the reason to distrust this table
+        # rather than the turn table, which still reads fine.
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(context)
+        message = str(excinfo.value)
+        assert "speaker_fusion_pyannote" in message
+        assert "speaker_turns" in message
+        assert " 1 " in message and " 2 " in message
+        assert "stale" in message
+        assert "rerun speaker_fusion" in message
+
+    def test_the_mismatch_names_the_engine_it_belongs_to(self, context):
+        import pyarrow.parquet as pq
+
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", overlap_s=0.4, nemotron=True)],
+                   nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        stage = SpeakerFusionStage()
+        assert stage.run(context).status == "completed"
+        pq.write_table(pq.read_table(context.artifact("speaker_fusion_nemotron")).slice(0, 0),
+                       context.artifact("speaker_fusion_nemotron"))
+
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(context)
+        message = str(excinfo.value)
+        assert "speaker_fusion_nemotron" in message and "speaker_turns_nemotron" in message
+        # The healthy engine is not blamed for its neighbour.
+        assert "speaker_fusion_pyannote has" not in message
+
+    def test_an_engine_whose_turn_table_is_gone_is_not_count_checked(self, context):
+        """Guard for the new check: no turn table means no comparison, as in `execute`.
+
+        The stage skips that engine, so `validate` must not raise over the table it stopped
+        promising — the next completed run prunes it (see TestStaleEngineOutputIsNotLeftBehind).
+        """
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", overlap_s=0.4, nemotron=True)],
+                   nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        stage = SpeakerFusionStage()
+        assert stage.run(context).status == "completed"
+        context.artifact("speaker_turns_nemotron").unlink()
+
+        summary = stage.validate(context)
+
+        assert sorted(summary) == ["speaker_fusion_pyannote"]
+
+
+class TestAnInputThatVanishedIsNotTreatedAsADeselection:
+    """The one skip that must delete nothing: every turn table is gone.
+
+    `run` prunes what the configuration proves stale, and when no engine has a turn table the
+    configuration proves nothing — an empty `selected_outputs` makes every fused table look
+    deletable. Deleting then would be the worst possible outcome of a recoverable state: it is
+    what a half-built or partially cleaned dataset looks like *before* the diarizer has run, so
+    a stage that skipped for want of input would wipe the verdicts a previous complete run
+    produced, and re-fusing them afterwards is impossible until the diarizer runs again.
+
+    Deselection is different evidence and must still delete: there the config positively
+    states the engine is not wanted. Here the config still wants both.
+    """
+
+    def test_losing_every_turn_table_deletes_nothing(self, context):
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", nemotron=True)], nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        assert SpeakerFusionStage().run(context).status == "completed"
+        pyannote = context.artifact("speaker_fusion_pyannote").read_bytes()
+        nemotron = context.artifact("speaker_fusion_nemotron").read_bytes()
+
+        # Both diarizer outputs disappear, as they do after a partial `clean` or on a dataset
+        # whose diarization has not run yet. Nothing here says the operator deselected anyone.
+        context.artifact("speaker_turns").unlink()
+        context.artifact("speaker_turns_nemotron").unlink()
+        messages = log_recorder(context)
+
+        outcome = SpeakerFusionStage().run(context)
+
+        assert outcome.status == "skipped"
+        assert context.artifact("speaker_fusion_pyannote").read_bytes() == pyannote
+        assert context.artifact("speaker_fusion_nemotron").read_bytes() == nemotron
+        assert not any("removed stale" in message for message in messages)
+
+    def test_a_deselection_is_still_pruned_when_a_second_engine_is_also_missing(self, context):
+        """The guard above must not swallow a real deselection that coincides with a gap.
+
+        Nemotron is deselected *and* its turn table is gone. Only pyannote still has input, so
+        the run is fusible and prunes on its own path; the point is that the deselected
+        engine's table goes either way, so the new skip-path guard cannot be used to argue a
+        stale table survives because some input is missing.
+        """
+        seed_frames(context, MATCH_FRAMES)
+        seed_turns(context, [turn_row(start=0.0, end=0.08)])
+        seed_turns(context, [turn_row(start=0.0, end=0.08, speaker="speaker_0",
+                                      turn_id="turn000001", nemotron=True)], nemotron=True)
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        assert SpeakerFusionStage().run(context).status == "completed"
+
+        context.config.speaker_fusion.engines = ["pyannote", "nemotron"]
+        context.artifact("speaker_turns_nemotron").unlink()
+        context.artifact("active_speaker_frames").unlink()  # forces the skip path
+        messages = log_recorder(context)
+        assert SpeakerFusionStage().run(context).status == "skipped"
+        assert not context.artifact("speaker_fusion_nemotron").exists()
+        assert any("removed stale fusion_nemotron.parquet" in message
+                   for message in messages)

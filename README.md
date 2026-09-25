@@ -702,7 +702,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1084 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1094 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -758,7 +758,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1084 tests
+tests/unit/                1094 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
