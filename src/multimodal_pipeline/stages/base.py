@@ -36,6 +36,9 @@ STAGE_ORDER: tuple[str, ...] = (
     "audio",
     "whisperx",
     "diarization",
+    # Second diarization engine. Adjacent to the first for readability only: the DAG does
+    # not order these two against each other (see STAGE_DEPENDENCIES).
+    "diarization_nemotron",
     "speaker_assignment",
     "translation",
     "spacy_source",
@@ -51,6 +54,11 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "audio": ("metadata",),
     "whisperx": ("audio",),
     "diarization": ("audio",),
+    # Deliberately independent of `diarization`: the point of a second engine is that
+    # either one can be off and the other still produces a dataset. Depending on it would
+    # also let a pyannote failure (gated-model consent, expired token) cost the very
+    # comparison the operator asked for.
+    "diarization_nemotron": ("audio",),
     "speaker_assignment": ("whisperx", "diarization"),
     "translation": ("speaker_assignment",),
     "spacy_source": ("speaker_assignment",),

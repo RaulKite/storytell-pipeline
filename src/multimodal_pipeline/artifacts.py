@@ -26,6 +26,12 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "speech_segments": "speech/segments.parquet",
     "speech_words": "speech/words.parquet",
     "speaker_turns": "speech/speaker_turns.parquet",
+    # Second-engine diarization. Separate raw file and separate table on purpose:
+    # `speaker_turns` keeps meaning "pyannote only", so every dataset produced before this
+    # stage existed keeps its meaning, and a reviewer comparing engines is comparing two
+    # files rather than one file with a mode column.
+    "nemotron_diarization_raw": "speech/raw/nemotron_diarization.json",
+    "speaker_turns_nemotron": "speech/speaker_turns_nemotron.parquet",
     "translation_raw": "translation/raw",
     "translation_segments": "translation/segments_en.parquet",
     "spacy_source_raw": "linguistic/source/raw/spacy_source.json",
@@ -60,6 +66,7 @@ STAGE_LOG_NAMES = (
     "audio",
     "whisperx",
     "diarization",
+    "diarization_nemotron",
     "speaker_assignment",
     "translation",
     "spacy_source",

@@ -293,6 +293,180 @@ class TestFullRun:
         assert stages["openpose"] == "skipped"
         assert stages["metadata"] == "completed"
 
+    # --- the second diarization engine must be inert until it is asked for -----------
+
+    def test_second_diarizer_skips_and_is_declared_absent(self, fresh: Path) -> None:
+        """With the engine off, the run completes and the extra table is *declared* absent.
+
+        This is the guarantee the operator's request depends on: adding the second engine
+        may not break a corpus that does not want it, and its artifacts may not be silently
+        missing (the manifest is the contract that says why a file is not there).
+        """
+        config = str(fresh / "config" / "config.yaml")
+        result = cli("run", "-c", config)
+        assert result.returncode == 0, result.stderr[-3000:]
+        manifest = load(fresh / "out" / "alpha" / "manifest.json")
+        assert manifest["processing"]["stages"]["diarization_nemotron"] == "skipped"
+        assert "speaker_turns_nemotron" in manifest["artifacts_not_generated"]
+        assert not (fresh / "out" / "alpha" / "speech" / "speaker_turns_nemotron.parquet").exists()
+        validate = cli("validate", "-c", config)
+        assert validate.returncode == 0, validate.stdout[-2000:]
+
+    def test_enabled_second_diarizer_without_environment_skips_with_the_fix(self, fresh: Path) -> None:
+        """Enabled but not installed: skip, name the fix, and still complete the dataset."""
+        config_path = fresh / "config" / "config.yaml"
+        payload = yaml.safe_load(config_path.read_text())
+        payload["diarization_nemotron"] = {
+            "enabled": True,
+            "uv_project": str(fresh / "environments" / "diarization_nemotron"),
+        }
+        config_path.write_text(yaml.safe_dump(payload))
+        result = cli("run", "-c", str(config_path))
+        assert result.returncode == 0, result.stderr[-3000:]
+        stages = load(fresh / "out" / "alpha" / "manifest.json")["processing"]["stages"]
+        assert stages["diarization_nemotron"] == "skipped"
+        status = load(fresh / "out" / "alpha" / "status.json")
+        reason = json.dumps(status)
+        assert "uv sync" in reason, "the skip reason must carry the remedy"
+
+    # --- the real thing: run the real worker over a real clip -------------------------
+
+    def nemotron_or_skip(self, fresh: Path) -> None:
+        """Skip unless this machine can actually run the second engine.
+
+        Two hard prerequisites, both checked rather than assumed:
+
+        * a working CUDA in the stage's own environment. A CPU run of this test would still
+          be a real run, but it turns a 2-second stage into minutes on a shared CI runner,
+          so the GPU is what makes it fair to leave in the suite;
+        * the checkpoint already in the local Hugging Face cache. Without it the worker
+          starts a ~500 MB download, which is not something a test may do silently and is
+          impossible where there is no network.
+
+        Skipping is the honest outcome when either is missing. Failing would punish a clean
+        install for not having a GPU, exactly the defect the OpenPose and ffmpeg guards in
+        this file were added to remove.
+        """
+        project = PROJECT_ROOT / "environments" / "diarization_nemotron"
+        if not project.is_dir():
+            pytest.skip(f"no nemotron environment at {project}")
+        probe = subprocess.run(
+            ["uv", "run", "--project", str(project), "python", "-c",
+             "import torch; print(int(torch.cuda.is_available()))"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if probe.stdout.strip() != "1":
+            pytest.skip("nemotron environment reports no usable CUDA on this machine")
+        cache = Path.home() / ".cache" / "huggingface" / "hub" / "models--nvidia--Nemotron-3-Diarization"
+        if not cache.is_dir():
+            pytest.skip(
+                f"nvidia/Nemotron-3-Diarization is not in {cache}; run the stage once "
+                "manually to fetch it (~500 MB) instead of letting a test download it"
+            )
+
+    def test_the_real_worker_produces_a_comparable_table(self, fresh: Path) -> None:
+        """End to end with the committed worker and the committed environment.
+
+        This is the only test in the suite that proves the pin in
+        ``environments/diarization_nemotron/pyproject.toml`` still loads this checkpoint.
+        Everything else in this file would stay green if the pin were wrong, because the
+        stage skips politely when its environment is absent.
+        """
+        self.nemotron_or_skip(fresh)
+        config_path = fresh / "config" / "config.yaml"
+        payload = yaml.safe_load(config_path.read_text())
+        payload["whisperx"] = {"enabled": False}
+        payload["diarization"] = {"enabled": False}
+        payload["translation"] = {"enabled": False}
+        payload["diarization_nemotron"] = {
+            "enabled": True,
+            # Absolute on purpose: this project's project_root is a temporary directory, so
+            # the repository-relative defaults would resolve to a worker and an environment
+            # that do not exist there — and the stage would skip, testing nothing.
+            "uv_project": str(PROJECT_ROOT / "environments" / "diarization_nemotron"),
+            "worker": str(PROJECT_ROOT / "workers" / "nemotron_diarization_worker.py"),
+            "device": "cuda",
+        }
+        payload["spacy"] = {"enabled": False}
+        payload["acoustic"] = {"enabled": False}
+        config_path.write_text(yaml.safe_dump(payload))
+
+        # A full run, not --only-stage: the manifest is written by finalization, and the
+        # manifest is the artifact contract this test is checking.
+        result = cli("run", "-c", str(config_path))
+        assert result.returncode == 0, result.stderr[-4000:]
+
+        dataset = fresh / "out" / "alpha"
+        stages = load(dataset / "manifest.json")["processing"]["stages"]
+        assert stages["diarization_nemotron"] == "completed", stages
+
+        table = pq.read_table(dataset / "speech" / "speaker_turns_nemotron.parquet")
+        assert [f.name for f in table.schema] == [
+            "schema_version", "video_id", "turn_id", "speaker_id", "start_time",
+            "end_time", "duration", "diarization_type", "overlap_s"], table.schema.names
+        rows = table.to_pylist()
+        # alpha is a 1-second synthetic tone: speech is whatever the model decides, so the
+        # assertions are invariants rather than content. Content is what a human compares.
+        for row in rows:
+            assert row["diarization_type"] == "overlapping"
+            assert row["end_time"] > row["start_time"]
+            assert row["overlap_s"] >= 0.0
+            assert row["speaker_id"].startswith("speaker_")
+            assert row["start_time"] >= 0.0
+            assert row["end_time"] <= 1.35, "a turn ran past the end of the clip"
+
+        # The raw output is preserved and is the ground truth the table was derived from.
+        raw = load(dataset / "speech" / "raw" / "nemotron_diarization.json")
+        assert raw["model_id"] == "nvidia/Nemotron-3-Diarization"
+        assert raw["device"] == "cuda"
+        assert raw["video_id"] == "alpha"
+        assert raw["logits_shape"][2] == 8, "expected the model's 8 speaker channels"
+        assert len(raw["segments"]) >= len(rows)
+        # The offline geometry the README documents is the geometry actually used.
+        assert raw["offline_geometry"]["chunk_length"] == 340
+        assert raw["offline_geometry"]["frame_stride_ms"] == pytest.approx(10.0)
+
+        validate = cli("validate", "-c", str(config_path))
+        assert validate.returncode == 0, validate.stdout[-3000:]
+
+    def test_rerunning_the_second_engine_is_a_no_op(self, fresh: Path) -> None:
+        """A completed second engine must not re-run, the same way every other stage works.
+
+        It costs a model load per video, so a fingerprint that failed to stabilise would be
+        paid for on every batch, on every video, forever.
+        """
+        self.nemotron_or_skip(fresh)
+        config_path = fresh / "config" / "config.yaml"
+        payload = yaml.safe_load(config_path.read_text())
+        payload["diarization_nemotron"] = {
+            "enabled": True,
+            "uv_project": str(PROJECT_ROOT / "environments" / "diarization_nemotron"),
+            "worker": str(PROJECT_ROOT / "workers" / "nemotron_diarization_worker.py"),
+            "device": "cuda",
+        }
+        config_path.write_text(yaml.safe_dump(payload))
+        first = cli("run", "-c", str(config_path))
+        assert first.returncode == 0, first.stderr[-3000:]
+        status = load(fresh / "out" / "alpha" / "status.json")
+        record = status["stages"]["diarization_nemotron"]
+        assert record["status"] == "completed"
+        assert record["config_hash"], "a completed stage must record its fingerprint"
+
+        # The plan is written to stderr in this CLI (see test_status_plan_explains_reuse).
+        plan = cli("status", "-c", str(config_path), "--plan")
+        assert plan.returncode == 0, plan.stderr[-2000:]
+        assert "diarization_nemotron" in plan.stderr, plan.stderr[-2000:]
+        # The plan must say reuse, not recompute: that is the whole point of the fingerprint.
+        plan_line = [line for line in plan.stderr.splitlines() if "diarization_nemotron" in line]
+        assert any("valid previous result" in line for line in plan_line), plan_line
+        second = cli("run", "-c", str(config_path))
+        assert second.returncode == 0, second.stderr[-3000:]
+        after = load(fresh / "out" / "alpha" / "status.json")
+        assert after["stages"]["diarization_nemotron"]["config_hash"] == record["config_hash"], (
+            "the fingerprint moved between two identical runs")
+        stages = load(fresh / "out" / "alpha" / "manifest.json")["processing"]["stages"]
+        assert stages["diarization_nemotron"] in ("completed", "reused"), stages
+
     def test_status_reads_the_dataset_without_recomputing(self, fresh: Path) -> None:
         config = str(fresh / "config" / "config.yaml")
         cli("run", "-c", config)
