@@ -613,3 +613,95 @@ class TestFrameStatusInTable:
         assert summary[0]["frame_count"] == 2
         assert summary[0]["mean_score"] == pytest.approx(1.0)
         assert summary[0]["active_ratio"] == pytest.approx(0.5)
+
+
+class TestDenseSequenceDiagnosis:
+    """R3-001: the dense check rejected three different faults with one string, and
+    left nothing in the stage log. A rejected table is usually a stale or hand-edited
+    artifact, and "not dense" does not tell the operator which of the three happened.
+    """
+
+    @pytest.mark.parametrize("indices, word", [
+        ([0, 1, 3, 2], "out of order"),        # same frames, wrong order
+        ([0, 1, 2, 7], "missing"),             # 3,4,5,6 absent
+        ([0, 1, 1, 2], "duplicate"),           # frame 1 twice
+    ])
+    def test_the_break_is_named_by_kind(self, indices, word):
+        from multimodal_pipeline.stages.activespeaker import dense_sequence_break
+
+        detail = dense_sequence_break(indices)
+        assert detail is not None
+        assert word in detail
+
+    def test_a_dense_sequence_reports_no_break(self):
+        from multimodal_pipeline.stages.activespeaker import dense_sequence_break
+
+        assert dense_sequence_break([0, 1, 2, 3]) is None
+
+    def test_the_break_names_the_offending_row(self):
+        from multimodal_pipeline.stages.activespeaker import dense_sequence_break
+
+        # [0, 1, 3, 2]: rows 0 and 1 are right, row 2 is the first that diverges.
+        assert "row 2" in dense_sequence_break([0, 1, 3, 2])
+        # A gap names both halves of the fault: which number never arrived, and which
+        # number arrived that should not have been there.
+        gap = dense_sequence_break([0, 1, 2, 7])
+        assert "missing" in gap and "3" in gap and "7" in gap
+        assert "frame_number 1" in dense_sequence_break([0, 1, 1, 2])  # frame 1 repeats
+
+    def test_missing_frame_number_rows_are_reported_as_such(self):
+        from multimodal_pipeline.stages.activespeaker import dense_sequence_break
+
+        assert "row 1 has no frame_number" in dense_sequence_break([0, None, 2])
+
+    def _reject(self, seeded, mutate):
+        document = make_frames_document()
+        mutate(document)
+        seeded.artifact("activespeaker_raw").write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        # normalize is what turns the raw frames into the parquet that validate reads, so
+        # it runs first: the dense check lives in validate and inspects the table, not the
+        # worker JSON. This is the stale-rerun shape the operator actually hits.
+        stage.normalize(seeded)
+        return stage
+
+    def test_reordered_frames_are_rejected_by_name(self, seeded):
+        def mutate(document):
+            document["frames"][2], document["frames"][3] = (
+                document["frames"][3], document["frames"][2])
+        stage = self._reject(seeded, mutate)
+        with pytest.raises(ValidationError, match="out of order"):
+            stage.validate(seeded)
+
+    def test_duplicate_frames_are_rejected_by_name(self, seeded):
+        def mutate(document):
+            document["frames"][3]["frame_25fps"] = 1   # duplicate of frame 1
+            document["frames"][3]["timestamp_sec"] = 0.04
+        stage = self._reject(seeded, mutate)
+        with pytest.raises(ValidationError, match="duplicate"):
+            stage.validate(seeded)
+
+    def test_the_rejection_is_written_to_the_stage_log(self, seeded):
+        """R3-001's actual complaint: a rejected table left no trace in the log."""
+        def mutate(document):
+            document["frames"][2]["frame_25fps"] = 9
+        stage = self._reject(seeded, mutate)
+        log_path = seeded.paths.dataset_dir / "logs" / "test.log"   # the fixture's StageLogger
+        before = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+        with pytest.raises(ValidationError):
+            stage.validate(seeded)
+        written = log_path.read_text(encoding="utf-8")[len(before):]
+        assert "WARNING" in written
+        assert "missing" in written
+
+    def test_a_healthy_table_logs_no_dense_warning(self, seeded):
+        """Otherwise the new warning is just noise on every valid revalidation."""
+        def mutate(document):
+            pass
+        stage = self._reject(seeded, mutate)
+        log_path = seeded.paths.dataset_dir / "logs" / "test.log"
+        before = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+        stage.validate(seeded)
+        written = log_path.read_text(encoding="utf-8")[len(before):]
+        assert "not dense" not in written
