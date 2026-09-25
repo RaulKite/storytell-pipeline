@@ -89,7 +89,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
 - [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb` (code+tests+docs as one work unit), review recorded in `406f1c2`; native review approved (high, 4 lenses), evidence in §9.
 - [x] **T9** spaCy model choice sees the language-detection grade, default unchanged — `ba602d7`, evidence in §10.
-- [x] **T18** corrupt `whisperx_raw` reads as an `unreadable` sentinel, never as "no grade" (advisory `R4-raw-read-failure-cache`) — `PENDING18`.
+- [x] **T18** corrupt `whisperx_raw` reads as an `unreadable` sentinel, never as "no grade" (advisory `R4-raw-read-failure-cache`) — `dbe30f3`, evidence in §12.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
 - [ ] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph,
