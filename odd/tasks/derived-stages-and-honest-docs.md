@@ -98,6 +98,10 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       evidence in §17. Written to `speaker/fusion_nemotron.parquet` (not the
       `active_speaker_fused_*` name first sketched here: the fused tables sit beside the
       turn tables they were derived from, and `fusion_<engine>` says that in one word).
+- [ ] **T21** fold `speaker_fusion`'s five review advisories into one pass: prune on a *skipped*
+      run only when an engine was deselected rather than the stage disabled, per-engine atomic
+      writes so a mid-run failure cannot leave one fresh and one stale table, and a `validate`
+      check that every input turn produced a row. Evidence in §17.
 - [ ] **T19** fold T10's three advisories into one small openpose pass (render docs coherence,
       zero-render raise path, stale-images-when-off counted in the report) — best done inside T12.
 - [x] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph, active-speaker
@@ -105,7 +109,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [ ] **T12** §20.6 README: install from nothing, what each stage decides, one worked
       example dataset, how to consume it.
 - [x] **T13** §20.1: fuse pyannote turns with per-frame active speaker, v1 kept beside it —
-      `d535f64`, evidence in §17. Named `speaker_fusion`, not `diarization_v2`: it does not
+      `d9120dd`, evidence in §17. Named `speaker_fusion`, not `diarization_v2`: it does not
       re-segment audio, so a `diarization`-prefixed name would promise a diarizer and read as
       a replacement for the stage whose output it consumes.
 - [ ] **T14** §20.4 `pose_normalized`: body-centred basis (dfMaker algebra) in Python,
@@ -755,6 +759,29 @@ demotion caused by the mean-score knob. Two judgements, both reversible:
   `speaker_fusion.enabled: false` and a mid-build dataset produce; if no selected engine has a turn
   table, earlier fused tables stay on disk until the stage completes again. 4 tests, each of which
   fails against the pre-fix stage.
+
+**Third lineage, facade lineage id `placeholder-unused`, target
+`sha256:9428b3b1…dbe5c` → approved.** Base `3156d30`, committed-only, tier high, 4 lenses, 13 files / 2544 changed
+lines. All four lenses admitted; acknowledgement burned the authority. The reviewed tree is
+the tree of `d9120dd`, which is why the review record is this separate commit: amending
+`d9120dd` would move the tree its receipt pins.
+
+Five advisories, all `informational`, none of which opened a correction and none of which
+reopen this review. They are follow-up work, not reasons to re-review this candidate:
+
+- `R3-stale-output-on-skip` (reliability) — the deliberate limit described above: a *skipped*
+  run prunes nothing, so if no selected engine has a turn table, earlier fused tables survive.
+  The fix would need to tell "disabled by config" apart from "this engine went away", which is
+  a config-state question this stage does not currently own.
+- `R3-multi-output-partial-update` (reliability) — the two engines are written sequentially, so
+  a failure between them leaves one fresh table and one that is about to be pruned. Pruning
+  after all writes is what makes the failure window survivable rather than destructive;
+  per-engine atomicity would close it properly.
+- `R3-validation-misses-truncated-turns` (reliability) — `validate` counts rows it wrote but does
+  not re-check that every input turn produced a row, so a silently truncated input turn table
+  would not be caught here.
+- `R4-001` (resilience) and `R2-001` (readability) — located in the same stage; neither reviewer
+  escalated them past a warning.
 
 Suite after the work: **1073 unit / 42 e2e** (from 1028 before this feature). Mutation set on the
 fusion core, each with named deaths: half-open turn window → 19; ratio denominator over the whole
