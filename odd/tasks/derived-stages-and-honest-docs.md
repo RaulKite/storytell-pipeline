@@ -89,7 +89,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
 - [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb` (code+tests+docs as one work unit), review recorded in `406f1c2`; native review approved (high, 4 lenses), evidence in §9.
 - [x] **T9** spaCy model choice sees the language-detection grade, default unchanged — `ba602d7`, evidence in §10.
-- [ ] **T18** `_language_detection` must not read a corrupt `whisperx_raw` as "no grade": record the read failure distinctly (advisory `R4-raw-read-failure-cache`, from T9's review) and decide whether the raw digest belongs in the fingerprint.
+- [x] **T18** corrupt `whisperx_raw` reads as an `unreadable` sentinel, never as "no grade" (advisory `R4-raw-read-failure-cache`) — `PENDING18`.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
 - [ ] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph,
@@ -537,7 +537,35 @@ the spaCy stage. T9 deliberately recorded absence as `None` so old datasets keep
 this finding is the case that absence was hiding. Filed as **T18** rather than fixed under a
 receipt that is already burned — the receipt says nothing about a changed candidate.
 
-## 12. Execution notes
+## 12. T18 — a corrupt `whisperx_raw` stops masquerading as an absent grade
+
+T9's advisory, done while the code was still warm. `_language_detection` collapsed three
+states into two: a file that exists but does not parse returned the same `None` as a file
+that does not exist, so (a) the fingerprint cached a corrupt artifact as "no grade" and a
+later repair of that file reproduced the broken run's digest — nothing invalidated the
+cache — and (b) the stage said nothing about corruption.
+
+Three states now: `None` (absent — missing file, no key, or non-dict value), the sentinel
+`{"status": "unreadable"}` (present but unreadable), or the real grade. The worker treats the
+sentinel as *available but not low*: default behaviour kept (the language stays trusted — a
+corrupt file is evidence about the file, not about the detection), one WARNING saying the
+document could not be read and to rerun `whisperx`, and `language_reliability` carries the
+sentinel in provenance. The finding's second question — digest the raw file? — was answered
+no: the sentinel plus the grade already make corrupt/absent/repaired pairwise-distinct
+digests (a test pins exactly that), and a content digest of an artifact the stage doesn't
+otherwise read would churn the cache on every byte-unrelated rewrite.
+
+4 new tests (866 unit). Mutation: reverting the sentinel to `return None` dies on four named
+tests including `test_corrupt_absent_and_graded_are_three_different_fingerprints`.
+
+**Delegation note.** The T18 writer touched README.md (the two test-count lines), outside its
+allowed surfaces, on the strength of an authorisation that lived in my own `## Verification`
+section rather than in the surfaces block. The right answer was to stop and report, which it
+essentially did; the two lines were checked and kept — they are the measured 866/42 and the
+count ratchet cannot be satisfied any other way. The rule for my own task briefs going
+forward: authorisation to touch a file goes in the surfaces block or nowhere.
+
+## 13. Execution notes
 
 - Delegation is live in this clone for read-only task-mode work (a `gentle-ai-explore` run
   mapped the install path this session). Writer launches historically failed here with

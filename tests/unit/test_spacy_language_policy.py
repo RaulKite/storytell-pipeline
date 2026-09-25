@@ -287,11 +287,35 @@ class TestStageRequestCarriesTheGrade:
         path.write_text(json.dumps({"segments": [], "language": "es"}), encoding="utf-8")
         assert SpacySourceStage().request(context)["language_detection"] is None
 
-    def test_an_unreadable_raw_document_is_absent_not_fatal(self, context: StageContext) -> None:
-        path = context.artifact("whisperx_raw")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not json", encoding="utf-8")
-        assert SpacySourceStage().request(context)["language_detection"] is None
+    def test_a_corrupt_raw_document_is_unreadable_not_absent(self, context: StageContext) -> None:
+        """A file that exists but cannot be parsed is a different fact from no file.
+
+        Collapsing the two wrote "no grade" into the fingerprint for a document that is
+        actually broken: after someone repaired the upstream artifact, nothing in the
+        record distinguished the cached run from a dataset that never shipped a grade.
+        """
+        write_corrupt_whisperx_raw(context)
+        assert SpacySourceStage().request(context)["language_detection"] == {"status": "unreadable"}
+
+    def test_corrupt_absent_and_graded_are_three_different_fingerprints(
+            self, context: StageContext) -> None:
+        """Pairwise distinct, so a repair always invalidates the run it should."""
+        stage = SpacySourceStage()
+        digests = {"absent": stage.request_digest(context)}
+        write_corrupt_whisperx_raw(context)
+        digests["corrupt"] = stage.request_digest(context)
+        write_whisperx_raw(context, LA_UNO_GRADE)
+        digests["graded"] = stage.request_digest(context)
+        assert len(set(digests.values())) == 3, f"collision in {digests}"
+
+    def test_an_unreadable_raw_document_never_crashes_the_stage(
+            self, context: StageContext) -> None:
+        """A broken upstream document is reported, never fatal: no transcript is worth
+        less than a confidence number, and the raw file is not a declared input."""
+        write_corrupt_whisperx_raw(context)
+        stage = SpacySourceStage()
+        assert stage.request(context)["language_detection"] == {"status": "unreadable"}
+        assert stage.request_digest(context)
 
     def test_a_regrade_invalidates_the_source_stage(self, context: StageContext) -> None:
         """WhisperX re-grading changes how much the linguistics layer should trust its
@@ -351,6 +375,17 @@ class TestWorkerArgv:
             context, context.artifact("spacy_source_raw"), "digest")
         assert argv[argv.index("--language-detection") + 1] == "none"
 
+    def test_source_argv_passes_the_unreadable_sentinel_as_json(
+            self, context: StageContext) -> None:
+        """The sentinel reaches the worker over the same channel as a real grade, so the
+        worker can tell a broken document from the literal ``none``."""
+        write_corrupt_whisperx_raw(context)
+        argv = SpacySourceStage().worker_argv(
+            context, context.artifact("spacy_source_raw"), "digest")
+        value = argv[argv.index("--language-detection") + 1]
+        assert json.loads(value) == {"status": "unreadable"}
+        assert value != "none"
+
     def test_the_flag_follows_the_config(self, context: StageContext) -> None:
         context.config.spacy.trust_low_language_detection = False
         argv = SpacySourceStage().worker_argv(
@@ -363,6 +398,14 @@ class TestWorkerArgv:
             context, context.artifact("spacy_english_raw"), "digest")
         assert "--language-detection" not in argv
         assert "--trust-low-language-detection" not in argv
+
+
+def write_corrupt_whisperx_raw(context: StageContext) -> Path:
+    """A ``whisperx_raw`` that exists but is not parseable JSON."""
+    path = context.artifact("whisperx_raw")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    return path
 
 
 def write_whisperx_raw(context: StageContext, grade: dict[str, Any] | None) -> Path:
@@ -463,6 +506,30 @@ class TestWorkerTrustPolicy:
         assert out["document"]["selected_model"] == "es_core_news_lg"
         assert out["document"]["language_reliability"] == {"status": "absent"}
         assert any("no WhisperX language_detection grade" in line for line in out["warnings"])
+
+    def test_the_unreadable_sentinel_keeps_the_model_and_says_why(
+            self, run) -> None:
+        """Available-but-not-a-verdict: the default behaviour is to keep the language,
+        and the reason the check could not run is that the raw document is broken."""
+        out = run(language="es",
+                         installed={"es_core_news_lg"}, source_models=CONFIGURED,
+                         language_detection=json.dumps({"status": "unreadable"}), trust_low=True)
+        expected = select_model("es", CONFIGURED, {"es_core_news_lg"}, fallback="blank")
+        assert out["document"]["selected_model"] == expected["model"]
+        assert out["document"]["model_selection_status"] == "configured"
+        assert out["document"]["language_reliability_trusted"] is True
+        assert len(out["warnings"]) == 1
+        assert "could not be read" in out["warnings"][0]
+
+    def test_the_unreadable_sentinel_is_the_provenance_record(
+            self, run) -> None:
+        """The raw document says reliability was never checked, in the same place a real
+        grade would sit — a reader must not have to open the WhisperX file to learn it."""
+        out = run(language="es",
+                         installed={"es_core_news_lg"}, source_models=CONFIGURED,
+                         language_detection=json.dumps({"status": "unreadable"}), trust_low=True)
+        assert out["document"]["language_reliability"] == {"status": "unreadable"}
+        assert out["result"]["language_reliability"] == {"status": "unreadable"}
 
     def test_english_never_applies_the_policy(
             self, run) -> None:
