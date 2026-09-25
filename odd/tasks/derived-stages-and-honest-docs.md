@@ -87,7 +87,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T6** `make_fixtures.sh`: require the `flite` filter it needs, unify the OpenPose
       path convention with `openpose.root`, add a test.
 - [x] **T7** `activespeaker`: name the dense-sequence fault and log it (closes R3-001) — `e542dbe`.
-- [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb`+`PENDING_ACK`, native review approved (high, 4 lenses), evidence in §9.
+- [x] **T8** dense frames: `frame_reason` naming which of the four causes left a row unscored — `5505bdb` (code+tests+docs as one work unit), review recorded in `406f1c2`; native review approved (high, 4 lenses), evidence in §9.
 - [ ] **T9** spaCy model choice gated on language-detection status, default unchanged.
 - [ ] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip.
