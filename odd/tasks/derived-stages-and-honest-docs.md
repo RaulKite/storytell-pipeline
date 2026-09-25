@@ -92,6 +92,8 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T18** corrupt `whisperx_raw` reads as an `unreadable` sentinel, never as "no grade" (advisory `R4-raw-read-failure-cache`) — `dbe30f3`, evidence in §12.
 - [x] **T10** §20.5 `pose_skeletons`: opt-in `--write_images`, artifact + fingerprint, live
       render of one clip — `4fe3d7d`, evidence in §13.
+- [ ] **T19** fold T10's three advisories into one small openpose pass (render docs coherence,
+      zero-render raise path, stale-images-when-off counted in the report) — best done inside T12.
 - [ ] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph,
       active-speaker strip, speaker-turn strip, pose skeleton from T10).
 - [ ] **T12** §20.6 README: install from nothing, what each stage decides, one worked
@@ -609,6 +611,17 @@ when off, so `status --plan` reports "configuration changed" for all 7 existing 
 next batch re-runs OpenPose (the slowest stage) once everywhere. That is the price of an honest
 fingerprint and matches the spec's warning; it happens whether or not the operator ever enables
 rendering.
+
+**Review outcome.** Candidate `fec202c..750a69b` (lineage `review-684c629a7f5b317a`, high tier —
+`process_boundary: shell_process` in the new render tests), four lenses over 959 lines. Approved;
+acknowledgement burned the authority. Three non-blocking advisories, each its own later work:
+`R2-render-resolution-mismatch` (openpose.py:195-207, readability — the `render_pose -1` inherit
+value vs the resolution story in the docstring), `R3-001` (openpose.py:260-275, reliability —
+the zero-render raise path), `R4-stale-render-images` (openpose.py:255-263, resilience — images
+left on disk when the opt-in is switched off keep being counted by the off-path report). None
+opened a correction; none reopens this candidate. They join the queue as **T19** (one small
+openpose docs/resilience pass, best folded into T12's documentation sweep since that touches the
+same story).
 
 ## 14. Execution notes
 
