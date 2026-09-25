@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -38,12 +39,34 @@ from ..schemas import (
     ACTIVE_SPEAKER_FRAMES_SCHEMA,
     ACTIVE_SPEAKER_TRACKS_SCHEMA,
     read_table,
+    table_columns,
     write_table,
 )
 from ..validation import check_intervals
 from .base import StageContext, WorkerStage, raw_request_matches
 
 OUTPUT_FPS = 25
+
+#: The closed set of `frame_reason` values, and the subset that carries no measurement.
+#: `unknown` is in it on purpose: it means "a row we cannot diagnose", never "probably
+#: one of the others".
+FRAME_REASONS = (
+    "scored",
+    "imputed_tail",
+    "no_face",
+    "score_not_finite",
+    "track_has_no_scores",
+    "past_scored_tail",
+    "tail_score_not_finite",
+    "unknown",
+)
+UNSCORED_FRAME_REASONS = (
+    "score_not_finite",
+    "track_has_no_scores",
+    "past_scored_tail",
+    "tail_score_not_finite",
+    "unknown",
+)
 
 
 class ActiveSpeakerStage(WorkerStage):
@@ -212,15 +235,17 @@ class ActiveSpeakerStage(WorkerStage):
                 f"'{document.get('requested_device')}': {fallback_reason}",
                 logging.WARNING,
             )
-        unscored = sum(1 for row in frame_rows
-                       if row["face_status"] == "tracked_unscored")
+        unscored = [row for row in frame_rows if row["face_status"] == "tracked_unscored"]
         if unscored:
             # The bounded imputation rule lives in the worker; the stage only reports
             # what its own table shows, so this wording never duplicates their budget.
+            counted = Counter(row["frame_reason"] for row in unscored)
+            breakdown = ", ".join(f"{reason}: {count}"
+                                  for reason, count in sorted(counted.items()))
             ctx.log(
-                f"{unscored} frame(s) have a tracked face with no usable TalkNet score "
-                f"(past the imputable tail, or a non-finite score); their scores are "
-                f"null and they are never marked active",
+                f"{len(unscored)} frame(s) have a tracked face with no usable TalkNet "
+                f"score ({breakdown}); their scores are null and they are never marked "
+                f"active",
                 logging.WARNING,
             )
         ctx.log(f"normalised {len(frame_rows)} frames, {summary['frames_with_face']} with a "
@@ -246,8 +271,22 @@ class ActiveSpeakerStage(WorkerStage):
             # it so old datasets normalise instead of failing, which is what a schema
             # addition in a resumable pipeline owes them.
             status = "tracked" if row.get("talknet_score") is not None else "tracked_unscored"
+        reason = row.get("score_reason")
+        if row.get("track_id") is None:
+            reason = "no_face"
+        elif reason is None:
+            # Same compat shim as face_status two lines above: a scored row's cause is
+            # recoverable from score_imputed, but the four unscored ones are not, so an
+            # old artifact gets `unknown` rather than a guess at which one it was. A
+            # *present* value is passed through even when it is nonsense -- rewriting it
+            # here would hide a malformed worker row behind a legal default, and
+            # validate() is what has to name the frame that carries it.
+            if row.get("talknet_score") is None:
+                reason = "unknown"
+            else:
+                reason = ("imputed_tail" if row.get("score_imputed", False) else "scored")
         return {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "video_id": video_id,
             "frame_number": row.get("frame_25fps"),
             "timestamp": row.get("timestamp_sec"),
@@ -258,6 +297,7 @@ class ActiveSpeakerStage(WorkerStage):
             # normalised into "no face" and hiding the corruption.
             "track_id": row.get("track_id"),
             "face_status": status,
+            "frame_reason": reason,
             "x1": bbox[0] if present else None,
             "y1": bbox[1] if present else None,
             "x2": bbox[2] if present else None,
@@ -291,6 +331,17 @@ class ActiveSpeakerStage(WorkerStage):
         path = ctx.artifact("active_speaker_frames")
         if not path.is_file():
             raise ValidationError(self.name, ["active_speaker_frames.parquet missing"])
+        columns = set(table_columns(path))
+        missing = [field.name for field in ACTIVE_SPEAKER_FRAMES_SCHEMA
+                   if field.name not in columns]
+        if missing:
+            # A table written by an older build of this stage lacks the columns added
+            # since. Naming them is what whisperx/openpose/spacy_source already do; on
+            # this stage every row below then raised a bare KeyError, which the
+            # orchestrator records as a crash instead of the one line that says which
+            # column is stale and therefore which stage to rerun.
+            raise ValidationError(self.name,
+                                  [f"{path.name} missing columns: {', '.join(missing)}"])
         rows = read_table(path).to_pylist()
         if not rows:
             raise ValidationError(self.name, ["active_speaker_frames.parquet is empty"])
@@ -318,6 +369,42 @@ class ActiveSpeakerStage(WorkerStage):
                         max_time=self._duration(ctx))
 
         for index, row in enumerate(rows):
+            reason = row["frame_reason"]
+            if reason not in FRAME_REASONS:
+                # The column only earns its keep if it is a closed set: a reader switches
+                # on these eight strings and cannot handle a ninth.
+                problems.append(f"frame {index} has an unrecognised frame_reason "
+                                f"{reason!r} (expected one of: {', '.join(FRAME_REASONS)})")
+            if (row["face_status"] == "no_face") != (reason == "no_face"):
+                # Exactly one of the two may claim nobody was on screen: face_status
+                # answers "was a face located", frame_reason answers "was it scored", and
+                # no_face is the only reason that means both.
+                problems.append(f"frame {index} is {row['face_status']} with frame_reason "
+                                f"{reason!r}")
+            has_measurement = row["talknet_score"] is not None
+            claims_measurement = reason in ("scored", "imputed_tail")
+            if claims_measurement and not has_measurement:
+                problems.append(f"frame {index} claims frame_reason {reason!r} on a row "
+                                f"that carries no score")
+            if has_measurement and not claims_measurement:
+                problems.append(f"frame {index} carries a score but frame_reason "
+                                f"{reason!r} says there is no measurement")
+            if row["score_imputed"] != (reason == "imputed_tail"):
+                # Applies to every row, not only the ones claiming a measurement: a
+                # no_face or unscored row that still says score_imputed has a carried
+                # score somewhere in it that this table does not show. Reading an
+                # imputed score as a measured one is the worse direction, so the message
+                # names imputed_tail whichever way the row got it wrong.
+                problems.append(f"frame {index} has score_imputed={row['score_imputed']} "
+                                f"while frame_reason {reason!r} says otherwise "
+                                f"(only imputed_tail may carry an imputed score)")
+            if row["face_status"] == "tracked_unscored" and reason not in UNSCORED_FRAME_REASONS:
+                # The honest-empty state must name one of the reasons a score is missing,
+                # or admit it cannot tell; anything else claims a measurement while the
+                # row's scores are null.
+                problems.append(f"frame {index} is tracked_unscored but frame_reason "
+                                f"{reason!r} is not a reason without a measurement "
+                                f"(expected one of: {', '.join(UNSCORED_FRAME_REASONS)})")
             if row["track_id"] is None:
                 if row["is_active_speaker"]:
                     problems.append(f"frame {index} has no face but is marked active")

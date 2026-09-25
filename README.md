@@ -161,7 +161,7 @@ data/processed/<video_id>/
 │   ├── face.parquet              ← 70 points
 │   └── raw/<video>_NNNNNNNNNNNN_keypoints.json   ← OpenPose's own output, untouched
 ├── speaker/
-│   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense, face_status)
+│   ├── active_speaker_frames.parquet   ← one row per 25 FPS frame (dense, face_status, frame_reason)
 │   ├── active_speaker_tracks.parquet   ← one row per TalkNet face track
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── logs/                         ← pipeline.log + one log per stage
@@ -273,6 +273,22 @@ The third state matters: collapsing it into `no_face` would report "we could not
 this person" as "nobody was here", and a reader would draw the opposite conclusion from
 the same null. A malformed bounding box is still dropped rather than invented — a
 meaningless box is not a location.
+
+`frame_reason` answers the next question, *why* the row does or does not carry a score,
+because four different causes otherwise produce byte-identical rows. It is set by the
+worker at the branch that knows (neither a frame's position inside its track nor the
+track's score count survives into the table, so nothing downstream could recover it):
+
+| `frame_reason` | Meaning |
+|---|---|
+| `scored` | a face was located and TalkNet produced a finite score for it |
+| `imputed_tail` | the score is the last real score carried over the bounded tail — `score_imputed` is `true` and the value was not measured |
+| `no_face` | no face was located in this frame at all (the only reason that pairs with `face_status = no_face`) |
+| `score_not_finite` | a score existed at this position and was NaN or infinite |
+| `track_has_no_scores` | the track produced zero scores, so there was nothing to carry |
+| `past_scored_tail` | the frame sits beyond the last score plus the two-frame carry window |
+| `tail_score_not_finite` | inside the carry window, but the value available to carry was not finite |
+| `unknown` | only for raw artifacts written before this field existed, where the cause cannot be recovered — never a guess at one of the four above |
 
 | Stage | Runs | Needs |
 |---|---|---|
@@ -505,7 +521,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 793 tests, ~30 s
+uv run --with pytest pytest tests/unit -q     # 818 tests, ~30 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -543,9 +559,10 @@ masking, and the manifest's promise that every listed artifact exists.
 | `activespeaker.talknet_root is not set` | Clone TalkNet-ASD and set `activespeaker.talknet_root`. Without it the stage skips and the rest of the dataset is unaffected. |
 | `activespeaker.talknet_root has no run_talknet.py` | That path is not a TalkNet-ASD checkout — the stage checks for the entrypoint rather than letting a confusing `torch.load` error surface minutes later. |
 | TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why six environments](#why-six-environments)). |
-| `speaker/active_speaker_frames.parquet` has rows with `track_id = null` | No face was detected in those frames — off-screen, back-turned, or too small. S3FD tracks near-frontal faces only; a person walking away legitimately loses the track. Absence is recorded as a row, not dropped. |
-| `score_imputed = true` on some frames | TalkNet scores fewer frames than it tracks (an unexplained `-1` in its MFCC windowing), so the last score was carried forward rather than measured. At most two frames per track are affected; treat those as unmeasured, not as low confidence. |
-| A frame has `face_status = "tracked_unscored"` | S3FD located a face there but TalkNet produced no usable score for it (past the two frames that may be imputed, or a non-finite score). The scores stay `null` and the frame is never active — this is "we could not measure", not "nobody was on screen" and not a confidence of zero. |
+| `speaker/active_speaker_frames.parquet` has rows with `track_id = null` | No face was detected in those frames — off-screen, back-turned, or too small. S3FD tracks near-frontal faces only; a person walking away legitimately loses the track. Absence is recorded as a row, not dropped. `frame_reason = no_face` says the same thing from the score side. |
+| `score_imputed = true` on some frames | TalkNet scores fewer frames than it tracks (an unexplained `-1` in its MFCC windowing), so the last score was carried forward rather than measured. At most two frames per track are affected; treat those as unmeasured, not as low confidence. `frame_reason = imputed_tail` names the same rows. |
+| A frame has `face_status = "tracked_unscored"` | S3FD located a face there but TalkNet produced no usable score for it. `frame_reason` names which of the four causes: `score_not_finite` (a score existed and was NaN/inf), `track_has_no_scores` (the track never produced one), `past_scored_tail` (beyond the two frames that may be imputed), or `tail_score_not_finite` (inside the window, the value to carry was broken). The scores stay `null` and the frame is never active — this is "we could not measure", not "nobody was on screen" and not a confidence of zero. |
+| A frame has `frame_reason = "unknown"` | That table was normalised from a raw artifact written before the field existed, so the cause is not recoverable. Rerun `activespeaker` to get a diagnosed table. |
 | `acoustic/segment_features.parquet` is empty | No voiced audio (silent track, or music with no speech-like f0). |
 | `avg_segments_confidence` is negative | WhisperX reports log-probability-derived segment confidence; word confidences are the 0–1 ones. |
 
@@ -560,7 +577,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                793 tests
+tests/unit/                818 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)

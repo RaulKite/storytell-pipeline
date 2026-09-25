@@ -54,6 +54,18 @@ OUTPUT_FPS = 25
 MAX_IMPUTED_TAIL_FRAMES = 2
 TALKNET_VIDEO_NAME = "temp_video_25fps"
 
+#: Why a frame row does or does not carry a TalkNet score. The stage publishes these in
+#: its `frame_reason` column; ``unknown`` exists for Candidate values that were never
+#: routed through the branch that knows (none in this worker's own pipeline).
+REASON_SCORED = "scored"
+REASON_IMPUTED_TAIL = "imputed_tail"
+REASON_NO_FACE = "no_face"
+REASON_SCORE_NOT_FINITE = "score_not_finite"
+REASON_TRACK_HAS_NO_SCORES = "track_has_no_scores"
+REASON_PAST_SCORED_TAIL = "past_scored_tail"
+REASON_TAIL_SCORE_NOT_FINITE = "tail_score_not_finite"
+REASON_UNKNOWN = "unknown"
+
 #: gdown ids for the two checkpoints TalkNet expects relative to its cwd.
 PRETRAIN_MODEL = ("pretrain_TalkSet.model", "1AbN9fCf9IexMxEKXLQY2KYBlb-IhSEea")
 S3FD_MODEL = ("model/faceDetector/s3fd/sfd_face.pth", "1KafnHz7ccT-3IyddBsL5yi2xGtxAKypt")
@@ -72,6 +84,11 @@ class Candidate:
     dropping it would erase the difference between "nobody was visible" and "we could
     not score the person who was". Every consumer must treat ``None`` as *no evidence*,
     never as a zero score.
+
+    ``score_reason`` names *which* of those situations this is, set at the branch that
+    decides it. Four different causes leave ``raw_score`` None and their rows come out
+    byte-identical, so the cause has to be written down here, where it is still known:
+    neither the position inside the track nor the score count is ever serialised.
     """
 
     track_id: int
@@ -79,6 +96,7 @@ class Candidate:
     raw_score: float | None
     score_imputed: bool
     smoothed_score: float | None = None
+    score_reason: str = REASON_UNKNOWN
 
 
 # --------------------------------------------------------------------- helpers
@@ -339,12 +357,26 @@ def build_candidates(tracks: Any, scores: Any, scene_ids: Sequence[int]
                 if not math.isfinite(raw):
                     # A NaN/inf score is as unusable as no score, but the face is real.
                     raw = None
-            elif score_count > 0 and position < score_count + MAX_IMPUTED_TAIL_FRAMES:
+                    reason = REASON_SCORE_NOT_FINITE
+                else:
+                    reason = REASON_SCORED
+            elif score_count == 0:
+                # Nothing to carry: this track never produced a score at all, which is a
+                # different complaint from "we ran out of scores a few frames ago".
+                reason = REASON_TRACK_HAS_NO_SCORES
+            elif position < score_count + MAX_IMPUTED_TAIL_FRAMES:
                 # MFCC windowing leaves the score array 1-2 samples short. Carry the
                 # last score over that bounded tail and disclose it downstream.
                 carried = float(track_scores[score_count - 1])
                 if math.isfinite(carried):
                     raw, imputed = carried, True
+                    reason = REASON_IMPUTED_TAIL
+                else:
+                    # Inside the window, and the only value available to carry is broken.
+                    # Calling this past_scored_tail would say we ran out of scores.
+                    reason = REASON_TAIL_SCORE_NOT_FINITE
+            else:
+                reason = REASON_PAST_SCORED_TAIL
             # Anything past the tail keeps raw=None: we may not invent a third score.
             # The face still gets a row, as tracked_unscored.
             try:
@@ -355,7 +387,8 @@ def build_candidates(tracks: Any, scores: Any, scene_ids: Sequence[int]
                 # A garbage box is not a location. Inventing one would put a person
                 # somewhere the detector never saw them, so this face is dropped.
                 continue
-            by_frame[frame_index][track_id] = Candidate(track_id, bbox, raw, imputed)
+            by_frame[frame_index][track_id] = Candidate(track_id, bbox, raw, imputed,
+                                                        score_reason=reason)
     return by_frame
 
 
@@ -494,7 +527,9 @@ def build_document(*, video_id: str, source_fps: float, stamps: Sequence[float],
     "someone is speaking" -- collapsing those is the bug this table used to have.
     The lowest unscored track id is reported when several faces share the frame: it is
     arbitrary but deterministic, and the scores stay null so nothing pretends to know
-    more than it does.
+    more than it does. ``score_reason`` travels with whichever face is reported, so the
+    row's stated cause describes the same face its bbox and (absent) score describe; a
+    frame with no candidates at all is ``no_face``, which no track can answer for it.
     """
     frames: list[dict[str, Any]] = []
     for index, candidate in enumerate(chosen):
@@ -515,6 +550,10 @@ def build_document(*, video_id: str, source_fps: float, stamps: Sequence[float],
             "scene_id": scene_ids[index],
             "track_id": located.track_id if located is not None else None,
             "face_status": face_status,
+            # no_face is a fact about the frame, not about a track: build_candidates
+            # never ran for it, so the reason is set here rather than on a Candidate.
+            "score_reason": (REASON_NO_FACE if located is None
+                             else located.score_reason or REASON_UNKNOWN),
             "x1": None, "y1": None, "x2": None, "y2": None,
             "talknet_score_raw": None,
             "talknet_score": None,

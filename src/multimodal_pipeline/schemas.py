@@ -224,6 +224,12 @@ ACOUSTIC_SEGMENTS_SCHEMA = pa.schema(
 # a frame with no face -- track_id null, no bbox, no score. It is now its own state, so
 # a consumer reading "no face" is not reading "we lost the score". A malformed bbox is
 # still dropped rather than invented: a garbage box is not a location.
+# `frame_reason` answers a different question to `face_status`: face_status says whether a
+# face was located at all, frame_reason says why a row does or does not carry a TalkNet
+# score. Four distinct causes produce an unscored row (a non-finite score, a track with no
+# scores, a frame past the imputable tail, a non-finite carried tail score) and the table
+# cannot tell them apart -- neither the frame's position inside its track nor the track's
+# score count survives the worker -- so only the worker can name the cause.
 ACTIVE_SPEAKER_FRAMES_SCHEMA = pa.schema(
     [
         ("schema_version", pa.string()),
@@ -234,6 +240,7 @@ ACTIVE_SPEAKER_FRAMES_SCHEMA = pa.schema(
         ("scene_id", pa.int64()),
         ("track_id", pa.int64()),
         ("face_status", pa.string()),
+        ("frame_reason", pa.string()),
         ("x1", pa.float64()),
         ("y1", pa.float64()),
         ("x2", pa.float64()),

@@ -464,6 +464,14 @@ class TestUnscoredFaceStaysVisible:
         assert by_frame[2][0].raw_score == 1.0 and by_frame[2][0].score_imputed
         assert by_frame[3][0].raw_score is None
         assert not by_frame[3][0].score_imputed
+        # Cause C: the frame is beyond the last score plus the carry window, and that
+        # is the reason it carries no score -- not a non-finite score, not an empty
+        # track. The four unscored causes must not share a string.
+        assert by_frame[3][0].score_reason == "past_scored_tail"
+        # The two frames the budget did carry are the imputation, disclosed as such.
+        assert by_frame[1][0].score_reason == "imputed_tail"
+        assert by_frame[2][0].score_reason == "imputed_tail"
+        assert by_frame[0][0].score_reason == "scored"
 
     def test_non_finite_score_leaves_the_face_located(self):
         worker = load_asd_worker()
@@ -472,6 +480,65 @@ class TestUnscoredFaceStaysVisible:
         by_frame = worker.build_candidates(tracks, scores, [1, 1])
         assert by_frame[0][0].raw_score == 1.0
         assert by_frame[1][0].raw_score is None
+        # Cause A: a score existed at this position and was unusable. That is a
+        # different fact from "the score array never reached this frame".
+        assert by_frame[0][0].score_reason == "scored"
+        assert by_frame[1][0].score_reason == "score_not_finite"
+
+    def test_a_track_with_no_scores_at_all_says_so(self):
+        """Cause B: scores.pckl can hold an empty array for a track.
+
+        Nothing can be carried from an empty array, so every one of its frames is
+        unscored for a reason that has nothing to do with the tail window.
+        """
+        worker = load_asd_worker()
+        tracks = [make_track([0, 1], [BOX, BOX])]
+        scores = [[]]
+        by_frame = worker.build_candidates(tracks, scores, [1, 1])
+        assert by_frame[0][0].raw_score is None
+        assert by_frame[1][0].raw_score is None
+        assert by_frame[0][0].score_reason == "track_has_no_scores"
+        assert by_frame[1][0].score_reason == "track_has_no_scores"
+
+    def test_a_non_finite_carry_is_not_called_a_tail_carry(self):
+        """Cause D: inside the window, but the value available to carry is not a score.
+
+        Reporting this as past_scored_tail would say "we ran out of scores" when the
+        score is there and broken; reporting it as imputed_tail would claim a carried
+        measurement that was never made.
+        """
+        worker = load_asd_worker()
+        tracks = [make_track([0, 1, 2], [BOX] * 3)]
+        scores = [[1.0, float("nan")]]
+        by_frame = worker.build_candidates(tracks, scores, [1, 1, 1])
+        assert by_frame[0][0].score_reason == "scored"
+        assert by_frame[1][0].raw_score is None
+        assert by_frame[1][0].score_reason == "score_not_finite"
+        assert by_frame[2][0].raw_score is None
+        assert not by_frame[2][0].score_imputed
+        assert by_frame[2][0].score_reason == "tail_score_not_finite"
+
+    def test_the_four_unscored_causes_get_four_different_reasons(self):
+        """The whole point of frame_reason: four byte-identical rows, four diagnoses.
+
+        Before this field the stage could only describe them in prose as "past the
+        imputable tail, or a non-finite score", because the raw document kept neither
+        the track's score count nor the frame's position inside the track.
+        """
+        worker = load_asd_worker()
+        cases = {
+            "score_not_finite": ([[0, 1]], [[1.0, float("nan")]], 1),
+            "track_has_no_scores": ([[0, 1]], [[]], 1),
+            "past_scored_tail": ([[0, 1, 2, 3]], [[1.0]], 3),
+            "tail_score_not_finite": ([[0, 1, 2]], [[1.0, float("nan")]], 2),
+        }
+        reasons = {}
+        for expected, (frames, scores, frame) in cases.items():
+            by_frame = worker.build_candidates(
+                [make_track(frames[0], [BOX] * len(frames[0]))], scores, [1] * len(frames[0]))
+            reasons[expected] = by_frame[frame][0].score_reason
+        assert reasons == {name: name for name in cases}
+        assert len(set(reasons.values())) == 4
 
     def test_malformed_bbox_is_still_dropped(self):
         """A garbage box is not a location: inventing one would place a person where
@@ -512,8 +579,12 @@ class TestUnscoredFaceStaysVisible:
 
     def test_document_reports_the_three_face_states(self):
         worker = load_asd_worker()
-        scored = worker.Candidate(0, BOX, 2.0, False, smoothed_score=2.0)
-        unscored = worker.Candidate(1, BOX, None, False)
+        # The reasons are the ones build_candidates would have written for these rows;
+        # build_document's own job is to pass them through and to supply no_face, which
+        # is a fact about the frame and belongs to no track.
+        scored = worker.Candidate(0, BOX, 2.0, False, smoothed_score=2.0,
+                                  score_reason="scored")
+        unscored = worker.Candidate(1, BOX, None, False, score_reason="past_scored_tail")
         by_frame = [{0: scored}, {1: unscored}, {}]
         document = worker.build_document(
             video_id="v", source_fps=30.0, stamps=[0.0, 0.04, 0.08],
@@ -525,11 +596,325 @@ class TestUnscoredFaceStaysVisible:
         )
         rows = document["frames"]
         assert [r["face_status"] for r in rows] == ["tracked", "tracked_unscored", "no_face"]
+        assert [r["score_reason"] for r in rows] == ["scored", "past_scored_tail", "no_face"]
         assert rows[1]["track_id"] == 1 and rows[1]["x1"] == pytest.approx(10.0)
         assert rows[1]["talknet_score"] is None
         assert rows[1]["talknet_score_raw"] is None
         assert rows[1]["is_active_speaker"] is False
         assert rows[1]["score_imputed"] is False
+
+    def test_a_candidate_that_never_met_the_branch_stays_unknown(self):
+        """`unknown` is the documented default, not a crash and not a guess.
+
+        Every row this worker writes goes through build_candidates, which always names
+        a cause. The default exists so a Candidate built anywhere else cannot quietly
+        publish a cause it never observed.
+        """
+        worker = load_asd_worker()
+        by_frame = worker.build_candidates([make_track([0], [BOX])], [[1.0]], [1])
+        assert by_frame[0][0].score_reason == "scored"
+        document = worker.build_document(
+            video_id="v", source_fps=30.0, stamps=[0.0], scene_ids=[1],
+            chosen=[worker.Candidate(0, BOX, 2.0, False, smoothed_score=2.0)],
+            visible=by_frame, track_count=1, pickle_encoding="bytes", device="cpu",
+            requested_device="cpu", fallback_reason=None,
+            params={"speaker_threshold": 0.0, "score_window": 5,
+                    "switch_margin": 0.5, "switch_frames": 3},
+        )
+        assert document["frames"][0]["score_reason"] == "unknown"
+
+
+class TestFrameReasonInTable:
+    """`face_status` says whether a face was located; `frame_reason` why there is no score.
+
+    The two answers are different questions: three of the four unscored causes are
+    indistinguishable from each other in the table, which is why the worker has to say
+    which one it hit while it still knows.
+    """
+
+    def _row(self, index, **overrides):
+        base = {"frame_25fps": index, "timestamp_sec": index * 0.04,
+                "source_timestamp_sec": index * 0.033, "scene_id": 1,
+                "track_id": 0, "x1": 10.0, "y1": 20.0, "x2": 50.0, "y2": 70.0,
+                "talknet_score_raw": 1.0, "talknet_score": 1.0,
+                "score_imputed": False, "is_active_speaker": True,
+                "face_status": "tracked", "score_reason": "scored"}
+        base.update(overrides)
+        return base
+
+    def test_schema_declares_the_column_next_to_face_status(self):
+        names = ACTIVE_SPEAKER_FRAMES_SCHEMA.names
+        assert "frame_reason" in names
+        assert names.index("frame_reason") == names.index("face_status") + 1
+        assert ACTIVE_SPEAKER_FRAMES_SCHEMA.field("frame_reason").type == pa.string()
+
+    def test_normalization_carries_the_workers_reason(self, seeded):
+        """The seeded document is pre-frame_reason, so it exercises the compat shim
+        while it is still the thing old datasets hit; fresh artifacts assert below."""
+        ActiveSpeakerStage().normalize(seeded)
+        rows = read_table(seeded.artifact("active_speaker_frames")).to_pylist()
+        assert [row["frame_reason"] for row in rows] == [
+            "scored", "imputed_tail", "no_face", "scored"]
+        assert all(row["schema_version"] == "1.2" for row in rows)
+
+    def test_a_fresh_worker_row_is_passed_through_verbatim(self, seeded):
+        document = json.loads(seeded.artifact("activespeaker_raw").read_text(encoding="utf-8"))
+        for frame, reason in zip(document["frames"],
+                                 ["scored", "imputed_tail", "no_face", "past_scored_tail"]):
+            frame["score_reason"] = reason
+        document["frames"][3].update(face_status="tracked_unscored",
+                                     talknet_score_raw=None, talknet_score=None,
+                                     score_imputed=False, is_active_speaker=False)
+        seeded.artifact("activespeaker_raw").write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        rows = read_table(seeded.artifact("active_speaker_frames")).to_pylist()
+        assert [row["frame_reason"] for row in rows] == [
+            "scored", "imputed_tail", "no_face", "past_scored_tail"]
+        stage.validate(seeded)
+
+    def test_an_old_raw_artifact_gets_an_honest_unknown(self, seeded):
+        """One row per cause, and the causes are not recoverable from the table.
+
+        Deriving `past_scored_tail` from a null score would be a guess, so the row
+        says `unknown` instead of inventing a diagnosis the data cannot support.
+        """
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(self._row(4, face_status="tracked_unscored",
+                                            talknet_score_raw=None, talknet_score=None,
+                                            is_active_speaker=False))
+        for frame in document["frames"]:
+            frame.pop("score_reason", None)
+        document["frame_count"] = 5
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        rows = read_table(seeded.artifact("active_speaker_frames")).to_pylist()
+        assert [row["frame_reason"] for row in rows] == [
+            "scored", "imputed_tail", "no_face", "scored", "unknown"]
+
+    @pytest.mark.parametrize("reason,expected", [
+        ("past_scored_tail", "past_scored_tail"),
+        ("score_not_finite", "score_not_finite"),
+        ("track_has_no_scores", "track_has_no_scores"),
+        ("tail_score_not_finite", "tail_score_not_finite"),
+    ])
+    def test_the_worker_reason_survives_a_round_trip(self, seeded, reason, expected):
+        """The four causes must stay four all the way into the parquet, or the column
+        answers nothing a consumer could not already ask."""
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(self._row(4, face_status="tracked_unscored",
+                                            talknet_score_raw=None, talknet_score=None,
+                                            is_active_speaker=False, score_reason=reason))
+        document["frame_count"] = 5
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        rows = read_table(seeded.artifact("active_speaker_frames")).to_pylist()
+        assert rows[4]["frame_reason"] == expected
+        assert rows[4]["face_status"] == "tracked_unscored"
+        stage.validate(seeded)
+
+    def test_the_unscored_warning_names_the_reasons_and_their_counts(self, seeded):
+        """The old warning could only say "past the imputable tail, or a non-finite
+        score", because it could not tell which. Now it can, so it must."""
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(self._row(4, face_status="tracked_unscored",
+                                            talknet_score_raw=None, talknet_score=None,
+                                            is_active_speaker=False,
+                                            score_reason="past_scored_tail"))
+        document["frames"].append(self._row(5, face_status="tracked_unscored",
+                                            talknet_score_raw=None, talknet_score=None,
+                                            is_active_speaker=False,
+                                            score_reason="score_not_finite"))
+        document["frame_count"] = 6
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        summary = stage.normalize(seeded)
+        assert summary["frames"] == 6
+        log_path = seeded.paths.dataset_dir / "logs" / "test.log"
+        written = log_path.read_text(encoding="utf-8")
+        assert "tracked face with no usable TalkNet score" in written
+        assert "past_scored_tail: 1" in written
+        assert "score_not_finite: 1" in written
+        assert "past the imputable tail, or a non-finite score" not in written
+
+
+class TestFrameReasonValidation:
+    """The column is only honest if a row that lies about it fails validation."""
+
+    def _row(self, index, **overrides):
+        base = {"frame_25fps": index, "timestamp_sec": index * 0.04,
+                "source_timestamp_sec": index * 0.033, "scene_id": 1,
+                "track_id": 0, "x1": 10.0, "y1": 20.0, "x2": 50.0, "y2": 70.0,
+                "talknet_score_raw": 1.0, "talknet_score": 1.0,
+                "score_imputed": False, "is_active_speaker": True,
+                "face_status": "tracked", "score_reason": "scored"}
+        base.update(overrides)
+        return base
+
+    def _validate(self, seeded, mutate, index=4):
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"].append(self._row(index, **mutate))
+        document["frame_count"] = len(document["frames"])
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        return stage
+
+    def test_rejects_an_unknown_reason_string(self, seeded):
+        stage = self._validate(seeded, {"score_reason": "because_i_said_so",
+                                        "face_status": "tracked_unscored",
+                                        "talknet_score_raw": None, "talknet_score": None,
+                                        "is_active_speaker": False})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        # The message must be the closed-set one. Any inconsistency would also make the
+        # row fail, but only "unrecognised" tells the operator the value itself is not
+        # one the column may take, and lists the eight that are.
+        message = str(excinfo.value)
+        assert "frame 4" in message
+        assert "unrecognised frame_reason" in message
+        assert "because_i_said_so" in message
+        assert "past_scored_tail" in message  # the legal set is shown, not just rejected
+
+    def test_rejects_a_no_face_reason_on_a_row_that_has_a_track(self, seeded):
+        stage = self._validate(seeded, {"score_reason": "no_face"})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        # The iff message, not merely "a row failed": a score on the row already breaks
+        # other rules, so only this wording says the two columns disagree about whether
+        # anybody was on screen.
+        assert "frame 4 is tracked with frame_reason 'no_face'" in str(excinfo.value)
+
+    def test_rejects_a_no_face_status_on_a_row_the_reason_calls_scored(self, seeded):
+        """The other direction, and the only one this rule alone can see.
+
+        A fully-scored row whose face_status says no_face contradicts nothing else:
+        it has a score, so the score rules are satisfied, and it is not
+        tracked_unscored, so the unscored rules are satisfied. Only "face_status is
+        no_face if and only if the reason is" notices it.
+        """
+        stage = self._validate(seeded, {"face_status": "no_face",
+                                        "score_reason": "scored"})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 4 is no_face with frame_reason 'scored'" in str(excinfo.value)
+
+    def test_rejects_a_tracked_unscored_row_claiming_a_score(self, seeded):
+        stage = self._validate(seeded, {"face_status": "tracked_unscored",
+                                        "talknet_score_raw": None, "talknet_score": None,
+                                        "is_active_speaker": False,
+                                        "score_reason": "scored"})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 4 is tracked_unscored but frame_reason 'scored'" in str(excinfo.value)
+
+    def test_rejects_a_scored_row_claiming_the_imputation(self, seeded):
+        stage = self._validate(seeded, {"score_reason": "imputed_tail", "score_imputed": False})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 4 has score_imputed=False while frame_reason 'imputed_tail'" \
+               in str(excinfo.value)
+
+    def test_rejects_an_imputed_row_claiming_a_measurement(self, seeded):
+        """The reverse: `score_imputed` true with `scored` reports a carried value as
+        one TalkNet actually measured."""
+        stage = self._validate(seeded, {"score_reason": "scored", "score_imputed": True})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 4 has score_imputed=True while frame_reason 'scored'" \
+               in str(excinfo.value)
+
+    def test_rejects_a_score_on_a_row_the_reason_calls_unscored(self, seeded):
+        """Spec rule: a row carrying a score must claim `scored` or `imputed_tail`.
+
+        Nothing else sees this one. The row is `tracked` and its score is finite, so
+        every pre-existing rule is satisfied; only the reason column is lying.
+        """
+        stage = self._validate(seeded, {"score_reason": "past_scored_tail"})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 4 carries a score but frame_reason 'past_scored_tail'" \
+               in str(excinfo.value)
+
+    def test_rejects_a_reason_claiming_a_score_the_row_does_not_carry(self, seeded):
+        """The inverse direction, named as such: the older rules also reject this row,
+        but only this message says the reason is what contradicted, not the geometry."""
+        stage = self._validate(seeded, {"face_status": "tracked",
+                                        "talknet_score_raw": None, "talknet_score": None,
+                                        "score_reason": "imputed_tail"})
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 4 claims frame_reason 'imputed_tail' on a row that carries no score" \
+               in str(excinfo.value)
+
+    def test_rejects_an_imputed_flag_on_a_row_with_no_score_to_impute(self, seeded):
+        """`score_imputed` is true exactly when the reason is `imputed_tail`, in both
+        directions and whatever else the row claims. A no_face row asserting an imputed
+        score promises a carried value the table does not carry, and no other rule on
+        this stage looks at score_imputed for a row with no track.
+        """
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        document["frames"][2]["score_imputed"] = True   # the gap frame, track_id null
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        with pytest.raises(ValidationError) as excinfo:
+            stage.validate(seeded)
+        assert "frame 2 has score_imputed=True while frame_reason 'no_face'" \
+               in str(excinfo.value)
+
+    def test_accepts_the_two_scored_reasons_with_their_flags(self, seeded):
+        """Guard for the inverse: the rule must not reject what normalize writes."""
+        raw_path = seeded.artifact("activespeaker_raw")
+        document = json.loads(raw_path.read_text(encoding="utf-8"))
+        for frame in document["frames"]:
+            frame["score_reason"] = {0: "scored", 1: "imputed_tail",
+                                     2: "no_face", 3: "past_scored_tail"}[frame["frame_25fps"]]
+        document["frames"][1]["score_imputed"] = True
+        document["frames"][2]["score_reason"] = "no_face"
+        document["frames"][3].update(face_status="tracked_unscored", talknet_score_raw=None,
+                                     talknet_score=None, is_active_speaker=False)
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        stage = ActiveSpeakerStage()
+        resample(seeded, stage)
+        stage.normalize(seeded)
+        stage.validate(seeded)
+
+    def test_a_stale_table_missing_the_column_is_diagnosed_not_crashing(self, seeded, tmp_path):
+        """A table written before frame_reason existed used to raise a bare KeyError
+        from validate(), which the orchestrator records as a stage crash. Neighbouring
+        stages already name the missing column instead."""
+        ActiveSpeakerStage().normalize(seeded)
+        path = seeded.artifact("active_speaker_frames")
+        table = read_table(path)
+        stale = table.drop_columns(["frame_reason"])
+        write_table(path, stale, stale.schema)
+        with pytest.raises(ValidationError, match="missing columns.*frame_reason"):
+            ActiveSpeakerStage().validate(seeded)
+
+    def test_the_missing_column_message_names_every_missing_column(self, seeded):
+        ActiveSpeakerStage().normalize(seeded)
+        path = seeded.artifact("active_speaker_frames")
+        stale = read_table(path).drop_columns(["frame_reason", "face_status"])
+        write_table(path, stale, stale.schema)
+        with pytest.raises(ValidationError) as excinfo:
+            ActiveSpeakerStage().validate(seeded)
+        message = str(excinfo.value)
+        assert "frame_reason" in message and "face_status" in message
+        assert "KeyError" not in message
 
 
 class TestFrameStatusInTable:
