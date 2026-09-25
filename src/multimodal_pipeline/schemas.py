@@ -66,6 +66,33 @@ SPEAKER_TURNS_SCHEMA = pa.schema(
     ]
 )
 
+# --- second-engine diarization (NVIDIA Nemotron 3) -------------------------
+#
+# Deliberately a separate schema rather than SPEAKER_TURNS_SCHEMA with an extra column.
+# Two properties make sharing impossible:
+#   * `speaker_id` here is Nemotron's own arrival-ordered namespace (``speaker_0``), not
+#     pyannote's (``SPEAKER_00``). Two id spaces in one column invites a join that means
+#     nothing, so they live in different files and the README says they must not be joined.
+#   * segments from different channels overlap. A per-instant exclusive table cannot hold
+#     that, and collapsing it would throw away the one thing this model is for.
+SPEAKER_TURNS_NEMOTRON_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        ("turn_id", pa.string()),
+        ("speaker_id", pa.string()),
+        ("start_time", pa.float64()),
+        ("end_time", pa.float64()),
+        ("duration", pa.float64()),
+        ("diarization_type", pa.string()),
+        # Seconds of this segment that overlap a segment of a *different* speaker. Kept as
+        # a number so the two engines are comparable with ordinary parquet arithmetic
+        # ("how much overlapping speech did each one claim") instead of a list column that
+        # every consumer would have to explode.
+        ("overlap_s", pa.float64()),
+    ]
+)
+
 # --- translation ----------------------------------------------------------
 
 TRANSLATION_SCHEMA = pa.schema(
@@ -299,6 +326,7 @@ TABLE_SCHEMAS: dict[str, pa.schema] = {
     "speech_segments": SEGMENTS_SCHEMA,
     "speech_words": WORDS_SCHEMA,
     "speaker_turns": SPEAKER_TURNS_SCHEMA,
+    "speaker_turns_nemotron": SPEAKER_TURNS_NEMOTRON_SCHEMA,
     "translation_segments": TRANSLATION_SCHEMA,
     "linguistic_source_tokens": TOKENS_SCHEMA,
     "linguistic_source_sentences": SENTENCES_SCHEMA,

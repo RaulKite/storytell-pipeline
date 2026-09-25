@@ -50,8 +50,8 @@ linguistics always run on English text). Stages with a required install are not 
 because they do not skip — see
 [Resume, reuse and invalidation](#resume-reuse-and-invalidation).
 
-The five heavy tool environments live in their own uv projects and must be synced
-separately. This is deliberate — see [Why five environments](#why-five-environments).
+The six heavy tool environments live in their own uv projects and must be synced
+separately. This is deliberate — see [Why six environments](#why-six-environments).
 
 ```bash
 (cd environments/whisperx   && uv sync --python 3.12)
@@ -59,6 +59,7 @@ separately. This is deliberate — see [Why five environments](#why-five-environ
 (cd environments/spacy      && uv sync --python 3.12)
 (cd environments/acoustic   && uv sync --python 3.12)
 (cd environments/activespeaker && uv sync --python 3.12)   # optional: TalkNet needs its own torch
+(cd environments/diarization_nemotron && uv sync --python 3.12)  # optional: second diarizer, see below
 scripts/install_spacy_models.sh             # language models you actually need
 ```
 
@@ -128,8 +129,10 @@ data/processed/<video_id>/
 ├── speech/
 │   ├── segments.parquet          ← segment_id, start/end, language, speaker_id, text
 │   ├── words.parquet             ← word-level times, confidence, alignment_status
-│   ├── speaker_turns.parquet     ← diarization output (when available)
-│   └── raw/{whisperx,diarization,exclusive_diarization}.json + diarization.rttm
+│   ├── speaker_turns.parquet     ← pyannote diarization (when available)
+│   ├── speaker_turns_nemotron.parquet  ← second engine, if enabled (see below)
+│   └── raw/{whisperx,diarization,exclusive_diarization,nemotron_diarization}.json
+│       + diarization.rttm
 ├── translation/
 │   ├── segments_en.parquet
 │   └── raw/                      ← every raw response + per-batch cache
@@ -168,6 +171,55 @@ rerunnable on its own (`--only-stage <stage>` with raw present). Re-deriving a
 Parquet table costs seconds; re-running WhisperX large-v3 or OpenPose costs minutes.
 Raw artifacts stay **byte-identical** to what the tool produced — provenance is
 written to a sidecar (`*.provenance.json`) rather than stamped into the raw file.
+
+---
+
+## Two diarization engines, on purpose
+
+`speaker_turns.parquet` is pyannote. `speaker_turns_nemotron.parquet` is
+`nvidia/Nemotron-3-Diarization`. They are **two independent measurements of the same
+audio**, both produced when `diarization_nemotron.enabled` is true, so the choice of engine
+can be made from evidence instead of from a blog post. Neither one replaces the other, and
+`speaker_assignment` — the stage that labels transcript segments — reads **only** pyannote,
+so enabling the second engine changes no existing label in any dataset.
+
+Do not join the two tables on `speaker_id`. Pyannote emits `SPEAKER_00`, Nemotron emits
+`speaker_0` ordered by arrival, and the numbers are unrelated: identical digits name
+different people. Compare them by time overlap, not by label.
+
+The shapes differ because the engines disagree about what a diarization is. Pyannote's
+table here is the **exclusive** timeline — exactly one speaker per instant — because that is
+what makes labelling a transcript segment well-defined. Nemotron's is **overlapping**: two
+channels can be active at once, which is the feature the model exists for and which an
+exclusive table cannot represent at all. So `speaker_turns_nemotron.parquet` carries
+`overlap_s`: the seconds of that segment spent overlapping a *different* speaker's segment
+(summed over all of them). `diarization_type` is `overlapping` in every row, so a reader
+cannot mistake it for the other table.
+
+What that disagreement looks like on real clips from this corpus, measured 2026-09-25:
+
+| clip | pyannote (exclusive) | Nemotron |
+|---|---|---|
+| KABC, 4.20 s | 1 turn, 1 speaker | 3 segments, 2 speakers, 2 overlapping pairs |
+| La1, 8.01 s | 2 turns, **1 speaker** | 4 segments, **2 speakers**, 2 overlapping pairs |
+
+Two things worth knowing before reading that as a verdict. Nemotron found a second voice
+where pyannote heard one — which is *also* the failure mode of an overlapping-speech model:
+it can split one talkative speaker or promote background speech to a channel. And the
+speed difference is far smaller than the raw inference time suggests. Nemotron's *inference*
+is ~0.15 s per clip, but the worker is one process per video, so it pays a model load every
+time: the two runs above recorded `load_seconds` of 1.55 and 1.22 against
+`inference_seconds` of 0.148 and 0.153. Measured stage cost over this whole corpus, pyannote
+took 37 s across 7 videos (5.3 s per video). So neither engine is the cheap one, and
+"Nemotron is faster" is not a reason to prefer it. Two clips is not a comparison either.
+Run the stage over the corpus you care about and read the tables; `status --plan` will tell
+you it is the only stage that reruns.
+
+Enabling it costs a separate uv environment and a model download, and the environment pin
+is an unreleased `transformers` commit — see
+[Why six environments](#why-six-environments). If the environment is absent the stage
+*skips* with the reason naming the fix, and the corpus still completes, because a second
+opinion is not a prerequisite.
 
 ---
 
@@ -216,6 +268,7 @@ meaningless box is not a location.
 | `audio` | ffmpeg → 16 kHz mono | ffmpeg |
 | `whisperx` | uv env worker | GPU (or CPU), model download on first use |
 | `diarization` | uv env worker | `HF_TOKEN` + pyannote community-1 EULA |
+| `diarization_nemotron` | uv env worker (Nemotron 3) | optional second engine; its uv env + model download |
 | `speaker_assignment` | in-process interval math | diarization output |
 | `translation` | OpenAI-compatible HTTP | `translation.base_url` / `api_key` / `model` |
 | `spacy_source` | uv env worker | spaCy model for the detected language |
@@ -386,7 +439,7 @@ nothing else. A completed run's rerun costs ~0 s.
 
 ---
 
-## Why five environments
+## Why six environments
 
 whisperx pins `torch~=2.8.0`, pyannote.audio pulls its own transformers/torchcodec
 combination, TalkNet needs an *older* torch than both, spaCy wants neither, and the
@@ -406,14 +459,26 @@ touching the pipeline. Verified pins on this machine:
 | `spacy` | spaCy 3.8.16, pyarrow ≥17 |
 | `acoustic` | praat-parselmouth 0.4.7 (Praat 6.1.38), numpy ≥1.26,<3 |
 | `activespeaker` | **torch 2.5.1 +cu124**, torchvision 0.20.1, facenet-pytorch 2.5.3, scenedetect 0.6.5, numpy 2.0.2 |
+| `diarization_nemotron` | **torch 2.8.0 +cu128**, transformers from git `5880561a`, librosa 1.0.0, accelerate 1.15.0 |
+
+`diarization_nemotron` is the one pin that is **not a release**. NVIDIA ships
+`nvidia/Nemotron-3-Diarization` two ways, and only one of them runs here: NeMo 3.0.0
+cannot load the checkpoint at all (`self_attention_model='rope' is not supported`), and no
+*released* `transformers` contains the architecture yet. So the environment pins an exact
+commit of `transformers` from git — reproducible, but unreleased by construction. When a
+release contains `nemotron3_diarization`, swap the git source for a version pin and expect
+the Nemotron artifacts to be invalidated and recomputed. Full probe table:
+`environments/diarization_nemotron/pyproject.toml`.
 
 Three pins exist because of specific failures, not taste: the driver here is 555.42.06
 (CUDA 12.5) and cu126 wheels are what was verified on it; latest `torchcodec` ships a
 CUDA-13 build that dies with `libnvrtc.so.13`; and TalkNet cannot take a modern torch
 because `talkNet.py` and its S3FD detector call `torch.load()` without `weights_only=`,
 whose default flipped to `True` in torch 2.6 and rejects the project's 2021
-checkpoints. That last one is why this environment is on cu124 while the other two GPU
-environments are on cu126.
+checkpoints. That last one is why `activespeaker` is on cu124 while `whisperx` and
+`diarization` are on cu126, and why `diarization_nemotron` was resolved separately on
+cu128: cu128 is the build that was measured working for this model on this driver, and the
+other three environments were never re-resolved to match it.
 
 TalkNet is also the one stage whose model lives *outside* this repository: point
 `activespeaker.talknet_root` at a checkout, and the two checkpoints either download
@@ -428,8 +493,8 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 681 tests, ~25 s
-uv run --with pytest pytest tests/e2e -q      # 30 tests, ~110 s (needs ffmpeg + uv)
+uv run --with pytest pytest tests/unit -q     # 766 tests, ~25 s
+uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
 Unit tests avoid mocks wherever a mock would hide the bug: media tests call real
@@ -465,7 +530,7 @@ masking, and the manifest's promise that every listed artifact exists.
 | `pose/*.parquet` have 0 rows | The video contains no person. That is a valid outcome; the raw JSON in `pose/raw/` confirms it. |
 | `activespeaker.talknet_root is not set` | Clone TalkNet-ASD and set `activespeaker.talknet_root`. Without it the stage skips and the rest of the dataset is unaffected. |
 | `activespeaker.talknet_root has no run_talknet.py` | That path is not a TalkNet-ASD checkout — the stage checks for the entrypoint rather than letting a confusing `torch.load` error surface minutes later. |
-| TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why five environments](#why-five-environments)). |
+| TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why six environments](#why-six-environments)). |
 | `speaker/active_speaker_frames.parquet` has rows with `track_id = null` | No face was detected in those frames — off-screen, back-turned, or too small. S3FD tracks near-frontal faces only; a person walking away legitimately loses the track. Absence is recorded as a row, not dropped. |
 | `score_imputed = true` on some frames | TalkNet scores fewer frames than it tracks (an unexplained `-1` in its MFCC windowing), so the last score was carried forward rather than measured. At most two frames per track are affected; treat those as unmeasured, not as low confidence. |
 | A frame has `face_status = "tracked_unscored"` | S3FD located a face there but TalkNet produced no usable score for it (past the two frames that may be imputed, or a non-finite score). The scores stay `null` and the frame is never active — this is "we could not measure", not "nobody was on screen" and not a confidence of zero. |
@@ -479,11 +544,12 @@ masking, and the manifest's promise that every listed artifact exists.
 ```
 src/multimodal_pipeline/   orchestrator: config, discovery, DAG, state, CLI, normalization
 workers/                   heavy ML entry points, run inside the isolated envs
-                         (whisperx, diarization, spacy, acoustic, activespeaker)
+                         (whisperx, diarization, nemotron diarization, spacy,
+                         acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                681 tests
-tests/e2e/                 30 CLI-driven tests
+tests/unit/                766 tests
+tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
 data/input_videos/         synthetic fixtures (committed, ~330 KB)

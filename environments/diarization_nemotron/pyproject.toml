@@ -1,0 +1,70 @@
+[project]
+name = "mp-diarization-nemotron-env"
+version = "0.1.0"
+description = "Isolated NVIDIA Nemotron 3 Diarization environment (worker-only, never imported by the orchestrator)"
+# Python is capped at <3.13 because that is what the other GPU environments in this
+# repository resolve on and what the Nemotron wheel train was verified against here.
+requires-python = ">=3.12,<3.13"
+# Resolved on 2026-09-25 against this machine (RTX 4090, driver 555.42.06 = CUDA 12.5).
+#
+# WHY THIS ENVIRONMENT EXISTS AT ALL
+# The model is a second, parallel diarizer next to pyannote, so the operator can compare
+# two engines on the same corpus. It shares nothing with environments/diarization: that
+# one is pinned to pyannote.audio 4.0.7, and adding a second, much larger dependency
+# graph to it would make every pyannote upgrade a two-model upgrade.
+#
+# WHY transformers-from-git AND NOT THE BLOG'S nemo-toolkit
+# The NVIDIA blog shows `pip install "nemo-toolkit[asr]>=0.14.0"` and
+# `SortformerEncLabelModel.from_pretrained(...)`. Both candidate routes were installed in
+# throwaway uv projects and run against this checkpoint; only one survived:
+#
+#   nemo-toolkit[asr], defaults    -> resolves torch 2.14.0+cu130, and CUDA is dead on
+#                                     this driver: "The NVIDIA driver on your system is
+#                                     too old (found version 12050)". Same failure class
+#                                     as the libnvrtc.so.13 note in environments/whisperx.
+#   nemo-toolkit[asr] + cu128 torch -> installs, CUDA works, model class imports, and then
+#                                     the CHECKPOINT REFUSES TO LOAD:
+#                                     ValueError: self_attention_model='rope' is not
+#                                     supported. Currently only 'abs_pos', 'rel_pos', and
+#                                     'no_pos' (or None) are available.
+#                                     NeMo 3.0.0 was published before this checkpoint,
+#                                     which advertises "RoPE (GPT-NeoX style)". A NeMo
+#                                     release cannot be patched from inside this repo.
+#   transformers 5.17.0 (latest PyPI) -> ModuleNotFoundError:
+#                                     transformers.models.nemotron3_diarization. The
+#                                     architecture is not in any released version yet.
+#   transformers @ git, pinned SHA  -> works. Loads 417 weights on cuda:0 and
+#                                     extract_speaker_dict is present.
+#
+# THE PIN IS A COMMIT, NOT A RELEASE — read this before "modernising" it.
+# `rev` is an exact commit rather than `@main` on purpose: a moving branch would make the
+# stage output irreproducible while looking pinned. But it is still an unreleased
+# checkout, so it is a reproducibility risk by construction and the environment identity
+# therefore has to reach the stage fingerprint. When a released transformers that
+# contains nemotron3_diarization exists, replace the git source with a version pin, and
+# expect every Nemotron artifact to be invalidated and recomputed.
+#
+# librosa and accelerate are NOT optional and are NOT in the blog snippet. Both were
+# found by running, not by reading: without librosa the feature extractor raises
+# "NemotronAsrStreamingFeatureExtractor requires the librosa library", and without
+# accelerate `device_map="auto"` raises "Using a `device_map` ... requires `accelerate`".
+dependencies = [
+    "torch==2.8.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@5880561ab3ea92cb2d8943ffd58891d0bc085fe1",
+    "librosa==1.0.0",
+    "accelerate==1.15.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# cu128, not whisperx's cu126, because that is the combination measured working here:
+# torch 2.8.0+cu128 reported cuda available, named the RTX 4090, and completed real
+# Nemotron inference on cuda:0 (0.15 s for an 8 s clip). cu126 was never probed for this
+# model. If a future Nemotron call fails inside a kernel rather than at load time, this
+# line is the first thing to revisit.

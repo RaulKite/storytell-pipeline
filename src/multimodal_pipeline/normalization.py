@@ -138,6 +138,64 @@ def diarization_turn_rows(payload: dict[str, Any], video_id: str,
     return rows
 
 
+def nemotron_turn_rows(payload: dict[str, Any], video_id: str) -> list[dict[str, Any]]:
+    """Nemotron worker document → canonical turn rows, with per-segment overlap measured.
+
+    Separate from :func:`diarization_turn_rows` because the shapes differ in two ways that
+    matter: Nemotron emits objects with a speaker *index* rather than `[start, end, name]`
+    triples, and its segments overlap across channels, so each row needs the seconds of
+    cross-speaker overlap it participates in.
+
+    Zero-length segments are dropped rather than turned into a negative duration.
+    ``extract_speaker_dict`` can emit a segment whose end equals its start when a speaker
+    is active for exactly one 10 ms frame and the next frame is not; a row with
+    ``duration = 0`` poisons every per-speaker mean downstream, and "one frame of speech"
+    is not recoverable information at 25 FPS anyway. The raw JSON keeps the segment, so the
+    drop is reviewable and reversible.
+    """
+    raw = [row for row in (payload.get("segments") or []) if isinstance(row, dict)]
+    kept: list[dict[str, Any]] = []
+    for row in raw:
+        start, end = _float(row.get("start")), _float(row.get("end"))
+        speaker = row.get("speaker_id")
+        if start is None or end is None or not speaker:
+            continue
+        if end - start <= 0:
+            continue
+        kept.append({
+            "schema_version": WHISPERX_SCHEMA_VERSION,
+            "video_id": video_id,
+            "turn_id": "",
+            "speaker_id": str(speaker),
+            "start_time": start,
+            "end_time": end,
+            "duration": _duration(start, end),
+            # "overlapping": this is an inclusive timeline by construction. Naming it here
+            # rather than reusing "inclusive" keeps the two engines' provenance distinct.
+            "diarization_type": "overlapping",
+            "overlap_s": 0.0,
+        })
+
+    # Overlap is measured against *other* speakers only. Two segments of the same speaker
+    # that touch are a bookkeeping artefact, not the overlapping-speech signal the column
+    # exists to record.
+    for i, row in enumerate(kept):
+        overlapped = 0.0
+        for j, other in enumerate(kept):
+            if i == j or other["speaker_id"] == row["speaker_id"]:
+                continue
+            hi = min(row["end_time"], other["end_time"])
+            lo = max(row["start_time"], other["start_time"])
+            if hi > lo:
+                overlapped += hi - lo
+        row["overlap_s"] = round(overlapped, 6)
+
+    kept.sort(key=lambda row: (row["start_time"], row["end_time"], row["speaker_id"]))
+    for index, row in enumerate(kept):
+        row["turn_id"] = f"turn{index + 1:06d}"
+    return kept
+
+
 def parse_rttm(text: str) -> list[dict[str, Any]]:
     """Speaker Turn RTTM → rows. Kept so a diarization rerun is reproducible from raw."""
     rows: list[dict[str, Any]] = []

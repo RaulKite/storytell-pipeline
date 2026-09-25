@@ -38,6 +38,7 @@ from .stages.base import (
     stage_selection,
 )
 from .stages.diarization import DiarizationStage
+from .stages.diarization_nemotron import DiarizationNemotronStage
 from .stages.finalization import FinalizationStage
 from .stages.metadata import MetadataStage
 from .stages.activespeaker import ActiveSpeakerStage
@@ -57,6 +58,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         AudioStage,
         WhisperXStage,
         DiarizationStage,
+        DiarizationNemotronStage,
         SpeakerAssignmentStage,
         TranslationStage,
         SpacySourceStage,

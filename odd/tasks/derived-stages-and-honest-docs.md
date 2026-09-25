@@ -97,9 +97,9 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       separate from TalkNet's.
 - [ ] **T16** §20.3 `stories`: prototype the prompt against the live endpoint, read the
       output, then decide the schema and build the stage.
-- [ ] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
+- [x] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
       Diarization) so the operator can compare two engines on the same corpus and choose.
-      Added at the end of the queue on the operator's request, 2026-09-24.
+      Added at the end of the queue on the operator's request, 2026-09-24. Done `e3ac3f1`.
 
 ## 6. T17 — NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote
 
@@ -156,6 +156,109 @@ replaced, renamed or reused between the two.
    transformers changes the output and must invalidate the cache.
 4. Skips, never fails, when the environment or model is absent — this is an optional second
    opinion, and a corpus must still process with only pyannote, and with only Nemotron.
+
+## 7. T17 result — what was built and what it measured
+
+Commit `e3ac3f1` (see `git log`). The stage is `diarization_nemotron`, off by default.
+
+### The runtime route was decided by a probe, not by the blog
+
+Four environments were built and run against the real checkpoint. Three failed:
+
+| route | outcome |
+|---|---|
+| `nemo-toolkit[asr]`, default resolution | `torch 2.14.0+cu130`; `cuda avail: False`, "driver too old (found version 12050)" |
+| `nemo-toolkit[asr]` + torch 2.8.0 cu128 | CUDA fine, class imports, **checkpoint refuses to load**: `self_attention_model='rope' is not supported` |
+| `transformers` 5.17.0 (latest PyPI release) | `ModuleNotFoundError: transformers.models.nemotron3_diarization` |
+| `transformers` @ git `5880561a` + torch 2.8.0 cu128 | **works** — 417 weights on `cuda:0` |
+
+So NeMo is not a preference casualty, it is genuinely broken for this checkpoint, and the
+pin is an unreleased commit. Both facts are recorded in
+`environments/diarization_nemotron/pyproject.toml` and in README *Why six environments*.
+
+Two dependencies the blog does not mention turned out to be required: `librosa` (feature
+extractor) and `accelerate` (`device_map`). Found by running, not reading.
+
+### Design changes forced by reading the code rather than the blog
+
+* **No operating-point flags.** The card's five knobs (`spkcache_len`, `fifo_len`,
+  `chunk_len`, `chunk_right_context`, `spkcache_update_period`) are assigned on
+  `model.sortformer_modules` — an object that only exists on the NeMo path. In the
+  HuggingFace path, reading `modeling_nemotron3_diarization.py` shows `forward()` enters
+  offline mode when neither `speaker_cache` nor `num_lookahead_frames` is passed, and the
+  checkpoint's own resolved values (`chunk_length=340`, `chunk_right_context=40`,
+  `fifo_length=40`, `speaker_cache_update_period=300`, `streaming_config.speaker_cache_length=264`)
+  **already are the card's Offline Style row**. So one whole-clip call *is* the accuracy
+  point, and an `--operating-point` flag would have been a control that controls nothing.
+  The only real knob is `extract_speaker_dict(threshold=)`, exposed as `threshold`.
+* **No `max_retries`.** `run_worker` has no retry plumbing at all (only `translation`
+  implements its own), so a retry knob would be config that nothing reads. Asserted absent
+  by a test.
+* **No `fallback_to_cpu` copy of an existing idea** — it is genuinely new behaviour here
+  (pyannote's worker only ever degrades), implemented as a pure `resolve_device()` so it is
+  tested without mocking `torch.cuda`.
+* **`max_speakers` is capped at 8** because the logits are `(1, frames, 8)`; a request for a
+  ninth channel cannot produce one, so it is refused at config-parse time.
+
+### The end-to-end test found a real defect
+
+The worker's fallback result filename was `nemotron_diarization_worker_result.json`, but the
+harness computes `{stage_name}_worker_result.json` and never passes `--result-json`. Every
+real run therefore failed with "worker produced no result JSON" **after diarizing
+successfully**. Not predicted, not guessable from the unit tests (which never invoke the
+worker as a subprocess), found the first time the committed worker was run end to end.
+Fixed, and `test_result_json_default_matches_the_harness_convention` now compares the two
+names so it cannot drift back.
+
+### Measured on the real corpus (7 videos, `config/config.local.yaml`)
+
+`run` → 7 completed / 0 failed in 42 s; `validate --json` → `ok: true`; a following
+`status --plan` reports `diarization_nemotron valid previous result` for all seven, so the
+fingerprint stabilises.
+
+| clip | pyannote turns / speakers | Nemotron turns / speakers | Nemotron overlapping |
+|---|---|---|---|
+| KABC Kimmel | 1 / 1 | 3 / **2** | 3 |
+| CNN Arctic Melt | 1 / 1 | 1 / 1 | 0 |
+| La1 Telediario | 2 / 1 | 4 / **2** | 3 |
+| person_demo | 0 / 0 | 0 / 0 | 0 |
+| pipeline_demo | 2 / 1 | 1 / 1 | 0 |
+| pipeline_demo_ntsc | 2 / 1 | 1 / 1 | 0 |
+| pipeline_silent | 0 / 0 | 0 / 0 | 0 |
+| **total** | **8** | **10** | **6** |
+
+Both engines agree on the two silent clips and on CNN. They disagree on KABC and La1, where
+Nemotron claims a second speaker with real overlap — which is exactly the behaviour the
+model was built for *and* exactly its over-splitting failure mode. Cost per video is
+comparable: pyannote 5.3 s, Nemotron ~4 s (≈1.2–1.5 s model load + ≈0.15 s inference,
+re-recorded per video because the worker is one process per video). So the choice is not a
+speed decision, and this document deliberately does not recommend an engine.
+
+### Absent-environment path exercised on real data
+
+Pointing `uv_project` at a nonexistent directory: `run` completed all 7 videos, the stage
+recorded `status=skipped` with
+`reason="nemotron environment not installed at … create it and run \`uv sync --python 3.12\` there to enable the
+second diarizer"` (the harness records skip reasons in `validation_result.reason`, not in a
+`message` field). Config restored afterwards and the dataset re-validated `ok: true`.
+
+### Two claims that were wrong before they shipped
+
+* This agent first asserted the RTX 4090 was unsupported because the blog prose says
+  "Ampere, Hopper, or Blackwell" and `nvidia-smi --query-gpu=compute_cap` reports 8.9 (Ada).
+  The **model card** lists Ada Lovelace with GeForce RTX 4090 first. The card was
+  authoritative and the suspicion was wrong.
+* An earlier draft of the README claimed Nemotron was "faster by a lot" against a pyannote
+cost of "minutes per corpus". Measured from `status.json`, pyannote cost 37 s across the 7
+videos, and Nemotron's own `load_seconds` (1.55, 1.22) dwarf its `inference_seconds` (0.148,
+  0.153). The claim was deleted rather than softened.
+
+### Follow-up left open, deliberately
+
+`speaker_assignment` still reads pyannote only. Making the engine switchable is a separate
+decision with a real consequence: switching it silently relabels `speaker_id` in
+`speech/segments.parquet` and `speech/words.parquet` for every dataset produced so far. That
+warrants its own change once the operator has read the two tables.
 
 ## 5. Execution notes
 

@@ -236,6 +236,76 @@ class DiarizationConfig(_Model):
         return value
 
 
+class DiarizationNemotronConfig(_Model):
+    """NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote.
+
+    A parallel opinion, not a replacement: it reads ``audio/audio.wav`` and writes its own
+    raw JSON and its own table. ``speaker_assignment`` never reads either, so the existing
+    dataset meaning is untouched and the operator can compare the two tables and then
+    decide which engine to adopt.
+
+    The model is **not gated**, so unlike pyannote community-1 there is no model-condition
+    acceptance step; ``hf_token_env`` is a rate-limit convenience, and the stage runs
+    without it. It is still read from the environment and never from YAML, because the
+    token would otherwise land in ``provenance/config.json``.
+    """
+
+    #: Off by default. This is an extra engine whose environment is not part of the
+    #: default set a fresh clone syncs, and whose checkpoint is a large download from the
+    #: Hugging Face hub; a fresh clone must not start that download unasked. A corpus still
+    #: completes with this stage off, which is the point of a second opinion.
+    enabled: bool = False
+    uv_project: Path = Path("environments/diarization_nemotron")
+    worker: Path = Path("workers/nemotron_diarization_worker.py")
+    python_version: str = "3.12"
+    model: str = "nvidia/Nemotron-3-Diarization"
+    hf_token_env: str = "HF_TOKEN"
+    device: str = "cuda"
+    device_index: int = 0
+    #: The model emits a fixed number of speaker channels. Raising it above the
+    #: checkpoint's own channel count cannot invent speakers, so it is capped instead.
+    max_speakers: int = 8
+    #: Frame probability above which a frame counts as that speaker's speech. Default is
+    #: the documented default of ``extract_speaker_dict``. Lower it to admit weaker speech
+    #: and expect more, shorter segments.
+    threshold: float = 0.5
+    timeout_seconds: float | None = None
+    #: When true, a worker that asks for cuda and cannot see a GPU degrades to cpu and
+    #: records why. When false it fails. The pyannote worker only ever degrades, which is
+    #: right there; here the second engine is optional, so a silent CPU run is worth being
+    #: able to forbid: an hour-long batch that quietly crawled on CPU is a worse outcome
+    #: than a fast failure.
+    fallback_to_cpu: bool = True
+    extra_args: list[str] = Field(default_factory=list)
+
+    @field_validator("max_speakers")
+    @classmethod
+    def _max_speakers(cls, value: int) -> int:
+        # The checkpoint's resolved streaming_config carries num_speakers = 8 and the
+        # logits are (batch, frames, 8): a 9th channel does not exist, so a request for
+        # more would silently do nothing. Refuse it at parse time instead.
+        if not 1 <= value <= 8:
+            raise ValueError(
+                "diarization_nemotron.max_speakers must be between 1 and 8: the model "
+                "emits exactly 8 speaker channels and cannot produce more"
+            )
+        return value
+
+    @field_validator("threshold")
+    @classmethod
+    def _threshold(cls, value: float) -> float:
+        if not 0.0 < value < 1.0:
+            raise ValueError("diarization_nemotron.threshold must be a probability in (0, 1)")
+        return value
+
+    @field_validator("device")
+    @classmethod
+    def _device(cls, value: str) -> str:
+        if value not in {"cuda", "cpu"}:
+            raise ValueError("diarization_nemotron.device must be 'cuda' or 'cpu'")
+        return value
+
+
 class TranslationConfig(_Model):
     enabled: bool = True
     provider: str = "openai-compatible"
@@ -441,6 +511,7 @@ class PipelineConfig(_Model):
     ffmpeg: FFmpegConfig = Field(default_factory=FFmpegConfig)
     whisperx: WhisperXConfig = Field(default_factory=WhisperXConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
+    diarization_nemotron: DiarizationNemotronConfig = Field(default_factory=DiarizationNemotronConfig)
     translation: TranslationConfig = Field(default_factory=TranslationConfig)
     spacy: SpacyConfig = Field(default_factory=SpacyConfig)
     acoustic: AcousticConfig = Field(default_factory=AcousticConfig)
@@ -458,6 +529,7 @@ class PipelineConfig(_Model):
         return {
             "whisperx": self.whisperx,
             "diarization": self.diarization,
+            "diarization_nemotron": self.diarization_nemotron,
             "translation": self.translation,
             "spacy": self.spacy,
             "acoustic": self.acoustic,

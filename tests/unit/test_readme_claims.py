@@ -113,6 +113,38 @@ class TestEnvironmentCount:
                 assert f"{word} heavy" not in README.lower()
 
 
+class TestDocumentedTestCounts:
+    """The test counts in the README are the collected counts, not remembered ones.
+
+    They had already drifted twice by the time this ratchet was written (681/30 printed
+    against 764/38 collected). A number that only a human updating prose can keep true is a
+    number that will be wrong, so it is compared against pytest's own collection.
+    """
+
+    def counts(self) -> tuple[int, int]:
+        import subprocess
+        import sys
+
+        collected = []
+        for suite in ("tests/unit", "tests/e2e"):
+            out = subprocess.run(
+                [sys.executable, "-m", "pytest", suite, "-q", "--collect-only", "-p", "no:randomly"],
+                cwd=ROOT, capture_output=True, text=True, check=True).stdout
+            match = re.search(r"(\d+) tests? collected", out)
+            assert match, f"could not read a collected count for {suite}: {out[-400:]}"
+            collected.append(int(match.group(1)))
+        return collected[0], collected[1]
+
+    def test_readme_states_the_real_suite_sizes(self) -> None:
+        unit, e2e = self.counts()
+        assert f"pytest tests/unit -q     # {unit} tests" in README, (
+            f"README does not say {unit} unit tests")
+        assert f"pytest tests/e2e -q      # {e2e} tests" in README, (
+            f"README does not say {e2e} e2e tests")
+        assert f"tests/unit/                {unit} tests" in README
+        assert f"tests/e2e/                 {e2e} CLI-driven tests" in README
+
+
 class TestDocumentedCommandsExist:
     """Every command in the Commands table is a real typer command."""
 

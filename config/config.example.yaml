@@ -63,6 +63,24 @@ diarization:
   # num_speakers: 2              # set only when the count is genuinely known
   python_version: "3.12"
 
+# A second, independent diarizer, so the two engines can be compared on the same corpus.
+# It writes speech/speaker_turns_nemotron.parquet and never touches speaker_turns.parquet;
+# speaker assignment still uses pyannote, so turning this on changes no existing label.
+diarization_nemotron:
+  enabled: false                 # off: needs its own uv env and a model download
+  uv_project: environments/diarization_nemotron
+  worker: workers/nemotron_diarization_worker.py
+  model: nvidia/Nemotron-3-Diarization
+  hf_token_env: HF_TOKEN         # optional: this model is NOT gated, no EULA to accept
+  device: cuda
+  device_index: 0
+  max_speakers: 8                # the model emits exactly 8 channels; it cannot make more
+  threshold: 0.5                 # frame probability that becomes a segment; lower = more,
+                                 # shorter segments
+  fallback_to_cpu: true          # false: refuse to run without a GPU instead of crawling
+  # timeout_seconds: 600
+  python_version: "3.12"
+
 translation:
   enabled: true
   provider: openai-compatible    # openai-compatible | mock (offline testing)
