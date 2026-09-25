@@ -99,7 +99,7 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       output, then decide the schema and build the stage.
 - [x] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
       Diarization) so the operator can compare two engines on the same corpus and choose.
-      Added at the end of the queue on the operator's request, 2026-09-24. Done `e3ac3f1`.
+      Added at the end of the queue on the operator's request, 2026-09-24. Done `35119ef`.
 
 ## 6. T17 — NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote
 
@@ -159,7 +159,7 @@ replaced, renamed or reused between the two.
 
 ## 7. T17 result — what was built and what it measured
 
-Commit `e3ac3f1` (see `git log`). The stage is `diarization_nemotron`, off by default.
+Commit `35119ef` (see `git log`). The stage is `diarization_nemotron`, off by default.
 
 ### The runtime route was decided by a probe, not by the blog
 
