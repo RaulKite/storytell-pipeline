@@ -230,7 +230,7 @@ activespeaker:
 #   (cd environments/persons && uv sync --python 3.12)
 #
 # Off by default, like the other optional GPU stages: a fresh clone is not asked to sync a
-# sixth torch environment it did not ask for, and the corpus completes without it (the stage
+# fifth torch environment it did not ask for, and the corpus completes without it (the stage
 # reports a skip reason naming the setting).
 #
 # The output has its OWN ID NAMESPACE. `person_id` is a YOLO/ByteTracker body-track id; the

@@ -695,7 +695,7 @@ class PersonsConfig(_Model):
     their own directory — see :data:`multimodal_pipeline.schemas.PERSON_FRAMES_SCHEMA`.
 
     Off by default, like the other optional GPU stages. A fresh clone is not asked to sync
-    a sixth torch environment it may not want; with this off the pipeline completes and the
+    a fifth torch environment it may not want; with this off the pipeline completes and the
     stage reports why it did not run.
     """
 

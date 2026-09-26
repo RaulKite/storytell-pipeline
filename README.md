@@ -675,11 +675,13 @@ enforced anywhere — treat it as what the writers do today, not as a guarantee.
   contained no person and `pose/raw/` still holds one JSON per processed frame (249 for
   `pipeline_demo`) as proof; `active_speaker_tracks.parquet` with 0 rows means no face was
   ever located. Both are `completed` stages.
-- **Speaker-id namespaces do not cross.** pyannote's `SPEAKER_00`, Nemotron's
-  arrival-ordered `speaker_0` and TalkNet's `track_id` are three unrelated id spaces in
-  three different files. Compare them by time overlap, never by label — enforced by
-  *separate files and separate schemas*, so nothing can join them by accident, but no
-  runtime check will catch you trying.
+- **Id namespaces do not cross.** pyannote's `SPEAKER_00`, Nemotron's
+  arrival-ordered `speaker_0`, TalkNet's `track_id` and YOLO's `person_id` are four
+  unrelated id spaces in four different files. `track_id` counts **faces** and `person_id`
+  counts **bodies**: on the KABC clip TalkNet reports 2 face tracks and YOLO 3 person ids,
+  and neither number is wrong. Compare them by time overlap, never by label and never by
+  joining `track_id = person_id` — enforced by *separate files and separate schemas*, so
+  nothing can join them by accident, but no runtime check will catch you trying.
 
 ---
 
@@ -871,6 +873,77 @@ semantics: no `pose/body.parquet`, no table, with the reason naming which switch
 It runs in-process over Parquet, like `speaker_fusion`: one table in, one out, no
 subprocess, no uv environment, seconds per video (37 857 keypoints of `person_demo` in 0.2 s
 measured here).
+
+---
+
+## Person tracks: `persons`
+
+Every other stage asks something about a *frame* or about *speech*. `persons` answers the
+count question no stage answers: **how many distinct people appear in this video, and when is
+each one on screen**. It runs Ultralytics YOLO detection with a ByteTracker over the source
+video and writes three files: `persons/raw/yolo_track.json` (the raw per-frame tool output,
+preserved byte-identical like every other stage's raw layer), `persons/frames.parquet` (one
+row per person per frame, with bbox and confidence) and `persons/tracks.parquet` (one summary
+row per person: first/last timestamp, frame count, coverage, longest gap, confidence and bbox
+statistics, and an `appearance_order`).
+
+Measured on this machine (RTX 4090, `yolo11n.pt`, `conf=0.25`, `imgsz=640`, `bytetrack`, one
+worker process per video), with the worker's own reported numbers:
+
+| clip | frames | frames with a person | distinct ids | max in one frame | wall |
+|---|---|---|---|---|---|
+| KABC | 126 | 126 | 3 | 3 | 1.4 s |
+| CNN | 124 | 124 | 4 | 4 | 1.4 s |
+| La-1 | 240 | 238 | 8 | 3 | 1.8 s |
+| `person_demo` | 205 | 205 | **75** | 14 | 1.8 s |
+| `pipeline_demo` | 249 | 0 | 0 | 0 | 1.6 s |
+
+Read `person_demo`'s 75 as a measurement of a hard clip, not as a fact about how many people
+are in it: it is 205 frames of a person walking in and out of frame, and the summary table
+records 13 ids that last two frames or fewer precisely so a reader can see the fragmentation
+instead of inheriting a tidy number. `pipeline_demo`'s zeros are the honest empty case — the
+synthetic TTS/`testsrc` clip contains no person, exactly like its `pose_body` 0 rows — and
+they are distinguishable from "the stage never ran" because a run that could not start
+**skips** and names the reason instead of writing an empty table.
+
+**The tracker changes the answer more than the model does**, which is why the tracker is
+configuration and the numbers above name it. Same weights, same frames, only the tracker and
+threshold moving, measured here:
+
+| clip | bytetrack @ 0.25 (default) | bytetrack @ 0.10 | tracktrack @ 0.10 |
+|---|---|---|---|
+| KABC | 3 | 3 | 2 |
+| CNN | 4 | 4 | 4 |
+| La-1 | 8 | 8 | 6 |
+| `person_demo` | 75 | 71 | **8** |
+
+`tracktrack` merges aggressively (its `new_track_thresh` is 0.7 against bytetrack's 0.25) and
+never saw more than 7 people on a frame where bytetrack saw 14. The default is `bytetrack`
+because a fragmented track leaves evidence to inspect and a merged one leaves nothing. Note
+also that **omitting `conf` is not a neutral choice**: `ultralytics`'s `track()` sets
+`conf = 0.1` when the caller omits it, so a stage that reported 0.25 in its documentation and
+forwarded nothing would be quietly reporting the counts a 0.1 threshold produced. The worker
+forwards `conf` and `imgsz` explicitly and records both in the raw document's `parameters`.
+
+A `person_id` is **not** a `track_id`. TalkNet's `track_id` counts faces, `person_id` counts
+bodies, and on KABC TalkNet reports 2 face tracks where YOLO reports 3 person ids — both
+correct, measuring different things. Join them by time overlap, never by label
+([invariants](#the-invariants-a-consumer-may-rely-on)). And `persons/frames.parquet`'s
+`frame_number` is the worker's own 0-based count over the frames it read, **not** a source
+frame and not the ASD table's 25 FPS grid index: `timestamp`, taken from
+`source/frame_index.parquet`, is the only column safe to join on.
+
+One process per video is load-bearing, not stylistic. Ultralytics keeps camera-motion
+compensation state (`prevFrame`) on the tracker, and if that object is reused for a second
+source the size assertion fails on **every** frame thereafter, the tracker silently falls
+back to identity warps, and the only trace is one `WARNING` line per frame. Ids fragment,
+which looks exactly like a model-quality problem. The parent measured 489 such warnings from
+one batch that reused a single `YOLO(...)` across five clips, and 0 from the same five clips
+in one process each. The worker therefore builds the model inside its tracking function,
+passes `persist=False` unconditionally, and counts GMC failures into
+`gmc_failure_count` so the failure is a number in the artifact rather than a line in a log.
+
+---
 
 ## Stage graph
 
@@ -1400,7 +1473,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1357 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1412 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1456,7 +1529,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1357 tests
+tests/unit/                1412 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
