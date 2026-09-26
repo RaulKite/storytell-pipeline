@@ -843,3 +843,44 @@ than stale.
    *disclosure* half, while the *trust* half (should a `low` detection drive model choice
    at all?) is still open and is a policy decision.
 
+
+## 26. Queue state for the §20 capabilities (2026-09-25)
+
+Written so the next session does not re-derive it from the stage list.
+
+| entry | state | evidence |
+|---|---|---|
+| 20.1 `diarization_v2` | **built** (as `speaker_fusion`) | §17, receipted `c3f5ede`, advisories closed `d7b01ba` |
+| 20.2 `persons` | **built**, off by default | §24–§25, ten commits `c5f0a5a..cf57d5b`, six review lineages |
+| 20.3 `stories` | **blocked, not started** | needs the operator's endpoint and a spend decision |
+| 20.4 `pose_normalized` | **built** | §20–§22, validated against the real R `dfMaker` |
+| 20.5 `pose_skeletons` | **partly served** — no stage of its own | `openpose --write_images` + `pose_images_raw`, §19 |
+| 20.6 documentation that installs | **built** | §23, `24ad40c`/`6b0db61`, receipt `18f6123` |
+
+Three constraints from 20.2 were load-bearing enough to be worth restating where someone
+will look for them before starting the next YOLO work:
+
+- The environment count in that entry ("Five environments already exist") is now stale in a
+  specific way: `environments/` holds seven uv projects, five of which pin torch. Which ones
+  pin torch is the fact that matters — a sixth torch build is the one that can silently
+  resolve a cu130 wheel and run the whole stage on CPU.
+- `weights_dir` is opt-in here, not required: the worker records the path **and** the sha256 it
+  used, and refuses a configured checkpoint that is missing rather than downloading it. So a
+  hermetic run is possible and a download is allowed, and the artifact says which happened.
+- The "do not join these id spaces" prohibition is enforced by tests in four places (schema
+  prose, example config, written file metadata, README invariant list). Extending `persons`
+  without keeping that assertion green is how the join becomes plausible again.
+
+For 20.3, when it unblocks: the prototype must run before the schema exists, and
+`persons/frames.parquet` is now a legal input to that prototype — joined on `timestamp`, never
+on `frame_number` (§23 measured why: the active-speaker grid's `frame_number` is 25 FPS while
+`pose`'s is the OpenPose sample index). The finding from §24 that matters most for a narrative
+mining stage is that on the CNN clip scenedetect reports **1 scene** while four different
+person ids appear inside it, so scene boundaries cannot be used as the candidate window
+boundary for "who is talking to whom".
+
+Review debt carried, in the order worth paying it: `f862e06` (T14 link 3) has no approval
+because `review-resilience` produced no reviewer text twice; `5eb1214` (T14 link 1, the R
+fixtures) was dispositioned unreviewed by judgement; `8ea9b11` (`status` layout) was reviewed
+implicitly by the range candidates that sit on top of it and never on its own. None of them is
+a blocker and none got an invented verdict.
