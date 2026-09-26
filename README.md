@@ -1474,7 +1474,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1432 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1449 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1494,7 +1494,8 @@ credential reaches any written file.
 
 Mutation-checked behaviour (restoring the defect fails a test): resume invalidation,
 per-branch failure propagation, artifact integrity, the cross-modal checks, secret
-masking, and the manifest's promise that every listed artifact exists.
+masking, the manifest's promise that every listed artifact exists, and the three stages
+that compute rows in-process noticing an edit to the python that computes them.
 
 ---
 
@@ -1530,7 +1531,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1432 tests
+tests/unit/                1449 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

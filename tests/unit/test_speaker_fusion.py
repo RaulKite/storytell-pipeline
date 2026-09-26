@@ -796,6 +796,54 @@ class TestStageFingerprint:
         stage = self.seeded(context)
         assert stage.config_fingerprint(context) == SpeakerFusionStage().config_fingerprint(context)
 
+    def test_the_fusion_source_is_in_the_fingerprint(self, context):
+        """The agreement states are computed in this process, so their bytes are part of reuse.
+
+        Shape asserted with the key: a non-hex value would still move when the source moved and
+        still read as code coverage to whoever reviewed the fingerprint.
+        """
+        from multimodal_pipeline.stages.metadata import sha256_of
+
+        stage = self.seeded(context)
+        digest = stage.config_fingerprint(context)["_python_code_sha256"]
+        assert digest is not None
+        assert len(digest) == len(sha256_of(context.artifact("active_speaker_frames")))
+        assert all(c in "0123456789abcdef" for c in digest)
+
+    def test_editing_the_module_that_computes_the_verdicts_changes_the_fingerprint(self, context,
+                                                                                  monkeypatch):
+        """Same config, same tables, new numbers: the fusion must not stay "reusable".
+
+        Patched at the source-reading seam instead of by rewriting the repository, and every
+        other key is held equal — otherwise the assertion could pass while the source digest
+        stayed irrelevant.
+        """
+        import multimodal_pipeline.stages.base as base_module
+
+        stage = self.seeded(context)
+        before = stage.config_fingerprint(context)
+
+        monkeypatch.setattr(base_module, "python_source_digest", lambda *modules: "e" * 64)
+        after = stage.config_fingerprint(context)
+
+        assert after["_python_code_sha256"] == "e" * 64
+        assert after != before
+        assert {k: v for k, v in after.items() if k != "_python_code_sha256"} \
+            == {k: v for k, v in before.items() if k != "_python_code_sha256"}, \
+            "something besides the source digest moved, so this proves nothing about it"
+
+    def test_the_source_digest_is_stable_between_two_calls(self, context):
+        """And it is the digest of the two modules the stage names, not of something else."""
+        import multimodal_pipeline.fusion as fusion_module
+        import multimodal_pipeline.stages.speaker_fusion as stage_module
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        stage = self.seeded(context)
+        first = stage.config_fingerprint(context)["_python_code_sha256"]
+        second = stage.config_fingerprint(context)["_python_code_sha256"]
+        assert first == second
+        assert first == python_source_digest(fusion_module, stage_module)
+
 
 class TestStageValidation:
     def seeded_stage(self, context) -> SpeakerFusionStage:

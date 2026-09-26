@@ -98,7 +98,7 @@ class PoseNormalizedStage(Stage):
     # ------------------------------------------------------------------ fingerprint
 
     def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
-        """The basis triple plus the bytes of the table it is applied to.
+        """The basis triple, the bytes of the table it is applied to, and the maths.
 
         The triple is here because it changes every number in the output; recording it is
         what makes "which frame is this table in?" answerable from the state file rather
@@ -108,13 +108,26 @@ class PoseNormalizedStage(Stage):
         a function of those bytes, and a dependency hash that tracks only upstream
         *configuration* would let a re-run OpenPose leave a table of coordinates computed
         against the keypoints that used to be there.
+
+        ``_python_code_sha256`` is the third thing the output is a function of and the one
+        no dependency hash can reach: this stage has no worker, so before it existed a fix
+        to the coordinate algebra was invisible to the reuse test. See
+        :func:`~.base.python_source_digest`.
         """
+        from .. import pose_normalize
+        from . import pose_normalized as pose_normalized_stage
+        from .base import python_source_digest
+
         cfg = ctx.config.pose_normalized
         return {
             "stage": self.name,
             # dfMaker's own `transformation_coords = c(type, origin, i, j)`, in names.
             "transformation": [cfg.origin_keypoint, cfg.basis_keypoint, cfg.second_axis],
             "body_digest": self._digest(ctx),
+            # The algebra and the code that assembles rows from it — both are measured, and
+            # naming them separately in one digest is what the call site can honestly claim.
+            "_python_code_sha256": python_source_digest(pose_normalize,
+                                                       pose_normalized_stage),
         }
 
     @staticmethod

@@ -734,6 +734,96 @@ class TestFingerprint:
         payload = stage.digest_payload(context)
         assert "_worker_code_sha256" in payload
 
+    def test_the_stage_source_is_in_the_fingerprint(self, context, stage):
+        """The python that builds the two Parquet tables is this file, and reuse has to see it.
+
+        `WorkerStage` covers `workers/persons_worker.py` — the detection. Nothing covered the
+        normalisation, so a change to the span summary or the gap arithmetic left a completed run
+        reusable while the numbers it reported had moved.
+        """
+        from multimodal_pipeline.stages.metadata import sha256_of
+
+        payload = stage.config_fingerprint(context)
+        digest = payload["_python_code_sha256"]
+        assert digest is not None
+        assert len(digest) == len(sha256_of(__file__))
+        assert all(c in "0123456789abcdef" for c in digest)
+        # The worker's own digest is still reached through the parent's payload — this stage
+        # extends what WorkerStage reports, it does not replace it.
+        assert "_worker_code_sha256" in payload
+
+    def test_editing_the_module_that_builds_the_tables_changes_the_fingerprint(self, context, stage,
+                                                                               monkeypatch):
+        """Same checkpoint, same worker, same raw JSON: new tables, so reuse must refuse.
+
+        Patched at the source-reading seam rather than by rewriting the repository; every other
+        key is held equal so the assertion can only pass because of the source digest.
+        """
+        import multimodal_pipeline.stages.base as base_module
+
+        before = stage.config_fingerprint(context)
+
+        monkeypatch.setattr(base_module, "python_source_digest", lambda *modules: "a" * 64)
+        after = stage.config_fingerprint(context)
+
+        assert after["_python_code_sha256"] == "a" * 64
+        assert after != before
+        assert {k: v for k, v in after.items() if k != "_python_code_sha256"} \
+            == {k: v for k, v in before.items() if k != "_python_code_sha256"}, \
+            "something besides the source digest moved, so this proves nothing about it"
+
+    def test_the_source_digest_is_stable_between_two_calls(self, context, stage):
+        """And it digests this stage's module, which is where the normalisation lives."""
+        import multimodal_pipeline.stages.persons as persons_module
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        first = stage.config_fingerprint(context)["_python_code_sha256"]
+        second = stage.config_fingerprint(context)["_python_code_sha256"]
+        assert first == second
+        assert first == python_source_digest(persons_module)
+
+    def test_the_stage_source_is_not_in_the_raw_request_digest(self, context, stage):
+        """The boundary that decides what a fix here costs.
+
+        `request_digest` is the `request_hash` written into the raw sidecar, and `validate()`
+        compares it to decide whether the preserved YOLO output belongs to this configuration.
+        Putting the *normaliser's* bytes in there would make any edit to this file — a docstring
+        included — invalidate every preserved raw artifact on disk and cost a full detection run
+        per video to re-derive tables that only needed re-normalising. The two digests mean
+        different things and are asserted apart on purpose.
+        """
+        payload = stage.digest_payload(context)
+        assert "_python_code_sha256" not in payload
+        assert "_python_code_sha256" not in stage.request(context)
+        assert "_python_code_sha256" in stage.config_fingerprint(context)
+
+    def test_a_source_edit_moves_the_fingerprint_without_invalidating_the_preserved_raw(self, seeded,
+                                                                                       monkeypatch):
+        """The consequence the boundary above exists for, observed rather than asserted.
+
+        `execute()` decides whether to invoke YOLO by comparing the sidecar's `request_hash`
+        with `request_digest()`, and `validate()` refuses a raw file whose hash moved. So if the
+        normaliser's source were mixed into that digest, editing this file — a docstring
+        included — would send every existing dataset through the detector again. Here the
+        fingerprint moves (the tables will be rebuilt) while the preserved raw output stays this
+        configuration's, which is the whole point: a fix to the maths costs a re-normalise.
+        """
+        import multimodal_pipeline.stages.base as base_module
+        from multimodal_pipeline.stages.base import raw_request_matches
+
+        stage = PersonsStage()
+        raw = seeded.artifact("persons_raw")
+        request_hash = stage.request_digest(seeded)
+        assert raw_request_matches(raw, request_hash) is True
+
+        monkeypatch.setattr(base_module, "python_source_digest", lambda *modules: "b" * 64)
+
+        assert stage.config_fingerprint(seeded)["_python_code_sha256"] == "b" * 64
+        assert stage.request_digest(seeded) == request_hash, (
+            "the raw request digest moved because the normaliser's source changed, so the next "
+            "run would re-run YOLO to re-derive two parquet files")
+        assert raw_request_matches(raw, request_hash) is True
+
 
 class TestReuseAndWeightsIdentity:
     """§20.2's weights policy, as a reuse rule.

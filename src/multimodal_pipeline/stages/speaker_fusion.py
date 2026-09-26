@@ -73,13 +73,24 @@ class SpeakerFusionStage(Stage):
     # ------------------------------------------------------------------ fingerprint
 
     def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
-        """Config + the exact input tables, so a re-run of either model invalidates this.
+        """Config + the exact input tables + the fusion source, so a fix cannot be skipped.
 
         The turn tables and the frames table are digested rather than merely named: this
         stage's output is a function of their bytes, and a dependency hash that only tracks
         upstream *configuration* would let a `--force-stage diarization` produce a new turn
         table while the fusion kept the verdicts computed against the old one.
+
+        ``_python_code_sha256`` closes the same hole from the other side: the agreement
+        states are computed by `fusion.fuse_turn_table` in this process, so changing the
+        overlap arithmetic while config and inputs stayed put produced a fingerprint the
+        reuse test still called current. Same reasoning as `pose_normalized`, and the same
+        reason it names the stage module as well — half of a fusion verdict is written by
+        `speaker_fusion.py`, not by the core.
         """
+        from .. import fusion
+        from . import speaker_fusion as speaker_fusion_stage
+        from .base import python_source_digest
+
         cfg = ctx.config.speaker_fusion
         return {
             "stage": self.name,
@@ -89,6 +100,7 @@ class SpeakerFusionStage(Stage):
             "frames_digest": self._digest(ctx, "active_speaker_frames"),
             **{f"{engine}_turns_digest": self._digest(ctx, spec.artifact)
                for engine, spec in TURN_TABLES.items()},
+            "_python_code_sha256": python_source_digest(fusion, speaker_fusion_stage),
         }
 
     @staticmethod

@@ -127,6 +127,36 @@ class PersonsStage(WorkerStage):
             "source_sha256": self._source_digest(ctx),
         }
 
+    # ------------------------------------------------------------------ fingerprint
+
+    def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
+        """The parent's payload — which is the worker's digest — plus this module's source.
+
+        `WorkerStage` already mixes `workers/persons_worker.py` into its fingerprint, which
+        covers the detection. It cannot cover the normalisation: turning that raw JSON into
+        `person_frames` and `person_tracks` happens here — the span summary, the confidence
+        reasons, the gap arithmetic — and a change to any of it left a completed run looking
+        "reusable" while the numbers it reported had moved. Same defect class as
+        `pose_normalized` and `speaker_fusion`; here the parent's payload needed extending,
+        not replacing.
+
+        It is extended at this hook rather than in `digest_payload`, and the difference is the
+        cost of a fix. `digest_payload` is also what `request_digest()` hashes, and that value
+        is the `request_hash` stamped into the raw sidecar — the thing `validate()` compares to
+        decide whether the preserved YOLO output belongs to this configuration at all. Mixing
+        the *normaliser's* bytes in there would claim that re-normalising requires a new
+        detection run: editing a docstring in this file would invalidate every preserved raw
+        artifact on disk and cost a full GPU pass per video, which is the same semantic mix-up
+        that keeps `request()` untouched. Fingerprint here, raw request there — a fix to the
+        maths reruns the seconds-long normalisation, a fix to the worker reruns the model.
+        """
+        from . import persons as persons_stage
+        from .base import python_source_digest
+
+        payload = dict(super().config_fingerprint(ctx))
+        payload["_python_code_sha256"] = python_source_digest(persons_stage)
+        return payload
+
     def _weights_digest(self, ctx: StageContext) -> str | None:
         """SHA256 of the checkpoint this configuration would load, or None.
 

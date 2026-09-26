@@ -577,6 +577,51 @@ def worker_code_digest(script_path: Path) -> str | None:
         return None
 
 
+def python_source_digest(*modules: object) -> str | None:
+    """SHA256 over the source of the given modules, or None when any source is unreadable.
+
+    This is :func:`worker_code_digest` for the stages that have no worker. A
+    :class:`WorkerStage` cannot go stale silently, because its output is produced by a
+    script and that script's bytes are already in the digest. A stage that computes rows
+    inside this process has no such file: ``pose_normalize.normalized_rows`` and
+    ``fusion.fuse_turn_table`` are plain python, so an edit that changes the arithmetic
+    leaves the config, the thresholds and every input digest identical — the recorded
+    ``config_hash`` still matches, the stage is "reusable", and the fix silently does
+    nothing until someone deletes the dataset by hand. That is not hypothetical:
+    ``9b5f056`` changed the basis maths in ``pose_normalize.py`` over a corpus that was
+    already on disk and invalidated nothing. It reproduced byte-identical, so nothing was
+    harmed; the class of defect it exposes is the one this helper closes.
+
+    Modules are passed as objects rather than paths so the call site names what it
+    covers, and the digest depends on both the identity (``__name__``) and the order of
+    each module: swapping two arguments or pointing one of them at a different module is
+    a different digest rather than a coincidence.
+
+    ``inspect.getsource`` is used instead of opening ``module.__file__`` because it also
+    works for a module loaded by a custom loader (an editable install or a zip import)
+    and because it is the same lookup the traceback machinery uses, so "the source the
+    traceback would show" and "the source that was digested" cannot drift. Its failure
+    modes — ``OSError`` for a deleted file, ``TypeError`` for a module with no
+    importable source, such as a C extension — are translated into ``None`` rather than
+    raised, for the same reason ``worker_code_digest`` returns ``None``: a fingerprint is
+    computed on ``status --plan`` as well as before a run, and a stage that cannot name
+    its own source has to degrade to "unverified", never crash the pipeline.
+    """
+    import hashlib
+    import inspect
+
+    hasher = hashlib.sha256()
+    for module in modules:
+        try:
+            source = inspect.getsource(module)  # type: ignore[arg-type]
+        except (OSError, TypeError):
+            return None
+        hasher.update(str(getattr(module, "__name__", module)).encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(source.encode("utf-8"))
+    return hasher.hexdigest()
+
+
 def raw_sidecar_path(raw_path: Path) -> Path:
     """``whisperx.json`` → ``whisperx.json.provenance.json``.
 
