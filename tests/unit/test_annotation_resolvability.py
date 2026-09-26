@@ -115,11 +115,27 @@ def _scan_root(root: types.ModuleType) -> tuple[list[str], dict[str, list[str]]]
                 # were never resolved over — the same blind spot that let `write_table` ship,
                 # one level down (advisory R3-class-method-annotations).
                 for mattr, mobj in list(vars(obj).items()):
-                    if mattr.startswith("__") or not inspect.isfunction(mobj):
+                    if mattr.startswith("__"):
                         continue
-                    where = f"{module_name}.{attr}.{mattr}()"
-                    resolved.append(where)
-                    _resolve_callable(mobj, where, failures)
+                    # A class's `vars()` hands back descriptors, not functions: 62
+                    # classmethod/staticmethod and 19 property objects would otherwise stay
+                    # invisible to `inspect.isfunction` (advisory R3-method-descriptors). Most
+                    # of them are pydantic validators and computed flags in `config.py`.
+                    targets: list[object] = []
+                    if inspect.isfunction(mobj):
+                        targets.append(mobj)
+                    elif isinstance(mobj, (classmethod, staticmethod)):
+                        inner = mobj.__func__
+                        if inspect.isfunction(inner):
+                            targets.append(inner)
+                    elif isinstance(mobj, property):
+                        targets.extend(
+                            f for f in (mobj.fget, mobj.fset, mobj.fdel) if inspect.isfunction(f)
+                        )
+                    for target in targets:
+                        where = f"{module_name}.{attr}.{mattr}()"
+                        resolved.append(where)
+                        _resolve_callable(target, where, failures)
 
         scanned[module_name] = resolved
 
@@ -138,6 +154,10 @@ _MUST_BE_SCANNED = (
     "multimodal_pipeline.config:PERSON_TRACKER_TYPES",
     # A method on a class, which the attribute-only class branch could not see.
     "multimodal_pipeline.state.StageRecord.to_dict()",
+    # A classmethod descriptor, which `inspect.isfunction` rejects (R3-method-descriptors).
+    "multimodal_pipeline.config.InputConfig._normalise_extensions()",
+    # A property getter.
+    "multimodal_pipeline.config.OpenPoseConfig.hands_enabled()",
 )
 
 
@@ -165,9 +185,12 @@ def test_every_annotation_in_the_pipeline_package_resolves() -> None:
 def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_path) -> None:
     """The guard has to be able to die, so it is run against a package that is deliberately bad.
 
-    Two modules are written to a temp dir: one clean, one whose only defect is a function
-    annotated with a name that does not exist — the `write_table` bug, reproduced from scratch.
-    The scan must report exactly that one and nothing else. This is what stops the package-wide
+    Three modules are written to a temp dir: one clean, one with a module-level function whose
+    annotation names something that does not exist (the `write_table` bug, rebuilt from scratch),
+    one with three well-behaved method kinds plus a classmethod carrying the same defect. The
+    scan must report exactly those three findings, in order, and must also *visit* the clean
+    methods — which is the part `inspect.isfunction` alone cannot see, since `vars(cls)` hands
+    back `classmethod`/`staticmethod`/`property` descriptors. This is what stops the package-wide
     test above from passing by going blind.
     """
     pkg = tmp_path / "annotation_probe_pkg"
@@ -185,6 +208,23 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "class AlsoBad:\n"
         "    def method(self, y: AlsoMissing) -> None: return None\n"
     )
+    # A classmethod: `vars(cls)` returns a descriptor, which `inspect.isfunction` rejects.
+    (
+        pkg
+        / "methods.py"
+    ).write_text(
+        "from __future__ import annotations\n"
+        "class Good:\n"
+        "    @classmethod\n"
+        "    def maker(cls, v: list[str]) -> list[str]: return v\n"
+        "    @staticmethod\n"
+        "    def helper(v: int) -> int: return v\n"
+        "    @property\n"
+        "    def ready(self) -> bool: return True\n"
+        "class AlsoBad:\n"
+        "    @classmethod\n"
+        "    def maker(cls, v: ClassMissing) -> None: return None\n"
+    )
 
     sys.path.insert(0, str(tmp_path))
     try:
@@ -195,13 +235,23 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         for name in [n for n in list(sys.modules) if n.startswith("annotation_probe_pkg")]:
             del sys.modules[name]
 
-    assert len(failures) == 2, f"expected two broken annotations, got: {failures}"
+    assert len(failures) == 3, f"expected three broken annotations, got: {failures}"
     assert "annotation_probe_pkg.bad.broken" in failures[0], failures[0]
     assert "NameError" in failures[0], failures[0]
-    # The second finding must come from a method on a class: that branch is what
-    # R3-class-method-annotations was raised about, and it needs its own proof of life.
+    # The second finding comes from a method on a class — the branch R3-class-method-annotations
+    # was raised about, so it needs its own proof of life rather than riding on the module one.
     assert "annotation_probe_pkg.bad.AlsoBad.method()" in failures[1], failures[1]
     assert "NameError" in failures[1], failures[1]
+    # The third comes from a classmethod descriptor: R3-method-descriptors.
+    assert "annotation_probe_pkg.methods.AlsoBad.maker()" in failures[2], failures[2]
+    assert "NameError" in failures[2], failures[2]
+    # Descriptors that are fine must still be *visited*, or the count above proves nothing.
+    assert scanned["annotation_probe_pkg.methods"] == [
+        "annotation_probe_pkg.methods.Good.maker()",
+        "annotation_probe_pkg.methods.Good.helper()",
+        "annotation_probe_pkg.methods.Good.ready()",
+        "annotation_probe_pkg.methods.AlsoBad.maker()",
+    ], scanned["annotation_probe_pkg.methods"]
     # The clean module was visited and produced nothing — proof the scan does not just fire
     # on everything, which would make the package-wide pass a coincidence.
     assert scanned["annotation_probe_pkg.good"] == [
