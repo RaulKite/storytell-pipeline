@@ -372,11 +372,12 @@ no person for OpenPose to find. `manifest.json` carries the same 36 keys in `art
 (key → dataset-relative path) and their sizes in `artifact_details`.
 
 Why 13 stages and 36 artifacts when the stage table above lists more? Because a manifest
-describes the run that produced it. This dataset was last written before `pose_normalized`
-and `speaker_fusion` were added to the queue, so its `stage_order` has 13 entries and its
-manifest lists 36 of the 40 artifacts the registry can now declare; the other four
+describes the run that produced it. This dataset was last written before `pose_normalized`,
+`speaker_fusion` and `persons` were added to the queue, so its `stage_order` has 13 entries
+and its manifest lists 36 of the 43 artifacts the registry can now declare; the other seven
 (`pose/normalized.parquet`, `pose/raw_images`, `speaker/fusion_pyannote.parquet`,
-`speaker/fusion_nemotron.parquet`) are absent from every dataset under `data/processed/`
+`speaker/fusion_nemotron.parquet`, `persons/raw/yolo_track.json`, `persons/frames.parquet`,
+`persons/tracks.parquet`) are absent from every dataset under `data/processed/`
 because no run here has produced them since. Another reason to read `status.json` rather
 than assume the queue: it is the file that records what actually ran.
 
@@ -871,8 +872,6 @@ It runs in-process over Parquet, like `speaker_fusion`: one table in, one out, n
 subprocess, no uv environment, seconds per video (37 857 keypoints of `person_demo` in 0.2 s
 measured here).
 
----
-
 ## Stage graph
 
 ```
@@ -986,6 +985,7 @@ track's score count survives into the table, so nothing downstream could recover
 | `openpose` | `/opt/openpose` binary | OpenPose install + models, GPU |
 | `pose_normalized` | in-process Parquet arithmetic | `pose/body.parquet` (nothing else) |
 | `activespeaker` | uv env worker (TalkNet-ASD) | TalkNet checkout + `environments/activespeaker` |
+| `persons` | uv env worker (Ultralytics YOLO) | `environments/persons` + weights (auto-download unless `weights_dir`) |
 | `speaker_fusion` | in-process Parquet arithmetic | diarization turns **and** `activespeaker` output |
 | `finalization` | in-process | everything above |
 
@@ -1400,7 +1400,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1300 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1357 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1456,7 +1456,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1300 tests
+tests/unit/                1357 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

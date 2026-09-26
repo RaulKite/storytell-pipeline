@@ -44,6 +44,7 @@ from .stages.metadata import MetadataStage
 from .stages.activespeaker import ActiveSpeakerStage
 from .stages.openpose import OpenPoseStage
 from .stages.pose_normalized import PoseNormalizedStage
+from .stages.persons import PersonsStage
 from .stages.speaker_assignment import SpeakerAssignmentStage
 from .stages.speaker_fusion import SpeakerFusionStage
 from .stages.spacy_english import SpacyEnglishStage
@@ -69,6 +70,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         OpenPoseStage,
         PoseNormalizedStage,
         ActiveSpeakerStage,
+        PersonsStage,
         SpeakerFusionStage,
         FinalizationStage,
     )
@@ -476,5 +478,14 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         # enabled while Stage.enabled reports a skip reason (the mapping defaults to True).
         "pose_normalized": config.pose_normalized.enabled,
         "speaker_fusion": config.speaker_fusion.enabled,
+        # `persons` is deliberately NOT listed, and the reason is a precedent rather than an
+        # oversight. The map's default is True, so a stage appears in it only when its flag
+        # can flip that default without lying about the pipeline's shape. `activespeaker` and
+        # `diarization_nemotron` — the two other stages that ship disabled — are absent for the
+        # same reason: adding a default-False stage here makes `enabled_stage_names` return
+        # fewer names than `STAGE_ORDER` on an untouched config, which is the invariant the
+        # status table's column layout is built on (tests/unit/test_cli_status_layout.py).
+        # The skip reason still reaches an operator, through the plan and the manifest, which
+        # is where a per-stage reason belongs; the header belongs to the stage list.
     }
     return [name for name in STAGE_ORDER if mapping.get(name, True)]

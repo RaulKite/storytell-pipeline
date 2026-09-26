@@ -479,13 +479,14 @@ class TestWorkedExampleMatchesTheManifest:
     """
 
     def test_the_artifact_count_it_quotes_is_the_manifest_key_count(self) -> None:
-        # 40 registered manifest candidates minus the four produced only by stages newer
+        # 43 registered manifest candidates minus the seven produced only by stages newer
         # than every dataset on this disk.
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
 
         never_produced = {"pose_normalized", "pose_images_raw",
-                         "speaker_fusion_pyannote", "speaker_fusion_nemotron"}
-        assert len(MANIFEST_ARTIFACTS) == 40
+                          "speaker_fusion_pyannote", "speaker_fusion_nemotron",
+                          "persons_raw", "person_frames", "person_tracks"}
+        assert len(MANIFEST_ARTIFACTS) == 43
         assert len(set(MANIFEST_ARTIFACTS) - never_produced) == 36
 
     def test_the_example_never_walks_an_absent_artifact_as_a_file_that_exists(self) -> None:
@@ -496,7 +497,9 @@ class TestWorkedExampleMatchesTheManifest:
         reader a file-by-file table with a row that implies the file is in the dataset.
         """
         absent = {"pose/normalized.parquet", "speaker/fusion_pyannote.parquet",
-                  "speaker/fusion_nemotron.parquet", "pose/raw_images"}
+                  "speaker/fusion_nemotron.parquet", "pose/raw_images",
+                  "persons/raw/yolo_track.json", "persons/frames.parquet",
+                  "persons/tracks.parquet"}
         section = README[README.index("### One dataset, file by file"):]
         section = section[:section.index("### How to consume it")]
         walked = []
