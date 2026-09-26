@@ -1564,3 +1564,76 @@ store rather than invent content. Nothing was pushed at that point, so no remote
 **Next**: push the chain (normal fast-forward, authorized). T16 `stories` stays blocked on
 credentials and a cost decision. T14's third link still has no approval — `review-resilience`
 returned `reviewer-empty-output` twice for `f862e06` and no verdict was invented for it.
+
+## 27. The four permanently-stale stages, and the corpus run `persons` had never had
+
+Two pieces of closure this feature owed: the `configuration changed` anomaly §25 flagged
+without investigating, and the fact that `persons` had only ever run on hand-picked clips.
+
+### The anomaly was three deliberate invalidations and one correct one
+
+The loop was ten lines (`/tmp/hashloop.py`, ~4 s, deterministic): recompute each stage's config
+hash with current code, compare to the hash the state recorded at completion. Red on exactly
+the four the CLI reported, green on `whisperx`/`acoustic`/`activespeaker` — so the symptom was
+real and localised before any hypothesis. Diffing each stage's fingerprint payload against the
+recorded run's provenance, then `git log -S` on the fingerprint lines, named the commits:
+
+- `spacy_source`/`spacy_english`: `afb666a` added the *installed spaCy models* to the
+  fingerprint ("installing a model must invalidate linguistics that settled for `blank`") and
+  `ba602d7` added the language-detection grade. Both were written precisely so that the next
+  run reruns — that is the feature working.
+- `openpose`: `4fe3d7d`/`241535e` added `write_images`/`image_max_side` to the fingerprint.
+  Same argument, and §19's render work is exactly why.
+- `finalization`: its fingerprint folds in `configuration_hash`, the hash of the whole
+  behaviour-affecting config. Adding the `persons` section changed it, so finalization
+  invalidates. This one is not drift at all: a config change happened, and it noticed.
+
+The whole corpus had simply never been re-run since those fingerprints grew. Proof, not
+theory: after one real `--only-stage finalization` pass on KABC, `status --plan` reports
+`valid previous result` for all four on that video, and a corpus-wide pass holds it 7/7. The
+`configuration changed` label was true every time it appeared. Nothing to fix in the reuse
+code, and the diagnostic loop is kept at `/tmp/hashloop.py` rather than promoted — its value
+was answering one question.
+
+What the episode *did* expose is a cost that belongs in the ODD: every fingerprint addition
+described above silently invalidates an entire finished corpus. That is correct and was the
+point each time; what was missing is that nothing tells the operator "N stages will rerun,
+here is why" before the expensive pass. `--plan` exists and says the *reason* per stage, and
+nobody reads a reason that never changes. Left as an observation, not a fix: the fix would be
+presenting the plan's cost, which is a UI decision the operator owns.
+
+### `persons` on the full corpus, end to end through the CLI
+
+Previous T15 runs were the worker on five clips. This was the *stage* — the CLI, the state
+machine, reuse, the whole table pipeline — with `persons.enabled: true`, output redirected to
+a `/tmp` copy of the dataset so `data/processed` was not touched for this part. 7 videos,
+0 failures, GPU:
+
+| video | rows | frames w/ person | ids | max in frame |
+|---|---|---|---|---|
+| KABC | 350 | 126 | 3 | 3 |
+| CNN | 496 | 124 | 4 | 4 |
+| La-1 | 423 | 238 | 8 | 3 |
+| person_demo | 1918 | 205 | 75 | 14 |
+| pipeline_demo / _ntsc / _silent | 0 | 0 | 0 | 0 |
+
+Every id count matches the worker-level measurements from §24 exactly (3/4/8/75/0), which is
+the point: the stage's normalisation preserves what the worker measured. `coco_classes=[0]` is
+now readable from every table's file metadata, every preserved raw document carries the
+`weights_sha256` actually used, and the second `status` pass reports
+`persons valid previous result` on all seven — the reuse contract holds on real artifacts.
+
+### Two process errors, owned
+
+1. To enable `persons` without editing the operator's `config/config.local.yaml`, I wrote a
+   temporary YAML **inside `config/`** (the config's location derives `project_root`, so a
+   `/tmp` config resolved `environments/persons` against `/tmp` and skipped every video). It
+   was not gitignored. I deleted it right after the runs and it was never staged or committed
+   — `git log --all -- <path>` is empty and the tree is clean. The safer route, used nowhere
+   yet: a config-override flag, or copying the repo config to a gitignored path once.
+2. My secret sweep on the run output reported "7 leaks". All seven were the **string
+   `HF_TOKEN`** — the environment-variable *name* that `hf_token_env` legitimately records —
+   and one was `${LITELLM_API_KEY:-}`, an interpolation reference. `config.local.yaml` carries
+   no literal credential for the sweep to find. A scanner that matches variable names will cry
+   wolf exactly where an operator is looking for a real leak. The sweep that matters is the
+   one against literal values, and this dataset's provenance contains none.
