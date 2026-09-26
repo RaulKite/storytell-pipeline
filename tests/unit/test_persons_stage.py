@@ -289,6 +289,19 @@ class TestNormalize:
         assert metadata[b"weights_sha256"].decode() == "a" * 64
         assert metadata[b"timestamp_column"].decode().startswith("timestamp")
 
+    def test_both_tables_record_which_coco_classes_were_counted(self, seeded, stage):
+        """What a person column actually contains, stated in the file itself.
+
+        `person_classes_only: false` allows a non-person COCO class into a column named
+        ``person_id``; the guard makes that an explicit choice, and this makes it visible to a
+        reader who never opens the raw JSON or the manifest. Checked on both tables because a
+        consumer may query either one alone.
+        """
+        stage.normalize(seeded)
+        for name in ("person_frames", "person_tracks"):
+            metadata = pq.ParquetFile(seeded.artifact(name)).schema_arrow.metadata
+            assert metadata[b"coco_classes"].decode() == "[0]", name
+
     def test_a_document_with_zero_people_still_writes_both_tables(self, seeded, stage):
         """The honest empty case, measured on ``pipeline_demo``: 0 ids, and a table that says so.
 
@@ -507,6 +520,27 @@ class TestValidate:
         with pytest.raises(ValidationError, match="persons_in_frame is 0"):
             stage.validate(seeded)
 
+    def test_a_frame_whose_rows_understate_its_own_count_fails(self, seeded, stage):
+        """The count a "people on screen at once" query reads, checked against the rows.
+
+        Both rows of the two-person frame claim there was only one person in it. Everything
+        else in the table stays consistent -- two rows, two ids, correct areas and confidences
+        -- so the row-level check (>= 1) passes and the defect is invisible to every other
+        assertion. Found by review (R3-persons-in-frame-unverified): the validator already
+        recomputed the per-frame counts and never compared them to what the rows declared.
+        """
+        self._rewrite_frames(seeded, lambda rows: [row.update({"persons_in_frame": 1})
+                                                   for row in rows if row["frame_number"] == 1])
+        with pytest.raises(ValidationError, match="frame 1 declares persons_in_frame=1"):
+            stage.validate(seeded)
+
+    def test_rows_of_one_frame_that_disagree_with_each_other_fail(self, seeded, stage):
+        """Two rows of the same frame cannot disagree about how many people were in it."""
+        self._rewrite_frames(seeded, lambda rows: rows[2].update({"persons_in_frame": 5}))
+        with pytest.raises(ValidationError,
+                           match=r"frame 1 declares persons_in_frame=\[2, 5\]"):
+            stage.validate(seeded)
+
     @staticmethod
     def _rewrite_frames(context, mutate) -> None:
         """Normalise, then rewrite the frames table with one row changed.
@@ -670,7 +704,11 @@ class TestFingerprint:
         base = stage.request_digest(context)
         other = _copy.copy(context)
         other.config = context.config.model_copy(deep=True)
-        other.config.persons.classes = []
+        # The opt-in route, because `classes: [2]` and `classes: []` are now refused by default
+        # (the column this stage writes is called person_id). Relaxing the guard is still a
+        # different measurement of who is on screen and must still invalidate.
+        other.config.persons.person_classes_only = False
+        other.config.persons.classes = [2]
         other.scratch = dict(context.scratch)
         assert stage.request_digest(other) != base, (
             "dropping the class filter changes what counts as a person and must invalidate")

@@ -170,11 +170,38 @@ class TestConfigValidators:
     def test_the_person_class_alone_is_accepted(self):
         assert PersonsConfig(classes=[0]).classes == [0]
 
-    def test_an_explicit_empty_class_list_is_allowed(self):
-        """Detect everything. Not useful for a persons table, but a legal, deliberate choice
-        rather than a mistake, so the refusal would have to be a policy the config cannot
-        express."""
-        assert PersonsConfig(classes=[]).classes == []
+    def test_a_non_person_class_is_refused_because_the_column_is_called_person_id(self):
+        """Native review R3-non-person-classes, and it was a real hole in the contract.
+
+        `classes: [2]` used to load, the worker dutifully tracked cars, and the result landed in
+        a column named ``person_id`` with a summary of "how many people appear". The run was
+        traceable (the raw document and the fingerprint both recorded the classes) and the
+        artifact was still unreadable as what it was. So the guard is about what a reader can
+        tell, not what a log contains.
+        """
+        with pytest.raises(ValueError, match="person_id"):
+            PersonsConfig(classes=[2])
+
+    def test_an_empty_class_list_is_refused_because_it_means_all_eighty_classes(self):
+        """The indirect route to the same defect: no filter means every COCO class."""
+        with pytest.raises(ValueError, match="person_classes_only"):
+            PersonsConfig(classes=[])
+
+    def test_tracking_other_classes_is_still_expressible(self):
+        """The refusal is a default, not a policy the config cannot state.
+
+        Deliberately opting in keeps the column name, which is the honest limitation: such a
+        dataset measures detected objects, and the table's ``coco_classes`` metadata says which.
+        """
+        assert PersonsConfig(classes=[2], person_classes_only=False).classes == [2]
+        assert PersonsConfig(classes=[], person_classes_only=False).classes == []
+
+    def test_the_empty_classes_message_names_both_settings_it_could_mean(self):
+        """A refusal that names only one fix sends the reader to the wrong one."""
+        with pytest.raises(ValueError) as excinfo:
+            PersonsConfig(classes=[])
+        message = str(excinfo.value)
+        assert "persons.classes" in message and "person_classes_only" in message
 
     @pytest.mark.parametrize("value", [0, -64])
     def test_a_non_positive_input_size_is_refused(self, value: int):
