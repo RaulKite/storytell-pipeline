@@ -998,9 +998,10 @@ recorded as a config choice, not a constant: the triple is written into the stag
 so changing it invalidates the table instead of quietly redefining every number in it.
 
 **Fixtures, produced by the reference, not by me.**
-`tests/fixtures/pose_normalized/dfmaker_0.1.1_{kabc,cnn}_midhip_neck.csv` — 1000 and 2000
-rows, run through `dfMaker(fast_scaling = FALSE, transformation_coords = c(1, 8, 1, 1))` on
-the first 20 raw JSON frames of each video, then filtered to `type_points == "pose_keypoints"`.
+`tests/fixtures/pose_normalized/dfmaker_0.1.1_{kabc,cnn}_midhip_neck.csv`, regenerated
+byte-for-byte by the committed `scripts/make_pose_normalized_fixtures.R` — run through
+`dfMaker(fast_scaling = FALSE, transformation_coords = c(1, 8, 1, 1))` on raw JSON frames
+of two clips, then filtered to `type_points == "pose_keypoints"`.
 `points` is kept as OpenPose's 0-based index so a reader can check the mapping without
 consulting `multimolang`. They are the ground truth the Python transform is asserted against.
 
@@ -1010,3 +1011,112 @@ free: normalisation drops every keypoint with `score <= 0`, while `dfMaker` mask
 `y == 0` per coordinate. Both encode "absent", and on this corpus they coincide — but the
 stage therefore reports the per-frame basis state explicitly rather than leaving a gap for a
 consumer to interpret, which is the same lesson `face_status` learned in §17.
+
+## 21. T14 result — `pose_normalized` built, and what the whole corpus says about it
+
+Built as route 2 (§20.4): pure Python, no R at runtime, no new uv environment.
+
+- `src/multimodal_pipeline/pose_normalize.py` — the maths, functions only (`fusion.py`'s
+  shape), so the transform is testable without the pipeline.
+- `src/multimodal_pipeline/stages/pose_normalized.py` — the stage. One output,
+  `pose/normalized.parquet`, beside the pixel tables, which are never written.
+- Depends on `openpose` only, and inherits its skip semantics.
+
+**Validated against the reference on the entire corpus, not on a sample.** The fixtures
+in §20 are the committed guard, but they cover 5 frames of 2 clips. The claim in §20.4
+is that the reimplementation matches `dfMaker`, so the real `dfMaker` 0.1.1 was run over
+every raw JSON frame of all four videos that have pose — 695 frames — and compared with
+the stage's real output on `/tmp` (nothing in `data/` was touched):
+
+| video | reference rows | shared keys | numeric in reference | worst &#124;ours − dfMaker&#124; |
+|---|---|---|---|---|
+| KABC | 6300 | 3775 | 3775 | 7.99e-15 |
+| La-1 Telediario | 11450 | 7387 | 6710 | 9.55e-15 |
+| CNN | 12400 | 7929 | 5552 | 8.44e-15 |
+| person_demo | 45575 | 37857 | 37551 | 9.33e-15 |
+
+**53588 numeric points compared, worst difference 9.55e-15, and 0 disagreements about
+absence** — every point the reference refuses to place is a null in our table too, and
+every point it places agrees to floating-point noise. That is float-noise agreement, not
+"close enough": the two implementations compute the same 2×2 determinants.
+
+The committed fixtures are the first 5 frames of each of two clips (250 and 500 rows,
+444 of them numeric), chosen because the full 695-frame reference run is ~350 KB of digits
+and a candidate carrying it was **rejected by the native reviewer's context budget**
+(`lens_context_budget_exceeded`, terminal: "review this change as smaller candidates"). 5
+frames is the smallest prefix that holds both basis states — rows `dfMaker` placed and rows
+it refused — which is what the committed guard has to be able to see. The whole-corpus
+comparison above was run separately, off the full reference output, and is the evidence the
+feature rests on; the fixtures are only the part of it that survives as a test.
+
+The comparison also names a difference of *shape* rather than of value, and it is worth
+recording because it will confuse the first reader: `dfMaker` emits one row per keypoint
+per person per frame unconditionally, so it produces rows for keypoints OpenPose never
+detected, all-NA. Our table has no such row because normalisation never wrote one
+(`openpose_frame_rows` in `normalization.py` drops every `score <= 0`, so the keypoint was
+never in the table this stage reads). On the four videos that is 2525 + 4063 +
+4471 + 7718 reference rows with no counterpart of ours. They carry no coordinate, so
+nothing numerical is lost; what is lost is a row that says "this joint was never found",
+and that absence is already the job of `pose/body.parquet` having no row.
+
+**What the corpus produced.** One real run over all 7 videos, 2m18s, 0 failures:
+
+- **56948 rows out of 56948 in** — the output has exactly the row count of `body.parquet`
+  per video (3775 / 7929 / 7387 / 37857, and 0 for the three videos with no pose). A
+  derived stage that quietly dropped rows would have shown up here, and `validate()`
+  checks it rather than trusting it.
+- `basis_state`: `basis_ok` 53588 (94.1%), `basis_missing_joint` 3360 (5.9%).
+  `basis_degenerate` never occurs — it takes a MidHip and a Neck at the same pixel to
+  trigger, and no frame in this corpus does.
+- `value_status` mirrors it exactly: 53588 `normalized`, 3360 `basis_unusable`, and every
+  `basis_unusable` row has both `x_norm` and `y_norm` null. Verified, not asserted.
+- The whole 5.9% sits in three videos: CNN 2377, La-1 677, person_demo 306. KABC and the
+  three zero-pose videos have none. `basis_detail` on every one of those rows says which
+  joint was missing, e.g. *"MidHip has no usable coordinate in this person-frame, so the
+  MidHip→Neck frame cannot be built"*.
+- Scale, which was the reason for choosing this basis: &#124;x_norm&#124; median 1.001,
+  p99 2.04, max 3.99; &#124;y_norm&#124; median 0.186, p99 0.767, max 7.20. Compare the
+  556 p99 of `dfMaker`'s default triple in §20. The stage ran with defaults unchanged.
+- `validate --json` reports `pose_normalized` **valid on all 7 datasets**. The 4 problems
+  per video in that same output are provenance ("raw result was produced by a different
+  configuration") and belong to having pointed the config at `/tmp` for this run — they
+  are the copy's fingerprints, not defects in this stage.
+
+**Two mutations, both killed.** A feature whose whole content is a formula has to be
+attacked at the formula:
+
+1. Perpendicular sign flipped to `(-vi.y, vi.x)` — the one the *other* `dfMaker` branch
+   uses, the one a reader copying the fast-scaling path would write. **7 tests die**,
+   including `test_every_computed_coordinate_matches_the_reference` on both clips. This
+   is the mutation that matters, because the resulting table looks plausible: correct
+   shape, correct nulls, wrong sign on one axis, and nothing downstream would complain.
+2. Per-coordinate mask replaced by a per-point mask (`x == 0 or y == 0` → drop the point).
+   **1 test dies** — `test_a_half_measured_point_keeps_the_coordinate_it_has`, which is
+   written by hand because *no frame in this corpus contains a half-zero keypoint*. That
+   test cannot be earned from the data and is exactly why it exists: the two rules agree
+   on every frame here and would disagree silently on the next corpus.
+
+**Config is validated where it can hurt.** `Sternum` (not a BODY_25 name) and
+`Background` are rejected; `origin_keypoint == basis_keypoint` is rejected with the
+reason spelled out ("both are 'Neck', so the basis vector is zero"); an unknown
+`second_axis` is rejected. Verified live through `load_config`, not only by reading the
+validator. The triple is in `config_fingerprint` together with a digest of
+`body.parquet`, so changing the frame invalidates the table instead of quietly
+redefining every number in it.
+
+`docs/assets/stage_graph.png` regenerated with the documented command
+(`--synthetic --seed 7`) and reproduced byte-identically by an independent run
+(sha256 `6609db22c69d…`); the other three figures are unchanged.
+
+**Process defect in this task, recorded rather than smoothed over.** The `status` render
+was broken before this task and this task is what exposed it: at HEAD the table needed
+196 columns against the 80 `rich` assumes, and it passed the e2e suite only because that
+config disables six stages (78 of 80). Fixed separately as `8ea9b11` and committed
+*before* this work unit so each commit leaves the tree green. Two things went wrong on
+the way and both are the operator's to know about: the fix was **pushed before native
+review ran**, and the review then could not be started on the committed range — the
+facade's intended-untracked selection binding was rejected twice on that target, and
+the one route it did offer was a workspace candidate that would have frozen this
+unverified T14 work with it. So `8ea9b11` sits in `origin/master` unreviewed. AGENTS.md:28
+("receipt-driven development is disabled for this clone") is stale: `gentle-ai review
+mode status` reads `on (decided by default)` on both scopes.
