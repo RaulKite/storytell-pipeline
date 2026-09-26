@@ -1672,3 +1672,16 @@ What the debt was actually worth: four days of believing T14's stage link was re
 except on paper, when the one lens that kept dying was the one holding a CRITICAL. A lens that
 returns nothing is not a pass, and a review that proceeds without it is not a review — §22's
 refusal to invent a verdict is what kept this honest, and the retry is what made it useful.
+
+## 29. The fix is reviewed; the debt on T14's stage link is closed
+
+`9873de6` reviewed under `review-b539f13a8b7183f1` (tier high, 4 lenses, 62 lines, target
+`sha256:7ab789398935b52f52de02265e4c1275b417ce655370048168e98c0d15eec505`): **approved** on the
+first grouped capture, all four lenses answering, store
+`sha256:74d313fcd5cf0a67264ba2300ba6f6e731478b1936d059a9b888ecfc739f2202`. Acknowledged, authority
+burned.
+
+T14's chain is now reviewed end to end except two links dispositioned as data and docs
+(`5eb1214` fixtures, reviewed as `review-1a81688e2fc83328`, and `e8d3db6` ODD). §22's open
+question — "still unreviewed: link 3" — is resolved: it was reviewed, and it failed, and the
+failure is fixed.
