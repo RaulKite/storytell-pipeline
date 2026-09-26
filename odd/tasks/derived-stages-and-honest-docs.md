@@ -1854,7 +1854,11 @@ form, it is one line of design: one fingerprint key per module instead of a comb
 degrades the unreadable one alone. That would also make `status` output name *which* source it could
 not read, which the combined digest cannot.
 
-`worker_code_digest` has always had the same shape for the same reason — a fingerprint is computed on
-`status --plan` too, and a stage that cannot name its source has to say "unverified" rather than
-crash. Consistency with the existing helper was worth more here than a stronger behaviour on a path
-that this pipeline cannot reach.
+The asymmetry with `worker_code_digest` is not the `None` — it is what one `None` covers. That
+helper digests exactly one path, so when it gives up, the fingerprint loses the one thing it was
+asked about and nothing else; a fingerprint is computed on `status --plan` as well as before a run,
+which is why neither helper is allowed to raise. `python_source_digest` takes several modules and
+returns one value, so a single unreadable source silently stops the *others* from being covered. If
+the operator wants the stronger form, it is one key per module instead of a combined digest: that
+degrades the unreadable one alone and would let `status` name which source it could not read, which
+the combined digest cannot express.
