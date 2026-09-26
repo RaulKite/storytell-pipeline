@@ -2113,3 +2113,50 @@ reports no undefined names, so no live defect was waiting in those 81.
 The pattern across three advisories is the same one §30 and §31 already recorded: a guard written
 from the shape of the bug you saw covers that shape and nothing else, and only feeding it a
 synthetic package with a *different* shape tells you how narrow you built it.
+
+### §35 The fourth advisory about the same scan, closed by making silence impossible
+
+`review-6b6350f6b3b53255` approved `b33bd40` (tier high, 103 lines, four lenses, store
+`sha256:cff0793e…`) with one advisory, `R3-property-accessor-coverage`. That is the third advisory
+about the same handful of lines: `R3-class-method-annotations` (the class branch saw only
+`__annotations__`), then `R3-method-descriptors` (it saw only `inspect.isfunction`). Each fix
+patched the shape that had just been pointed at. A fourth patch would have patched this one's
+shape and left the method standing.
+
+So the class branch stopped enumerating types it knows. `_callable_targets()` unwraps what it
+recognises — function, method, `classmethod.__func__`, `staticmethod.__func__`, a property's
+`fget`/`fset`/`fdel`, `cached_property.func` — and for anything else it returns a **reason string**
+instead of nothing. `_scan_root` now returns a third list, `skipped`, and the package test asserts
+it is empty. A shape the guard does not understand is a failing test naming the object, not another
+round of coverage it never had.
+
+Numbers, measured rather than predicted: resolved annotations **841**, `skipped` **empty**, and the
+populations named by the three advisories — 30 `classmethod`, 32 `staticmethod`, 19 `property` (all
+19 with an `fget`, none bare), **0** `cached_property` anywhere in the package. `cached_property` is
+still handled, deliberately: it is handled so that the day someone adds one it costs nothing, and
+the synthetic package proves the branch rather than the real one.
+
+Two proofs of life, and they test different failure modes:
+
+- **MUT-G** — `classmethod`/`staticmethod` unwrap disabled: the named-target test fails (a
+  descriptor no longer resolved) and the synthetic package drops from three findings to two.
+- **MUT-H** — descriptors classified as plain data instead of named skips, i.e. total silence:
+  `test_every_annotation_in_the_pipeline_package_resolves` fails on the skip list, which is the
+  assertion MUT-G does not reach.
+
+The synthetic package gained a fourth shape on purpose: `property(fget=partial(...))`, something
+the unwrapper genuinely cannot resolve. The test asserts `skipped` equals exactly
+`annotation_probe_pkg.methods.Odd.weird(): property accessor of type partial`. Without that
+assertion, an unwrapper that classified *everything* as "not a function" would produce the same
+empty `failures` and the same passing suite — which is the hole all three advisories fell into.
+
+One thing this section has to record against itself: while writing the named-target list I added
+`multimodal_pipeline.config.PersonsConfig.weights_sha256_note()` as a cached-property example. That
+attribute does not exist; I wrote it because the shape seemed likely, not because I looked. The
+coverage assertion failed on it immediately and the real measurement (0 `cached_property` in the
+package) replaced it. The guard I built to stop silent under-coverage caught an invented name on
+its first use, which is the same lesson §33 wrote down about `Any` arriving from a plausible
+default rather than from the file.
+
+Suite unchanged at 1445 passed / 8 skipped, 1453 collected: this refactored what one test resolves
+and named what it cannot, it did not add a test, so the README ratchet correctly stayed still.
