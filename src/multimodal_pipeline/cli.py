@@ -13,11 +13,10 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from . import __version__
 from .artifacts import VideoPaths
@@ -280,9 +279,11 @@ def status(
 ) -> None:
     """Show per-video, per-stage processing state.
 
-    Statuses are rendered as single letters with a legend: eleven stage names in
-    full cannot fit a terminal, and a table nobody can read tells nobody anything.
-    Use ``--plan`` for the wordy version and ``--json`` for scripting.
+    Stage columns are numbered by position and statuses are single letters, with both
+    explained by the legend lines underneath: the names cannot fit a terminal, and a
+    row nobody can read tells nobody anything. Each video gets its id on a line of its
+    own so a long id is never folded. Use ``--plan`` for the wordy version and
+    ``--json`` for scripting.
     """
     configure("WARNING", console=False)
     pipeline_config = load_config_or_exit(config)
@@ -308,17 +309,15 @@ def status(
         }))
         return
 
-    table = Table(title=f"Pipeline status — {pipeline_config.output.directory}", expand=False)
-    table.add_column("video_id", overflow="fold")
-    for name in names:
-        table.add_column(_stage_initials(name), justify="center", width=max(2, len(_stage_initials(name))))
-    table.add_column("overall", justify="center")
-    for vid, cells, overall in rows:
-        table.add_row(vid, *[_STATUS_MARKS.get(cell, cell[:3]) for cell in cells],
-                      _STATUS_MARKS.get(overall, overall[:3]))
-    console.print(table)
+    console.print(f"Pipeline status — {pipeline_config.output.directory}", markup=False, soft_wrap=True)
+    for line in render_status_lines(names, rows):
+        # soft_wrap, not no_wrap: no_wrap crops at the console width, which is how a
+        # 72-character id became a single ellipsis. soft_wrap emits the line as long as
+        # it is, which is the only behaviour that can carry a row identity.
+        console.print(line, markup=False, soft_wrap=True)
     console.print("  " + "  ".join(f"{code}={word}" for word, code in sorted(_STATUS_MARKS.items())))
-    console.print("  stages: " + " ".join(f"{i+1}={name}" for i, name in enumerate(names)))
+    console.print("  stages: " + " ".join(f"{i+1}={name}" for i, name in enumerate(names))
+                  + "  ov=overall")
     if plan:
         for source in sources:
             runner = VideoRunner(pipeline_config, source, tools=_tools(pipeline_config))
@@ -328,7 +327,8 @@ def status(
                 console.print(f"  [{marker}] {item.name:<20} {item.reason}")
 
 
-#: One letter per status keeps an eleven-stage table inside a terminal width.
+#: One letter per status, because fifteen stage names do not fit a terminal. Unknown
+#: states fall back to a prefix (see ``render_status_lines``) so the row still prints.
 _STATUS_MARKS = {
     "completed": "c",
     "skipped": "s",
@@ -338,25 +338,47 @@ _STATUS_MARKS = {
     "partial": "P",
 }
 
-
-_SHORT_STAGE_NAMES = {
-    "metadata": "meta",
-    "audio": "audio",
-    "whisperx": "asr",
-    "diarization": "diar",
-    "speaker_assignment": "spk",
-    "translation": "trans",
-    "spacy_source": "nlp_src",
-    "spacy_english": "nlp_en",
-    "acoustic": "acou",
-    "openpose": "pose",
-    "finalization": "final",
-}
+#: Width of one numbered stage column. Fixed, so index 1 and index 10 both start on a
+#: column boundary and the marks below them stay under their own index.
+_STATUS_FIELD_WIDTH = 3
+#: Columns reserved at the start of a marks line, and the width of the id field for a
+#: video short enough to share its line with its marks.
+_STATUS_ID_GUTTER = 8
+#: Header for the final column, which holds the video's overall state, not a stage.
+_STATUS_OVERALL_HEADER = "ov"
 
 
-def _stage_initials(name: str) -> str:
-    """Short, readable column headers for an eleven-stage table."""
-    return _SHORT_STAGE_NAMES.get(name, name[:6])
+def render_status_lines(names: Sequence[str],
+                        rows: Sequence[tuple[str, Sequence[str], str]]) -> list[str]:
+    """One shared header line, then two lines per video: its full id, then its marks.
+
+    A table cannot carry this payload. Fifteen stage columns plus an id measured 143
+    columns against the 80 rich assumes when its output is not a tty, and rich answers
+    to that by stealing width in silence: ``video_id`` collapsed to one ``…`` and every
+    header to ``m…``, exit code still 0. Shortening the headers does not help either,
+    because a real id in this corpus is 72 characters and the table still would not fit.
+
+    So the columns are positional. Header cell *i* is stage *i* of ``names``, the marks
+    line indents to the same fixed fields, and the id — the one thing a row exists to
+    say — gets a line to itself when it does not fit the gutter. Width then depends on
+    neither how many stages are enabled nor how long an id is.
+    """
+    header = (" " * _STATUS_ID_GUTTER
+              + "".join(f"{index:<{_STATUS_FIELD_WIDTH}}"
+                        for index in range(1, len(names) + 1))
+              + _STATUS_OVERALL_HEADER)
+    lines = [header]
+    for vid, cells, overall in rows:
+        marks = [_STATUS_MARKS.get(cell, cell[:3]) for cell in cells]
+        marks.append(_STATUS_MARKS.get(overall, overall[:3]))
+        marks_line = "".join(f"{mark:<{_STATUS_FIELD_WIDTH}}" for mark in marks).rstrip()
+        if len(vid) <= _STATUS_ID_GUTTER:
+            lines.append(f"{vid:<{_STATUS_ID_GUTTER}}{marks_line}")
+        else:
+            # Never folded, never elided: the reader has to be able to copy the id.
+            lines.append(vid)
+            lines.append(" " * _STATUS_ID_GUTTER + marks_line)
+    return lines
 
 
 
