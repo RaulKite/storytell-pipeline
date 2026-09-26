@@ -1825,3 +1825,29 @@ stage, plus two more in `persons` that pin the raw-request boundary
 `test_a_source_edit_moves_the_fingerprint_without_invalidating_the_preserved_raw`). Stubbing the
 helper to a constant kills five named tests of the helper itself: source-edit sensitivity, two
 modules differing, order mattering, and both unreadable-source paths.
+
+### Review, and the one advisory it left open
+
+`review-6854bb2e1a6fd7a5` (tier high, 420 lines, all four lenses answering): **approved**, store
+`sha256:dcf571f7761f15cc5a43c3d68c62f6898d885f67f330ab3813dd73d28665d510`, authority burned.
+
+It left `R3-source-none` (WARNING, `stages/base.py:617-618`) on the `return None` path, and it is
+right about the mechanism: the digest is all-or-nothing, so one unreadable module collapses the
+whole value to `None` and stops covering the modules that *were* readable. Measured —
+`python_source_digest(unreadable, ok)` and `python_source_digest(other_unreadable, ok)` both return
+`None`, so the second module's edits would no longer move the fingerprint.
+
+Not fixed, for two reasons that are observations rather than taste. The transition is still safe in
+the one direction that matters: a readable fingerprint and a `None` fingerprint hash differently, so
+the first run after a source goes unreadable reruns; the loss only bites from the *second* such run
+onward. And reaching it at all requires `inspect.getsource` to fail on a module that is already
+imported, since every call site imports the module it digests one line earlier — which means the
+source loaded fine and then vanished from under the process. If the operator wants the stronger
+form, it is one line of design: one fingerprint key per module instead of a combined digest, which
+degrades the unreadable one alone. That would also make `status` output name *which* source it could
+not read, which the combined digest cannot.
+
+`worker_code_digest` has always had the same shape for the same reason — a fingerprint is computed on
+`status --plan` too, and a stage that cannot name its source has to say "unverified" rather than
+crash. Consistency with the existing helper was worth more here than a stronger behaviour on a path
+that this pipeline cannot reach.
