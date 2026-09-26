@@ -1138,7 +1138,7 @@ attempt is kept locally as tag `t14-split-original`; the chain reproduces the sa
 |---|---|---|---|---|---|
 | fixtures + R generator | `5eb1214` | 95 KB (two CSVs) | — | — | not reviewed, by choice — see below |
 | the coordinate maths | `4ec3a33` | 27 KB | medium | 1 (reliability) | **approved**, 3 advisories (`review-1a81688e2fc83328`) |
-| stage + registration | `f862e06` | 95 KB | high | 4 | **incomplete** — see below (`review-ad44829afd37f703`) |
+| stage + registration | `f862e06` | 95 KB | high | 4 | **reviewed, and it failed** — CRITICAL R4-001, fixed in `9873de6` (§28–§29) |
 | reference comparison + docs | `23045e5` | 38 KB | medium | 1 (reliability) | **approved**, 2 advisories, both fixed in `e0c466d` (`review-4bf6d0329637df4b`) |
 | the rebuild tests + this section | `e0c466d` | 18 KB | medium | 1 (reliability) | **approved, no findings** (`review-c29f8477ff8ab47e`) |
 
@@ -1149,15 +1149,16 @@ the generator script that reproduces them — which the approved reference-compa
 exercises end to end. An operator who wants that link reviewed should say so; the lineage
 starts cleanly from `8ea9b11`'s successor.
 
-**Link 3 could not be completed, and no verdict was invented for it.** The provider pinned
-the lineage (`review-ad44829afd37f703`, target `sha256:b3d3174cdb…`) and asked for four
-lenses. `review-risk`, `review-readability` and `review-reliability` were captured.
+**Link 3 was later completed, and this paragraph is what the silence looked like at the time.** The
+provider pinned the lineage (`review-ad44829afd37f703`, target `sha256:b3d3174cdb…`) and asked for
+four lenses. `review-risk`, `review-readability` and `review-reliability` were captured.
 `review-resilience` failed four times with `reviewer-empty-output` — once after 297 s with
 `stopReason: length`, three times in ~27 ms with `stopReason: stop`, i.e. the relay refusing
 before generating. Each failure reported `mutation_performed: false`, and fresh STATUS
 reoffered the same one-slot binding every time. An incomplete capture never reaches
-acknowledgement, so this link has **no approval receipt**. The decision to stop there is
-deliberate: the alternative was to author a verdict for a lens that never ran.
+acknowledgement, so this link had **no approval receipt**. The decision to stop there was
+deliberate: the alternative was to author a verdict for a lens that never ran. §28 retries that
+lineage, the lens answers, and the finding is CRITICAL — which is what this paragraph is worth.
 
 What the unrun lens was most likely to find is also the thing link 3's own risk signal
 claimed, and it is false: the START cited `process_boundary / shell_process` at
