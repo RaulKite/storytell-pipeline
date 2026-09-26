@@ -1417,3 +1417,143 @@ no dataset on this disk has produced.
 Not implemented: no `environments/persons/README.md` (no other environment has one; inventing
 a convention was out of scope), and botsort/deepocsort/ocsort remain unmeasured — only
 bytetrack and tracktrack were run.
+
+## 25. T15 review — six lineages, one data-loss bug, and a guard that guarded nothing
+
+Every commit in the T15 chain was reviewed as its own candidate in an isolated detached
+worktree, so each target is pinned to bytes that exist forever. Six lineages, six approvals
+eventually burned, and one review that found the worst defect in the feature so far.
+
+| lineage | candidate | tier / lenses | verdict | approval store |
+|---|---|---|---|---|
+| `t15-worker-b9e1c68-a` | `b9e1c68` worker | high / 4 | **correction_required → terminal** | none (see below) |
+| `t15-aliasfix-f29efe6-a` | `f29efe6` fix | high / 4 | approved | `sha256:a50da96a…` |
+| `t15-stage-5ffe73b-b` | `5ffe73b` stage + tests | high / 4 | approved | `sha256:776f090b…` |
+| `t15-config-f20d98d-a` | `f20d98d` config/README | medium / 1 | approved, no findings | `sha256:e4679a20…` |
+| `t15-workertests-e69cb92-a` | `e69cb92` worker tests | medium / 1 | approved | `sha256:9fa3b956…` |
+| `t15-closures-8e5cd6c-cf57d5b-a` | `8e5cd6c`+`cf57d5b` | high / 4 | approved | `sha256:ce0c8e95…` |
+
+The last row is a range candidate (`--base-ref=351397f9…`, committed-only): the two closing
+commits are 228 diff lines together and reviewing them separately would have cost two 4-lens
+reviews to say the same thing. No correction transition was offered and none was needed; the
+grouped capture closed approved on the last admitted event, and the provider surfaced no
+advisory text to the parent for that lineage, so none is claimed here either.
+
+### The CRITICAL: `--output-json clip.mp4` replaced the operator's video
+
+`R3-output-alias`. `write_json_atomic` ends in `os.replace`, and nothing anywhere compared an
+output path to an input path. The stage assembles its own paths so no upstream check could
+ever have caught it. Running the committed worker for real on a copy of a KABC clip:
+
+```
+$ environments/persons/.venv/bin/python workers/persons_worker.py \
+    --video /tmp/alias_victim.mp4 --output-json /tmp/alias_victim.mp4 ...
+frames=126 persons=3 status=ok          # 1.4 s, on GPU
+$ file /tmp/alias_victim.mp4
+/tmp/alias_victim.mp4: JSON Data
+```
+
+The result document it wrote over the video still claimed `status: ok`. This is the one class
+of defect this repository treats as unforgivable: the operator's own footage, destroyed by a
+flag typo, with the artifact reporting success. It is reachable only from a hand-typed CLI
+call — the stage never passes the same path twice — which is exactly why the CLI boundary is
+where the guard belongs.
+
+**The first fix had the same bug.** It detected `--result-path clip.mp4` and then reported the
+refusal by writing the result document — over the video, from `main()`'s `finally`. Measured
+with the patched worker on a second copy: md5 changed, file became JSON. So the `--result-path`
+refusal now happens *before* the `try`, prints to stderr, exits 1, and writes nothing at all;
+the stage then fails on its own missing-result check. Post-fix: md5 of the copy unchanged
+(`7ce51fdfb3cfaa9e790c7750d8564e72`), exit code 1, `file` still reports MP4. The operator's
+real `data/input_videos/` was never touched — every one of these runs used `/tmp` copies.
+
+`65f7b49` then fixed the guard failing the way the thing it guards against fails. `resolve()`
+on a symlink loop raises **`RuntimeError`**, not `OSError` (measured: `RuntimeError: Symlink
+loop`), so the original `except OSError` missed it and the guard could kill the worker with no
+result document at all. It also stopped calling `--output-json` an "input". A refusal message
+that is wrong about the harmless case teaches a reader to distrust it in the case that matters.
+
+Disposition of that lineage: it is left terminal in `correction_required`. The correction plan
+was captured (28 correction lines against a budget of 200) and the provider then closed with
+`corrected_candidate_unavailable` — a committed-only candidate's tree is pinned, so the fix
+cannot be applied inside that transaction. That is now the third time this repository has hit
+it, and the accepted path each time is the same: the correction ships as its own commit and
+gets a fresh lineage, which is what `f29efe6` and `t15-aliasfix-f29efe6-a` are. The reviewed
+bytes stay reviewed.
+
+### `test_auto_defers_to_the_worker` asserted the shape of its own fake
+
+`R3-auto-device-dead-stub`, from the worker-tests review, and the most valuable finding of the
+feature. The test monkeypatched `resolve_device` to return `(None, "cpu", …)` and then asserted
+`"device" not in last_kwargs`. No branch of the real `resolve_device` returns `None`, so the
+test could not fail for any reason, in precisely the layer where this repository already had a
+silent-CPU incident (§16). Replaced in `8e5cd6c` with three tests against the real resolver:
+`auto` with no GPU passes explicit `"cpu"` and records `requested_device=auto` plus the fallback
+reason; `auto` with a GPU passes `0` and records no reason; and no branch defers the choice.
+Forcing `auto` to return the `None` the fake invented now kills three named tests. The
+`resolve_device` docstring, which promised "`auto` becomes `None`", was lying and is corrected
+in the same commit.
+
+### `person_id` could be a car, and two tests defended it
+
+`R3-non-person-classes`, from the stage review. `persons.classes` accepted any COCO id **and**
+an empty list, so `classes: [2]` loaded, the worker tracked vehicles, and the result was
+written into `persons/frames.parquet.person_id` with a summary row answering "how many people
+appear". Two tests asserted the empty filter was *allowed*, as "a legal, deliberate choice" —
+when empty means "no filter", which means all 80 classes. A test protecting a hole is worse
+than no test, because it makes the hole read as a feature.
+
+The run was traceable — `parameters.classes` is in the raw document, the class list is in the
+fingerprint — and that is why the guard was missing: traceability is not readability. A
+consumer who opens only the Parquet cannot tell what the column counted. So `cf57d5b` makes
+`person_classes_only: true` the default (non-person classes and `classes: []` refused at load),
+keeps the opt-in expressible, and records `coco_classes` in the file metadata of *both* tables,
+with a test that reads it back from each. Default-on is the reversible half: it can only break a
+config that was already producing a mislabelled table, and the message names both settings that
+could mean it.
+
+Same commit closes `R3-persons-in-frame-unverified`: `_check_frames` already recomputed
+`per_frame` and never compared it to what each row declares, so a frame whose rows all said "1
+person" while holding two rows passed everything. Two tests added; deleting the comparison
+kills both by name.
+
+### Advisories left open, on purpose
+
+`R3-gap-semantics` (`longest_gap_seconds` is meaningless for a one-frame track, not zero) and
+`R3-zero-measured-with-detections` are wording/interpretation questions in schemas a consumer
+may already read, and `R4-001`/`R4-002` from the resilience lens are general robustness notes
+on the stage. `R3-atomicity-unproved` and `R3-nondirectory-fixture` (worker tests) and `R2-001`
+(stage readability) are test-shape and readability notes. None of them changes a number a
+reader would quote, and each would be its own change; they are follow-ups, not blockers, and
+this section is where that judgement is recorded rather than in a silent omission.
+
+### Facts I corrected in my own documentation
+
+`persons` is the **fifth** torch environment (`whisperx`, `diarization`, `diarization_nemotron`,
+`activespeaker`, `persons`) and the **seventh** uv project overall. The worker had written
+"sixth" in `config.py` and `config.example.yaml`; both fixed in `f20d98d`, which also corrected
+the README's `36 of the 40 artifacts` to `36 of the 43`. Neither number is prose-only any
+more: `test_readme_claims.py` now asserts `len(MANIFEST_ARTIFACTS) == 43` and computes the 36
+from the same registry minus the seven paths no dataset on this disk has produced, so the
+second number cannot rot by being retyped.
+
+### State
+
+Suite: **1427 unit collected, 1419 passed, 8 skipped**; e2e **42 passed**; pyflakes clean on
+every touched file. The ratchet moved 1252 → 1300 → 1357 → 1412 → 1418 → 1419 → 1421 → 1427,
+each link green on its own tree in a fresh detached worktree.
+
+Chain of ten commits: `c5f0a5a` environment, `b9e1c68` worker, `e69cb92` worker tests,
+`5ffe73b` stage + its 57 tests + the two tables, `d18fcf2` lockfile (deliberately separate:
+222 KB of resolved bytes would bury 67 lines of pinning rationale), `f20d98d` config surface +
+README, `f29efe6` the alias refusal, `65f7b49` the guard's own two defects, `8e5cd6c` the dead
+device test, `cf57d5b` the classes contract.
+
+Two `git` accidents during the split are worth recording as process, not as history: an
+`--amend` overwrote the lockfile commit's message with the stage message, and the fix was to
+rebuild **both** commits with `git commit-tree` from the exact trees already in the object
+store rather than invent content. Nothing was pushed at that point, so no remote saw it.
+
+**Next**: push the chain (normal fast-forward, authorized). T16 `stories` stays blocked on
+credentials and a cost decision. T14's third link still has no approval — `review-resilience`
+returned `reviewer-empty-output` twice for `f862e06` and no verdict was invented for it.
