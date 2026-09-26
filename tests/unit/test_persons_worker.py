@@ -307,16 +307,50 @@ class TestArgumentsReachUltralytics:
         assert payload["status"] == "ok", payload.get("error")
         assert FakeModel.last_kwargs["device"] == "cpu"
 
-    def test_auto_device_omits_the_argument_so_the_library_chooses(
-            self, worker, tmp_path, clip, frame_index_file, monkeypatch):
+    def test_auto_resolves_here_and_the_resolved_device_reaches_the_call(self, worker, tmp_path,
+                                                                        clip, frame_index_file,
+                                                                        monkeypatch):
+        """The real resolver, not a stubbed one.
+
+        The first version of this test replaced ``resolve_device`` with a lambda returning
+        ``(None, "cpu", ...)`` and asserted ``"device" not in last_kwargs`` -- a passing test for
+        a code path the worker never produces, because the real resolver has no branch that
+        returns ``None``. It was asserting the shape of its own fake. Native review caught it
+        (R3-auto-device-dead-stub).
+
+        So: no GPU visible, ``auto`` must arrive as an explicit ``cpu``, and the document must
+        say why -- which is what makes a CPU run distinguishable after the fact.
+        """
         FakeModel.results = [FakeResult(0, [1])]
-        monkeypatch.setattr(worker, "resolve_device",
-                            lambda requested: (None, "cpu", "torch.cuda.is_available() was False"))
+        monkeypatch.setitem(sys.modules, "torch", _torch_stub(cuda=False))
         payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
                              extra=["--device", "auto"])
         assert payload["status"] == "ok", payload.get("error")
-        assert "device" not in FakeModel.last_kwargs
+        assert FakeModel.last_kwargs["device"] == "cpu"
+        assert payload["_document"]["requested_device"] == "auto"
+        assert payload["_document"]["device"] == "cpu"
         assert payload["_document"]["device_fallback_reason"]
+
+    def test_auto_on_a_gpu_arrives_as_the_index_the_library_wants(self, worker, tmp_path, clip,
+                                                                 frame_index_file, monkeypatch):
+        """The other auto branch, same plumbing, recorded with no fallback reason."""
+        FakeModel.results = [FakeResult(0, [1])]
+        monkeypatch.setitem(sys.modules, "torch", _torch_stub(cuda=True))
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=["--device", "auto"])
+        assert payload["status"] == "ok", payload.get("error")
+        assert FakeModel.last_kwargs["device"] == 0
+        assert payload["_document"]["device"] == "cuda"
+        assert payload["_document"]["device_fallback_reason"] is None
+
+    def test_no_device_choice_ever_defers_the_decision_to_the_library(self, worker, monkeypatch):
+        """Pin the invariant that makes the ``device_arg is not None`` guard non-decorative."""
+        for requested, cuda_visible in (("auto", False), ("auto", True), ("cpu", True),
+                                       ("cuda", True)):
+            monkeypatch.setitem(sys.modules, "torch", _torch_stub(cuda=cuda_visible))
+            argument, name, _reason = worker.resolve_device(requested)
+            assert argument is not None, f"{requested} deferred the choice to ultralytics"
+            assert name in ("cpu", "cuda")
 
 
 # --------------------------------------------------------------- refusal over empty
