@@ -1135,16 +1135,18 @@ attempt is kept locally as tag `t14-split-original`; the chain reproduces the sa
 
 | link | commit | diff | tier | lenses | outcome |
 |---|---|---|---|---|---|
-| fixtures + R generator | `5eb1214` | 95 KB (two CSVs) | see §22 | see §22 | see §22 |
-| the coordinate maths | `4ec3a33` | 27 KB | medium | 1 (reliability) | **approved**, 3 advisories |
-| stage + registration | `f862e06` | 95 KB | high | 4 | **incomplete** — see below |
-| reference comparison + docs | `23045e5` | 38 KB | medium | 1 (reliability) | **approved**, 2 advisories |
+| fixtures + R generator | `5eb1214` | 95 KB (two CSVs) | — | — | not reviewed, by choice — see below |
+| the coordinate maths | `4ec3a33` | 27 KB | medium | 1 (reliability) | **approved**, 3 advisories (`review-1a81688e2fc83328`) |
+| stage + registration | `f862e06` | 95 KB | high | 4 | **incomplete** — see below (`review-ad44829afd37f703`) |
+| reference comparison + docs | `23045e5` | 38 KB | medium | 1 (reliability) | **approved**, 2 advisories, both fixed in `e0c466d` (`review-4bf6d0329637df4b`) |
+| the rebuild tests + this section | `e0c466d` | 18 KB | medium | 1 (reliability) | **approved, no findings** (`review-c29f8477ff8ab47e`) |
 
-The fixture commit was the one link this task intended to leave unreviewed: it is two CSVs
-no code reads except through the tests that check them against the reference, and their bytes
-are the reference's own output, so the only reviewable claim in them is the generator script
-that reproduces them. That was an intention, not a measurement — so it is checked below
-rather than asserted.
+The fixture commit is the one link left unreviewed, and that is a judgement, not an
+outcome: it is two CSVs no code reads except through the tests that check them against the
+reference, their bytes are the reference's own output, and the reviewable claim in them is
+the generator script that reproduces them — which the approved reference-comparison commit
+exercises end to end. An operator who wants that link reviewed should say so; the lineage
+starts cleanly from `8ea9b11`'s successor.
 
 **Link 3 could not be completed, and no verdict was invented for it.** The provider pinned
 the lineage (`review-ad44829afd37f703`, target `sha256:b3d3174cdb…`) and asked for four
@@ -1198,3 +1200,12 @@ Both figures, and the corpus-wide 9.55e-15, are now stated where each applies.
 
 Suite after the fix: **1237 unit collected, 1228 passed, 8 skipped** (the 8 pre-existing
 matplotlib guards), README counts moved 1233 → 1237.
+
+**Link 5's own review came back with no findings at all** (`review-c29f8477ff8ab47e`,
+medium tier, `review-reliability`, store revision `sha256:ccbdc2d3…`, authority burned). It
+is recorded here rather than amended into the reviewed commit, because the approval receipt
+pins the tree it was issued against. The link 2 advisories (`R3-derived-nonfinite-basis`,
+`R3-numeric-conversion-overflow` — both about the math module rejecting non-finite
+coordinates earlier than the call site does — and the `R3-row-assembly-coverage` suggestion)
+stay open as advisory follow-ups, in the same posture as T21's: non-blocking, not reopening
+any review.
