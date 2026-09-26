@@ -234,6 +234,299 @@ class TestDatasetLayoutMatchesTheRegistry:
         assert not unknown, f"README names Parquet artifacts that are not registered: {sorted(unknown)}"
 
 
+class TestInstallChainNamesRealIdentifiers:
+    """The install section must name settings that exist, and no others.
+
+    §20.6 asks for a chain a clean machine can follow in order. The failure mode of that
+    prose is not a missing step, it is a step written against a setting nobody implemented
+    — an env var that nothing reads, or a config key the schema rejects as unknown.
+    """
+
+    SECTION = "## Install from nothing"
+
+    def section(self) -> str:
+        start = README.index(self.SECTION)
+        rest = README[start + len(self.SECTION):]
+        end = rest.index("\n---\n")
+        return rest[:end]
+
+    def test_the_section_exists_and_covers_every_prerequisite_class(self) -> None:
+        section = self.section()
+        for needle in ("uv", "ffmpeg", "flite", "openpose.root", "HF_TOKEN",
+                       "talknet_root", "install_spacy_models.sh", ".env.example",
+                       "config/config.example.yaml"):
+            assert needle in section, f"the install chain no longer names {needle}"
+
+    def test_every_environment_variable_it_names_is_a_real_one(self) -> None:
+        """Against .env.example, the schema's holder field, and the .env opt-out switch.
+
+        Every other env var in this repository is an interpolation the *user* invents in
+        their own YAML, so the chain may not name one that the shipped template lacks —
+        an operator who exports it gets silence, which is the defect class the whole
+        install section exists to prevent.
+        """
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        template_keys = set(re.findall(r"^([A-Z][A-Z0-9_]*)=", example, re.MULTILINE))
+        from multimodal_pipeline.config import DiarizationConfig
+
+        shell_vars = {"PATH"}  # a shell variable, not a credential
+        known = (template_keys | {DiarizationConfig().hf_token_env}
+                 | {"MULTIMODAL_PIPELINE_NO_DOTENV"} | shell_vars)
+        # Only an underscore-joined name in backticks reads as "export this", so that is
+        # the shape policed here; `HF_TOKEN` is matched even without a second underscore.
+        named = set(re.findall(r"`([A-Z][A-Z0-9]*_[A-Z0-9_]*)`", self.section()))
+        invented = named - known
+        assert not invented, f"the install chain names env vars nothing reads: {sorted(invented)}"
+        assert "HF_TOKEN" in named, "the credential the whole chain exists to supply went missing"
+
+    def test_every_config_setting_it_names_parses_in_the_schema(self) -> None:
+        """A dotted path like `openpose.root` must be a real field on a real sub-model."""
+        from multimodal_pipeline.config import PipelineConfig
+
+        config = PipelineConfig.model_validate(
+            {"input": {"directory": "/tmp/in"}, "output": {"directory": "/tmp/out"}}
+        )
+        named = set(re.findall(r"`([a-z_]+\.[a-z_]+)`", self.section()))
+        # Only a wholly backtick-quoted `section.field` counts, so filenames that happen to
+        # look like paths (`…/openpose/openpose.bin`) are not mistaken for config keys. A
+        # name whose section is not a real stage section is skipped for the same reason.
+        missing = []
+        for dotted in sorted(named):
+            section, field = dotted.split(".")
+            if not hasattr(config, section):
+                continue
+            sub = type(getattr(config, section))
+            if hasattr(sub, "model_fields") and field not in sub.model_fields:
+                missing.append(dotted)
+        assert not missing, f"the install chain names config keys the schema rejects: {missing}"
+        # Teeth: the check above is vacuous if the chain stopped naming settings at all.
+        assert {"openpose.root", "activespeaker.talknet_root"} <= named, named
+
+
+class TestInspectEnvironmentWarningsAreQuotedVerbatim:
+    """§20.6: a README that drifts from the tool is worse than a terse one.
+
+    The pre-flight warnings are the install chain's payoff, so the README quotes them as
+    text. Two halves keep that honest:
+
+    * every *whole* message built in `cli.py`'s four `*_warnings` functions is still
+      quotable there, pulled from the AST rather than typed by hand, so renaming a message
+      retires the assertion instead of leaving it to rot;
+    * the warnings the shipped example config actually produces are quoted, produced by
+      calling the command during the test.
+
+    `tests/unit/test_environment_warnings.py` checks *which* situations warn; nothing else
+    checked that the README still quoted the warning it produced.
+    """
+
+    MIN_FRAGMENT = 30
+
+    def static_messages(self) -> list[str]:
+        """Whole literal messages from the warning functions, docstrings excluded."""
+        import ast
+
+        tree = ast.parse((ROOT / "src" / "multimodal_pipeline" / "cli.py").read_text(encoding="utf-8"))
+        fragments: list[str] = []
+        for node in tree.body:
+            if not (isinstance(node, ast.FunctionDef) and node.name.endswith("_warnings")):
+                continue
+            docstring = (node.body[0].value.value
+                         if node.body and isinstance(node.body[0], ast.Expr)
+                         and isinstance(node.body[0].value, ast.Constant)
+                         and isinstance(node.body[0].value.value, str) else None)
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.JoinedStr):
+                    # Adjacent literals of one f-string are one message: the first two
+                    # segments of `f"{cfg.hf_token_env} is not set: …"` are meaningless
+                    # apart, so they are joined here rather than compared separately.
+                    buffer = ""
+                    joined = []
+                    for part in inner.values:
+                        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                            buffer += part.value
+                        elif buffer:
+                            joined.append(buffer)
+                            buffer = ""
+                    if buffer:
+                        joined.append(buffer)
+                    fragments.extend(joined)
+                elif isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    if inner.value != docstring:
+                        fragments.append(inner.value)
+
+        kept = set()
+        for fragment in fragments:
+            collapsed = " ".join(fragment.split())
+            # A fragment that begins or ends on punctuation sits next to an interpolation
+            # ("… not found under ", ": English linguistics fall back to '"): it is a
+            # variable's neighbourhood, not a sentence a document can quote.
+            if len(collapsed) >= self.MIN_FRAGMENT and collapsed[0].isalnum() and collapsed[-1].isalnum():
+                kept.add(collapsed)
+        return sorted(kept)
+
+    def test_the_probe_yields_the_messages_it_claims_to_check(self) -> None:
+        messages = self.static_messages()
+        # Guard against the class passing because a refactor made every message computed:
+        # then there would be nothing to check and the ratchet would be silently dead.
+        assert len(messages) >= 3, f"only {messages} quotable warnings found in cli.py"
+        assert any("diarization will be skipped" in m for m in messages)
+        assert any("translation will be skipped" in m for m in messages)
+
+    def test_every_warning_message_is_still_in_the_readme(self) -> None:
+        normalised = " ".join(README.split())
+        missing = [m for m in self.static_messages() if m not in normalised]
+        assert not missing, (
+            "inspect-environment says things the README no longer quotes (or the wording "
+            f"drifted): {missing}"
+        )
+
+    def test_the_example_config_warnings_are_quoted_verbatim(self, monkeypatch) -> None:
+        """Produce the warnings the install chain tells you to expect, and match its words.
+
+        Called through the same function the command prints, rather than as a subprocess:
+        the strings are the contract, and the command's own output shape is covered in
+        `tests/e2e/test_cli_smoke.py`.
+        """
+        from multimodal_pipeline.cli import _environment_warnings
+        from multimodal_pipeline.config import load_config
+
+        # The repository's own .env must not decide what this probe sees.
+        monkeypatch.setenv("MULTIMODAL_PIPELINE_NO_DOTENV", "1")
+        for name in ("HF_TOKEN", "LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_MODEL"):
+            monkeypatch.delenv(name, raising=False)
+
+        warnings = _environment_warnings(load_config(ROOT / "config" / "config.example.yaml"))
+        assert any("HF_TOKEN is not set" in warning for warning in warnings), warnings
+        normalised = " ".join(README.split())
+        # The input-directory warning ends in the config's own path, so it is quoted by its
+        # stable prefix plus the value the shipped example actually holds.
+        unquoted = [w for w in warnings
+                    if w not in normalised
+                    and not (w.startswith("input directory does not exist")
+                             and "/data/videos" in README)]
+        assert not unquoted, f"warnings the shipped config produces but the README omits: {unquoted}"
+
+
+class TestDenseTableHonesty:
+    """The single most misleading sentence in this file used to be "one row per 25 FPS frame".
+
+    Measured on the KABC clip: 126 source frames, 105 rows in
+    `speaker/active_speaker_frames.parquet`, and only 1 row where the grid second equals the
+    source second. A reader who took "frame" for a source frame joined pose to the wrong
+    frames on 102 of 105 rows and got numbers that looked fine. So the qualifier is asserted
+    next to the claim, in both places that make it.
+    """
+
+    def test_the_grid_is_named_wherever_the_dense_claim_is_made(self) -> None:
+        """Every 25 FPS claim *about rows* must say the grid is not the source frames.
+
+        A bare "at 25 FPS" sentence about TalkNet's sampling rate is fine; "one row per
+        25 FPS frame" without the qualifier is the sentence that cost a reader a wrong join.
+        """
+        mentions = [line for line in README.splitlines() if "25 FPS" in line]
+        assert mentions, "the active-speaker table is no longer described as 25 FPS"
+        claims = [line for line in mentions if "row" in line or "dense" in line]
+        assert claims, "no per-row 25 FPS claim left to police"
+        unqualified = [line.strip()
+                       for line in claims
+                       if "grid" not in line and "source" not in line
+                       and "working timeline" not in line]
+        assert not unqualified, (
+            "a 25 FPS claim with no note that the grid is not the source frames: "
+            f"{unqualified}"
+        )
+
+    def test_the_join_rule_is_stated(self) -> None:
+        """The rule must be stated in the direction that is true, not merely mentioned.
+
+        A substring test on `never on `frame_number`` passes when the sentence is inverted
+        to "join on `frame_number`, never on `source_timestamp`" -- both phrases are then
+        present and the README tells a consumer the exact wrong thing. So the assertion is
+        on the sentence shape: somewhere the README must pair "join on" with
+        `source_timestamp` and forbid `frame_number`, and must never state the reverse.
+        """
+        join_forward = re.search(
+            r"join on `source_timestamp`,? never (?:on )?`frame_number`", README)
+        assert join_forward, (
+            "README no states the pose/active-speaker join rule in the true direction "
+            "(join on `source_timestamp`, never `frame_number`)")
+        join_backward = re.search(
+            r"join on `frame_number`,? never (?:on )?`source_timestamp`", README)
+        assert join_backward is None, (
+            "README states the inverted join rule: `frame_number` is the ASD stage's 25 FPS "
+            "grid index, not a source frame, so joining pose to it on `frame_number` "
+            "silently misaligns every non-25 fps clip")
+        assert "source_timestamp" in README
+
+    def test_the_frame_columns_come_from_the_grid_not_the_source(self) -> None:
+        """Pinned against the code, not the prose: frame_number *is* the 25 FPS index."""
+        source = (ROOT / "src" / "multimodal_pipeline" / "stages" / "activespeaker.py").read_text(encoding="utf-8")
+        assert '"frame_number": row.get("frame_25fps")' in source, (
+            "the stage no longer maps frame_number onto the worker's 25 FPS index; if the "
+            "grid became the source frame, the README's join rule and this test both change"
+        )
+        worker = (ROOT / "workers" / "activespeaker_worker.py").read_text(encoding="utf-8")
+        assert "OUTPUT_FPS = 25" in worker
+
+
+class TestWorkedExampleMatchesTheManifest:
+    """The §20.6 worked example must not promise a file the datasets do not have.
+
+    `data/processed/` is gitignored, so this checks the *claim* rather than the bytes: the
+    README asserts an exact artifact count per dataset and says which registered artifacts
+    are absent from those datasets. Both halves are cheap to state and expensive to get
+    wrong, because a reader follows the README's file list literally.
+    """
+
+    def test_the_artifact_count_it_quotes_is_the_manifest_key_count(self) -> None:
+        # 40 registered manifest candidates minus the four produced only by stages newer
+        # than every dataset on this disk.
+        from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
+
+        never_produced = {"pose_normalized", "pose_images_raw",
+                         "speaker_fusion_pyannote", "speaker_fusion_nemotron"}
+        assert len(MANIFEST_ARTIFACTS) == 40
+        assert len(set(MANIFEST_ARTIFACTS) - never_produced) == 36
+
+    def test_the_example_never_walks_an_absent_artifact_as_a_file_that_exists(self) -> None:
+        """No row of the walked table may present a never-produced artifact as present.
+
+        Narrower than "do not mention the name": the README is allowed (and required) to
+        say these four are absent, which it does in prose. What it may not do is hand the
+        reader a file-by-file table with a row that implies the file is in the dataset.
+        """
+        absent = {"pose/normalized.parquet", "speaker/fusion_pyannote.parquet",
+                  "speaker/fusion_nemotron.parquet", "pose/raw_images"}
+        section = README[README.index("### One dataset, file by file"):]
+        section = section[:section.index("### How to consume it")]
+        walked = []
+        for line in section.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("| `"):
+                first = stripped[3:].split("`")[0]
+                walked.append(first)
+        assert walked, "the worked example no longer walks any file in a table"
+        promised = sorted(set(walked) & absent)
+        assert not promised, (
+            f"the worked example walks {promised}, which no dataset under data/processed/ "
+            "contains — the stage that writes it is newer than every run on this disk"
+        )
+
+    def test_the_worked_example_is_the_regenerable_dataset(self) -> None:
+        # §20.6 asks for real values; the *reproducible* half only holds for the fixture
+        # corpus, which is why that is the one walked file by file.
+        section = README[README.index("### One dataset, file by file"):]
+        assert "pipeline_demo" in section
+        assert "make_fixtures.sh" in section
+
+    def test_the_committed_fixture_durations_agree_with_the_prose(self) -> None:
+        # 9.985 s is quoted in the quick start and in the worked example; make_fixtures.sh
+        # asks for 14 s and -shortest trims it. Both sentences must keep agreeing.
+        script = (ROOT / "scripts" / "make_fixtures.sh").read_text(encoding="utf-8")
+        assert "-shortest" in script
+        assert README.count("9.985") >= 2
+
+
 def test_pytest_is_available_for_the_documented_test_command() -> None:
     """The README tells you to run `uv run --with pytest pytest tests/unit`."""
     assert (ROOT / "tests" / "unit").is_dir()

@@ -137,8 +137,9 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       binary (below). Evidence in §19.
 - [x] **T11** `scripts/make_dataset_figures.py` + committed `docs/assets/` (stage graph, active-speaker
       strip, speaker-turn strip, pose skeleton) — `950284b` (this commit, amended before any push), evidence in §15.
-- [ ] **T12** §20.6 README: install from nothing, what each stage decides, one worked
-      example dataset, how to consume it.
+- [x] **T12** §20.6 README: install from nothing, what each stage decides, one worked
+      example dataset, how to consume it. Four new sections, 16 new claims-tests, and one
+      README defect fixed (see §23).
 - [x] **T13** §20.1: fuse pyannote turns with per-frame active speaker, v1 kept beside it —
       `d9120dd`, evidence in §17. Named `speaker_fusion`, not `diarization_v2`: it does not
       re-segment audio, so a `diarization`-prefixed name would promise a diarizer and read as
@@ -1213,3 +1214,69 @@ pins the tree it was issued against. The link 2 advisories (`R3-derived-nonfinit
 coordinates earlier than the call site does — and the `R3-row-assembly-coverage` suggestion)
 stay open as advisory follow-ups, in the same posture as T21's: non-blocking, not reopening
 any review.
+
+## 23. T12 — the README that installs, and the join rule it had wrong
+
+§20.6 asked for four things and the README had none of them at the depth it asked for.
+Added, with the tests in `tests/unit/test_readme_claims.py` so the claims rot loudly
+instead of quietly:
+
+- **Install from nothing** (`## Install from nothing`): the prerequisite chain as a table —
+  tool, the command that proves it, and what its absence costs. Every warning string is
+  quoted from `cli.py` and a test runs the real probe to check the README still quotes
+  them; every env var and config key it names is checked against `.env.example` and the
+  actual schema, so the README cannot advertise `TRANSLATION_API_KEY` when the code reads
+  `LITELLM_API_KEY`. Also corrected a claim I had written earlier and never stated the
+  limit of: `--python 3.12` is not just the corpus version, it is the **only** version
+  inside all six environment ranges — `activespeaker` is `>=3.10,<3.13` and
+  `diarization_nemotron` is `>=3.12,<3.13`, so 3.13 is legal for the orchestrator and four
+  of six environments and never for those two.
+- **What each stage decides** (`## What each stage decides`): why the frame tables are
+  dense, what `face_status` and `frame_reason` separate, what `score_imputed` costs, what
+  `spacy_model: blank` costs, what `language_detection.status: low` warns about.
+- **One dataset, file by file** (`### One dataset, file by file`): `pipeline_demo`, chosen
+  over the broadcast clips because `scripts/make_fixtures.sh` rebuilds it from nothing, so
+  every number is reproducible on a reader's machine. Its honest emptiness is the point:
+  `pose/body.parquet` has **0 rows** because the TTS/`testsrc` clip contains no person, and
+  `pose/raw/` still holds 249 JSON files proving every frame was processed. A snippet that
+  prints `manifest.json` + `status.json` is reproduced **verbatim** — all 16 output lines
+  diffed against the real run, not paraphrased.
+- **How to consume it** (`### How to consume it` + `### The invariants a consumer may rely
+  on`): three load snippets and a two-tier invariant list. Tier 1 is what `validate()`
+  actually enforces; Tier 2 is what is true of the seven datasets on this disk and enforced
+  by nothing. Collapsing those two tiers is how documentation becomes a lie after one
+  hand-edit, so they are separated by name.
+
+**The defect this task found in the README, not in the pipeline.** The dataset tree
+described `speaker/active_speaker_frames.parquet` as "one row per 25 FPS frame (dense)".
+A reader joins that on `frame_number` and gets silently wrong answers on every clip that is
+not 25 fps. It is dense on a **25 FPS grid the TalkNet worker invents**, not on source
+frames: `src/multimodal_pipeline/stages/activespeaker.py:291` assigns `frame_number` from
+`row.get("frame_25fps")`, `timestamp` is the grid second, and `source_timestamp` is the real
+source time. Measured on KABC (2997/100 fps, 126 source frames): 105 rows numbered 0..104,
+`timestamp` 0.04 where `source_timestamp` is 0.033367, and `pose/body.parquet` covers all
+126 source frames up to 4.170838 s. La-1: 240 source frames → 200 rows. On a real 25 fps
+clip the two coincide (`pipeline_demo`: 249 rows), which is exactly why nobody noticed —
+every fixture we own is 25 fps. Stated where §20.6 wanted it: the join rule is
+`source_timestamp`, **never** `frame_number`.
+
+**All four snippets were executed, and one of its tests was vacuous until it was fixed.**
+The parent extracted each fenced block from the README and ran it: the manifest snippet
+reproduces 16/16 lines, and the three consumer snippets reproduce their quoted output
+byte-for-byte (`210 of 252` matched, including source frame 125 matching an ASD row whose
+`source_timestamp` is 4.170838 while the ASD table has no row 125 at all). Mutating the
+README to invert the join rule ("join on `frame_number`, never on `source_timestamp`")
+**survived** `test_the_join_rule_is_stated`, which asserted two substrings joined by `or` —
+both remain present when the sentence is inverted, so the test that guarded the single most
+dangerous claim in the file could not detect its negation. Rewritten to match the sentence
+*shape* and to fail if the reverse order ever appears; the same mutation now kills it. The
+`25 FPS`-wording mutation was already caught (1 test).
+
+Tier 2's numbers were measured rather than estimated, because §20.6's closing rule is that
+a README number must be reproducible: 44 non-empty of 63 existing (timed-table, dataset)
+pairs; `pose` `timestamp` equals its frame's `frame_index.pts_seconds` with **0** exceptions
+across the four pose-bearing datasets; `f0_hz` null exactly when `voiced` is false (634/367
+of 1001). `TIMED_TABLES` is 9 tables, quoted as such.
+
+Suite: **1251 unit collected, 1243 passed, 8 skipped**; e2e 42 passed. The count ratchet
+moved 1237 → 1251 with 16 new README tests.
