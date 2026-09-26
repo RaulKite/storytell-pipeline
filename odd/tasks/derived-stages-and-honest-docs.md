@@ -1688,3 +1688,77 @@ choice: `5eb1214` (the two R-generated CSVs and their generator — §22's table
 (`review-4bf6d0329637df4b`), `e0c466d` (`review-c29f8477ff8ab47e`) — has an approval receipt.
 §22's open question — "still unreviewed: link 3" — is resolved: it was reviewed, and it failed,
 and the failure is fixed.
+
+## 30. The two "non-blocking" advisories were a crash and a silent NaN
+
+`R3-derived-nonfinite-basis` and `R3-numeric-conversion-overflow` were recorded in §22 as
+advisories about the maths module "rejecting non-finite coordinates earlier than the call site
+does". Reading them as housekeeping was wrong: reproduced, each is a real defect, and the second
+one is a stage-killing crash.
+
+**The silent one.** `mask_coordinate` refuses a coordinate that is itself NaN or infinite, but
+two *finite* doubles overflow the arithmetic built from them:
+
+```
+MidHip (1e308, -1e308) -> Neck (1e308, 1e308)
+vi = (0.0, inf)   denominator = -inf   state = basis_ok
+normalize_point -> (nan, nan)   value_status = "normalized"
+```
+
+A row carrying NaN under the status that means *measured*. On this table null is absence and a
+number is a position, so NaN is neither — and `validate` cannot see it, because the row is
+internally consistent (coordinates present, `basis_state == basis_ok`). The vocabulary had no
+word for it.
+
+**The loud one, and worse.** The `basis_ok` detail string computed the vector length as
+`(vi[0] ** 2 + vi[1] ** 2) ** 0.5`, and Python's `**` **raises** `OverflowError` on `1e200 ** 2`
+where IEEE division would have produced `inf`. `MidHip (1, 1) -> Neck (1e200, 2)` took the whole
+stage down with `OverflowError: (34, Numerical result out of range)` — one absurd row destroying
+every other video's rows, in the one method whose comment promises everything is checked before
+an output file is opened. That is the failure mode §28's fix was also about, reached from a
+different direction: a validation gap that turns data into a crash.
+
+Both now produce `basis_non_finite`, a fourth `basis_state`, deliberately not folded into
+`basis_degenerate`: that one claims the two joints *coincide*, which is a statement about a body,
+and this is a statement about the bytes. Closed vocabulary is four values, README and schema
+comment updated, and the stage's existing cross-checks needed no change — "coordinates while
+`basis_state != basis_ok`" already catches a row that tries to disagree with its own state.
+
+Three things measured rather than asserted:
+
+- **The hypot swap moves a reader's number, so it was checked.** All 2661 `MidHip->Neck` bases
+  of the seven processed videos, formatted under `%g` both ways: **zero disagreements**.
+- **The corpus cannot reach either symptom today**, and that is the argument for guarding anyway:
+  113 896 coordinates read from `pose/body.parquet`, zero non-finite, real range `[3.94,
+  1264.1]` pixels — and the column is `double`, so nothing upstream clamps what a future
+  OpenPose build writes into it.
+- **The fix does not invalidate the one dataset that exists.** Re-running the pure transform over
+  KABC's real body table reproduced all 3775 rows with zero differing cells. That matters here
+  specifically because `pose_normalized`'s fingerprint is `{transformation, body_digest}` and
+  **does not include the Python that computes the numbers** — unlike a `WorkerStage`, whose
+  `digest_payload` mixes in `worker_code_digest` precisely so a code fix cannot be silently
+  reused. A maths change to this stage would have been served stale from cache; it happens to be
+  a no-op on this corpus, so nothing needs invalidating now. (`speaker_fusion` has the same gap,
+  and was closed by §21's explicit stale-output refusal instead — which is the general answer if
+  the operator decides not to widen any fingerprint.)
+
+That last point is the structural finding, and it is left open on purpose. Checked by reading
+each stage's resolved `config_fingerprint`, not by assuming a class hierarchy: only
+`pose_normalized` and `speaker_fusion` define their own fingerprint with no code digest at all.
+`persons` is a `WorkerStage`, so it does mix in `worker_code_digest` — but of
+`workers/persons_worker.py`, which is the detection half; the row normalisation that turns that
+JSON into the two Parquet tables lives in `stages/persons.py` and is not in any digest. So the
+inconsistency is narrower than "the three Python stages": it is *the Python that computes rows in
+the stage process*, which for `persons` is only the normalisation half. Making that consistent
+changes every fingerprint in the corpus and reruns the derived stages, which is a decision about
+compute cost the operator owns, not something to slip into an advisory fix.
+
+Review: `review-655c2cc38d8349ee`, tier high, 4 lenses (all answered), 91 lines, target
+`sha256:500ef96908916fa7e264b62587b8c4f5a9d1da9f8cd26417698d155689a15719` — **approved**, store
+`sha256:f69db4460dc1c0f022f991a06d6a95e31a96afdb681530952e390378f57f8ade`, authority burned.
+Fix commit `9b5f056`. `R3-row-assembly-coverage`, the third link-2 advisory, is a suggestion about
+test coverage of `normalized_rows` and stays open: nothing here changed what it is about.
+
+The posture correction is the point of this section. §22 wrote "non-blocking, not reopening any
+review" about two findings, and one of them could destroy a whole run. An advisory is non-blocking
+for *the commit that was reviewed*; it is not a claim that the defect is small.
