@@ -318,8 +318,20 @@ persons:
   # so it is forwarded explicitly; a stage that omitted it would silently report the counts a
   # 0.1 threshold produced.
   conf: 0.25
-  # COCO class ids. 0 is `person`; anything else stops being a persons table.
+  # COCO class ids. 0 is `person`, and that is the only value accepted by default.
+  #
+  # Why a guard rather than a comment: every id this stage writes is called `person_id` and the
+  # summary table answers "how many people appear". Set classes to [2] and that column counts
+  # cars -- traceable in the raw JSON and the fingerprint, and unreadable as what it is by
+  # anyone opening the Parquet. An artifact should not be able to look like a different
+  # measurement than it is. `classes: []` is refused for the same reason: no filter means all
+  # 80 COCO classes.
+  #
+  # Deliberately tracking other objects is still expressible; it keeps the column name, so the
+  # honest reading of such a dataset is "detected objects" (both tables record `coco_classes`
+  # in their file metadata, which is what says so).
   classes: [0]
+  # person_classes_only: true
   imgsz: 640                # network input side in px; costs speed ~quadratically
   # timeout_seconds: null   # no default: a 4-hour recording is 720k frames and a guessed
                             # ceiling would fail a legitimate long run

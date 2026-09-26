@@ -686,6 +686,12 @@ PERSON_TRACKER_TYPES: tuple[str, ...] = ("botsort", "bytetrack", "ocsort", "deep
                                          "tracktrack", "fasttrack")
 
 
+#: COCO class id for ``person``. Mirrors ``PERSON_CLASS`` in workers/persons_worker.py, which
+#: cannot import this module: the worker runs inside the persons uv project, which does not
+#: install the pipeline package (the same reason it re-implements its frame-index reading).
+PERSON_COCO_CLASS_ID = 0
+
+
 class PersonsConfig(_Model):
     """YOLO person detection + tracking over the original video (§20.2 / T15).
 
@@ -719,6 +725,17 @@ class PersonsConfig(_Model):
     weights_dir: Path | None = None
     device: str = "auto"
     device_index: int = 0
+    #: Refuse any COCO class other than 0 (person), and refuse an empty ``classes``.
+    #: Default ``true``. The reason is what a wrong value costs a *reader*, not what it costs a
+    #: run: every id in ``persons/frames.parquet`` is called ``person_id`` and the summary table
+    #: says how many people appear, so with ``classes: [2]`` that column counts cars and
+    #: nothing in the Parquet says so. The raw document and the fingerprint do carry the
+    #: classes, so the run is traceable -- but a notebook that joined on the column months
+    #: later sees only a person column that quietly means something else. A measurement
+    #: artifact should not be able to look like a different measurement than it is.
+    #: Set it to ``false`` to track other classes on purpose; the column keeps its name, so the
+    #: honest reading of such a dataset is "detected objects".
+    person_classes_only: bool = True
     #: ByteTracker. NOT the ultralytics default — in 8.4.163 the library default is
     #: ``tracktrack.yaml`` (see ``ultralytics/cfg/default.yaml``), and the two give different
     #: answers on the same clips, which is why this is a deliberate choice rather than an
@@ -795,6 +812,33 @@ class PersonsConfig(_Model):
                     "(0..79). This stage's contract is person detections; keep it [0]."
                 )
         return list(value)
+
+    @model_validator(mode="after")
+    def _person_classes(self) -> "PersonsConfig":
+        """The guard that keeps ``person_id`` meaning a person. See ``person_classes_only``.
+
+        An empty list is refused here as well: the worker then omits ``classes`` entirely and
+        ultralytics returns all 80 COCO classes, so "do not filter" is the most indirect way to
+        fill a person column with a car.
+        """
+        if not self.person_classes_only:
+            return self
+        stray = [index for index in self.classes if index != PERSON_COCO_CLASS_ID]
+        if stray:
+            raise ValueError(
+                f"persons.classes contains {stray}, which is not the person class "
+                f"({PERSON_COCO_CLASS_ID}). Every id this stage writes is called person_id, so "
+                "a table built from other classes would not say what it measures. Set "
+                "persons.person_classes_only to false to opt into that deliberately."
+            )
+        if not self.classes:
+            raise ValueError(
+                "persons.classes is empty, which tells ultralytics to detect all 80 COCO "
+                "classes; persons.person_classes_only=true refuses that because the column it "
+                "writes is called person_id. Set persons.classes to "
+                f"[{PERSON_COCO_CLASS_ID}], or person_classes_only to false."
+            )
+        return self
 
     @field_validator("imgsz")
     @classmethod

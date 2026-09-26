@@ -310,6 +310,12 @@ class PersonsStage(WorkerStage):
                 "weights_sha256": document.get("weights_sha256"),
                 "tracker": document.get("tracker"),
                 "device": document.get("device"),
+                # What the detector was allowed to call a person. Written into the file, not
+                # left in the raw JSON, because `person_classes_only: false` lets a non-person
+                # COCO class into a column named person_id and the table is then the only thing
+                # a consumer opens.
+                "coco_classes": json.dumps(document.get("parameters", {})
+                                          .get("classes", [])),
                 "conf": document.get("parameters", {}).get("conf"),
                 "timestamp_column": "timestamp (source pts_seconds), the pipeline timeline",
             },
@@ -329,6 +335,8 @@ class PersonsStage(WorkerStage):
                 "model": document.get("model"),
                 "weights_sha256": document.get("weights_sha256"),
                 "person_count": document.get("person_ids"),
+                "coco_classes": json.dumps(document.get("parameters", {})
+                                          .get("classes", [])),
             },
         )
 
@@ -516,6 +524,9 @@ class PersonsStage(WorkerStage):
         # the tracks table's counts have to agree with, and re-reading them here is what
         # makes "the two tables describe the same run" a checked property.
         per_frame: dict[int, int] = {}
+        # frame -> the persons_in_frame values its own rows declare. Usually one value per
+        # frame; more than one is itself the defect.
+        declared_per_frame: dict[int, set[int]] = {}
         timestamps: list[float] = []
         for row in iter_rows(path, columns):
             rows += 1
@@ -530,6 +541,9 @@ class PersonsStage(WorkerStage):
             ids.add(int(person_id))
             frame_number = int(row["frame_number"])
             per_frame[frame_number] = per_frame.get(frame_number, 0) + 1
+            if row["persons_in_frame"] is not None:
+                declared_per_frame.setdefault(frame_number, set()).add(
+                    int(row["persons_in_frame"]))
             if len(problems) < 20:
                 problem = self._check_frame_row(row)
                 if problem is not None:
@@ -546,6 +560,27 @@ class PersonsStage(WorkerStage):
         if rows and video_ids != {ctx.video_id}:
             problems.append(f"rows belong to video(s) {sorted(video_ids)}, expected "
                             f"{ctx.video_id!r}")
+        # `persons_in_frame` is the number a "how many people were on screen" query reads, and
+        # it is copied onto every row of a frame by the worker. It is also the one per-frame
+        # value a partial write can get wrong without breaking anything else: dropping the
+        # second row of a two-person frame leaves a consistent table that says 2 while holding
+        # 1, and the row-level check only proves the value is at least 1. So compare the
+        # declared count against the rows actually here, once per frame, at the end.
+        for frame_number in sorted(per_frame):
+            declared = declared_per_frame.get(frame_number, set())
+            if len(declared) > 1:
+                if len(problems) < 20:
+                    problems.append(
+                        f"frame {frame_number} declares persons_in_frame={sorted(declared)} "
+                        f"across its own rows but holds {per_frame[frame_number]}"
+                    )
+            elif declared and next(iter(declared)) != per_frame[frame_number]:
+                if len(problems) < 20:
+                    problems.append(
+                        f"frame {frame_number} declares persons_in_frame="
+                        f"{next(iter(declared))} but the table holds "
+                        f"{per_frame[frame_number]} row(s) on it"
+                    )
         max_in_frame = max(per_frame.values()) if per_frame else 0
         stats = {"rows": rows, "persons": len(ids), "max_persons_in_frame": max_in_frame,
                  "per_frame": per_frame, "ids": ids}
