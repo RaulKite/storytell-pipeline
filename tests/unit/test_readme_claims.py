@@ -526,6 +526,37 @@ class TestWorkedExampleMatchesTheManifest:
         assert "-shortest" in script
         assert README.count("9.985") >= 2
 
+    def test_the_verbatim_snippet_output_is_actually_verbatim(self) -> None:
+        """"Output, verbatim" must survive the next column rename.
+
+        The worked example prints `manifest.json` + `status.json` and claims the block
+        below it is verbatim. Every other claim here is checked against the tree; this one
+        can only be checked by running the snippet, and a stage renamed or a row-count key
+        added makes the block wrong in a way no static assertion sees. Skips without the
+        corpus, like the other tests that read `data/processed/`.
+        """
+        dataset = ROOT / "data" / "processed" / "pipeline_demo"
+        if not (dataset / "manifest.json").is_file():
+            pytest.skip("needs data/processed/pipeline_demo")
+        section = README[README.index("### One dataset, file by file"):]
+        section = section[:section.index("### How to consume it")]
+        snippet = re.search(r"^```python\n(.*?)^```", section, re.DOTALL | re.MULTILINE)
+        claimed = re.search(r"^```text\n(.*?)^```", section, re.DOTALL | re.MULTILINE)
+        assert snippet and claimed, "the worked example lost its snippet or its claimed output"
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-c", snippet.group(1)],
+            cwd=ROOT, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        got = result.stdout.strip().splitlines()
+        want = claimed.group(1).strip().splitlines()
+        assert got == want, "\n".join(
+            [f"README claims {len(want)} lines, the snippet prints {len(got)}:"]
+            + [f"  claim: {line}" for line in want]
+            + [f"  actual: {line}" for line in got])
+
 
 def test_pytest_is_available_for_the_documented_test_command() -> None:
     """The README tells you to run `uv run --with pytest pytest tests/unit`."""

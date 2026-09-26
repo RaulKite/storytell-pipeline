@@ -121,6 +121,13 @@ syncs it on first use, verified on this machine against a throwaway project — 
 `(cd environments/spacy && uv sync --python 3.12)`, because it installs into that
 environment's own venv and says so when the venv is missing.
 
+That laziness has one cost worth knowing before a long batch: the resolution happens
+*inside* the stage that first uses the project, so a dependency that cannot resolve fails
+as a stage failure mid-run rather than as an install error up front — and the first stage
+of each kind is the slow one, since it pays the download. `uv sync` each environment once
+before a batch you want to finish unattended; `inspect-environment` will not tell you that
+you skipped it, because skipping it is legitimate.
+
 **3. Secrets, then config, in that order.** `cp .env.example .env` and fill it in; the
 committed template is deliberately unusable (`HF_TOKEN=` empty,
 `LITELLM_API_KEY=sk-example-not-a-real-key`). Copying it is not enough for translation:
@@ -1391,7 +1398,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1251 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1252 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1447,7 +1454,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1251 tests
+tests/unit/                1252 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

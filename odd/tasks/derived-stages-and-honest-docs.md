@@ -1280,3 +1280,37 @@ of 1001). `TIMED_TABLES` is 9 tables, quoted as such.
 
 Suite: **1251 unit collected, 1243 passed, 8 skipped**; e2e 42 passed. The count ratchet
 moved 1237 → 1251 with 16 new README tests.
+
+### 23.1 The T12 review receipt, and the one advisory that was a real gap
+
+Native review of `24ad40c`, lineage `t12-readme-24ad40c-b`, base `e8d3db6` (committed
+range), tier **high**, 3 paths / 960 changed lines. All four lenses were captured
+(`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) and the
+review **approved**; authority burned at store revision
+`sha256:c091e3150e9b3d46d21afbe5bf1afe870f3a229d6e4ff89d0130dd8951daa5b6`, target identity
+`sha256:dbd24661542dafc5a9fbe896a5b541ab0abea54ad29f21590a06671fa1cd7945`.
+
+Two advisories, both non-blocking, both worth fixing:
+
+- `R3-worked-example-output-unproved` (reliability, `README.md:340`). Correct, and the kind
+  of finding that only an outside reader makes: I had *run* the snippet and diffed its 16
+  lines, which makes the sentence true today and proves nothing about tomorrow. Nothing in
+  the suite would notice a stage renaming a row-count key. Fixed by
+  `test_the_verbatim_snippet_output_is_actually_verbatim`, which extracts the snippet from
+  the README, executes it and diffs it against the claimed block — skipping without the
+  corpus, like the other corpus-reading tests. Proved non-vacuous by mutating one line of
+  the claimed block (`audio … rows={}` → `rows={'x': 1}`): the test fails; restored, it
+  passes in 0.06 s.
+- `R4-lazy-uv-sync-late-failure` (resilience, `README.md:87`). The install chain tells the
+  reader an unsynced project is not a problem because `uv run --project` syncs on first use.
+  True, and incomplete: the resolution happens inside the stage that first uses the project,
+  so an unresolvable dependency surfaces as a mid-run stage failure, not as an install
+  error. Verified rather than asserted, with a throwaway project in `/tmp` pinning a
+  package that does not exist: `uv run --project … python w/job.py` printed
+  `error: No solution found when resolving dependencies` and exited **1**, with the script
+  never executing. The README now says to sync once before an unattended batch and says
+  plainly that `inspect-environment` will not warn about the skip, because skipping is
+  legitimate.
+
+Suite after the fixes: **1252 collected, 1244 passed, 8 skipped**. The count ratchet failed
+first (README said 1251 against 1252 collected), which is the guard doing its job.
