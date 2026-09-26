@@ -1681,7 +1681,10 @@ first grouped capture, all four lenses answering, store
 `sha256:74d313fcd5cf0a67264ba2300ba6f6e731478b1936d059a9b888ecfc739f2202`. Acknowledged, authority
 burned.
 
-T14's chain is now reviewed end to end except two links dispositioned as data and docs
-(`5eb1214` fixtures, reviewed as `review-1a81688e2fc83328`, and `e8d3db6` ODD). §22's open
-question — "still unreviewed: link 3" — is resolved: it was reviewed, and it failed, and the
-failure is fixed.
+T14's chain is reviewed end to end except the two links that were dispositioned as unreviewed by
+choice: `5eb1214` (the two R-generated CSVs and their generator — §22's table says
+"not reviewed, by choice") and `e8d3db6` (ODD prose). Every link that carries behaviour —
+`4ec3a33` (`review-1a81688e2fc83328`), `f862e06` + its fix `9873de6`, `23045e5`
+(`review-4bf6d0329637df4b`), `e0c466d` (`review-c29f8477ff8ab47e`) — has an approval receipt.
+§22's open question — "still unreviewed: link 3" — is resolved: it was reviewed, and it failed,
+and the failure is fixed.
