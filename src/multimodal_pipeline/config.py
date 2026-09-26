@@ -682,6 +682,128 @@ class PoseNormalizedConfig(_Model):
         return self
 
 
+PERSON_TRACKER_TYPES: tuple[str, ...] = ("botsort", "bytetrack", "ocsort", "deepocsort",
+                                         "tracktrack", "fasttrack")
+
+
+class PersonsConfig(_Model):
+    """YOLO person detection + tracking over the original video (§20.2 / T15).
+
+    A *third* visual signal, next to OpenPose's bodies and TalkNet's faces. It answers the
+    two questions neither of them answers: how many distinct people appear in a video, and
+    when each one is on screen. Its ids live in their own namespace and are written to
+    their own directory — see :data:`multimodal_pipeline.schemas.PERSON_FRAMES_SCHEMA`.
+
+    Off by default, like the other optional GPU stages. A fresh clone is not asked to sync
+    a sixth torch environment it may not want; with this off the pipeline completes and the
+    stage reports why it did not run.
+    """
+
+    enabled: bool = False
+    uv_project: Path = Path("environments/persons")
+    worker: Path = Path("workers/persons_worker.py")
+    python_version: str = "3.12"
+    #: Checkpoint *name*, resolved under ``weights_dir`` when that is set and otherwise
+    #: left to ultralytics to fetch on first use. The name is in the stage fingerprint, so
+    #: switching from yolo11n to yolo11s invalidates every person table instead of letting
+    #: a count computed by one model be read as the other's.
+    model: str = "yolo11n.pt"
+    #: Where that checkpoint is read from, named for TalkNet's setting of the same name.
+    #: Two facts make this setting necessary rather than cosmetic:
+    #:   * ultralytics keeps its own ``weights_dir`` in a user-level settings file and it
+    #:     is a *relative* path (``weights``), so it resolves against whoever happened to
+    #:     start the process and is not governed by this config file at all;
+    #:   * the default resolution writes a downloaded ``yolo11n.pt`` next to whatever the
+    #:     cwd is, so a read-only checkout fails in the middle of the first video.
+    #: Point it at a directory holding the checkpoint to get a hermetic run.
+    weights_dir: Path | None = None
+    device: str = "auto"
+    device_index: int = 0
+    #: ByteTracker. NOT the ultralytics default — in 8.4.163 the library default is
+    #: ``tracktrack.yaml`` (see ``ultralytics/cfg/default.yaml``), and the two give different
+    #: answers on the same clips, which is why this is a deliberate choice rather than an
+    #: inherited one; the measured comparison is in config.example.yaml.
+    #:
+    #: Not ``botsort`` either: BoT-Sort is the tracker that owns the camera-motion-compensation
+    #: state this stage has to work around, and its re-identification branch can pull an
+    #: appearance-embedding checkpoint that ultralytics downloads on *first use* rather than
+    #: with the model weights, so the default would depend on a download nobody asked for.
+    #: ``bytetrack`` needs only ``lap``, which is pinned in the environment.
+    #:
+    #: The tracker decides how ids are carried across frames, so it is in the fingerprint:
+    #: changing it changes every count in the table.
+    tracker: str = "bytetrack"
+    #: Person-class detections at or below this confidence are dropped. Lower it to keep
+    #: distant or partially occluded people, and expect more fragmented ids in return.
+    conf: float = 0.25
+    #: Class filter. 0 is COCO's ``person`` and nothing else is wanted; leaving it null
+    #: would put cars and chairs into a "persons per video" table.
+    classes: list[int] = Field(default_factory=lambda: [0])
+    #: Image side fed to the network, in pixels. Ultralytics' own default. Raising it costs
+    #: speed roughly quadratically and is the knob to turn when small people are missed.
+    imgsz: int = 640
+    #: Kill a wedged worker after N seconds. No default: a 4-hour recording at 50 fps is
+    #: 720k frames and a stage with a guessed timeout would fail a legitimate long run.
+    timeout_seconds: float | None = None
+    extra_args: list[str] = Field(default_factory=list)
+
+    @field_validator("device")
+    @classmethod
+    def _device(cls, value: str) -> str:
+        if value not in ("auto", "cuda", "cpu"):
+            raise ValueError("persons.device must be 'auto', 'cuda' or 'cpu'")
+        return value
+
+    @field_validator("tracker")
+    @classmethod
+    def _tracker(cls, value: str) -> str:
+        # Ultralytics accepts a YAML *path* here as well as a tracker name. That form is
+        # refused rather than passed through: the stage fingerprint would record a path, so
+        # editing the YAML in place would leave every existing person table looking
+        # reusable while the tracker parameters behind it had changed.
+        if value not in PERSON_TRACKER_TYPES:
+            raise ValueError(
+                f"persons.tracker={value!r} is not one of the built-in trackers "
+                f"({', '.join(PERSON_TRACKER_TYPES)}). A path to a custom tracker YAML is "
+                "not accepted: the fingerprint would record the filename rather than the "
+                "parameters inside it, and editing that file would silently invalidate "
+                "nothing."
+            )
+        return value
+
+    @field_validator("conf")
+    @classmethod
+    def _conf(cls, value: float) -> float:
+        if not 0.0 < value < 1.0:
+            raise ValueError(
+                "persons.conf must be a confidence in (0, 1): it is the floor a person "
+                "detection has to clear. 0 would keep every box the model can produce and "
+                "1 would keep none, and neither is a measurement of who is on screen."
+            )
+        return value
+
+    @field_validator("classes")
+    @classmethod
+    def _classes(cls, value: list[int]) -> list[int]:
+        for index in value:
+            # COCO's ids are 0..79; ultralytics raises ValueError past the last one, and
+            # a stage that failed on the first frame of every video is a worse outcome
+            # than a config that refuses to load.
+            if not 0 <= index <= 79:
+                raise ValueError(
+                    f"persons.classes contains {index}, which is not a COCO class id "
+                    "(0..79). This stage's contract is person detections; keep it [0]."
+                )
+        return list(value)
+
+    @field_validator("imgsz")
+    @classmethod
+    def _imgsz(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("persons.imgsz must be a positive pixel count")
+        return value
+
+
 class LoggingConfig(_Model):
     level: str = "INFO"
     console: bool = True
@@ -704,6 +826,7 @@ class PipelineConfig(_Model):
     activespeaker: ActiveSpeakerConfig = Field(default_factory=ActiveSpeakerConfig)
     speaker_fusion: SpeakerFusionConfig = Field(default_factory=SpeakerFusionConfig)
     pose_normalized: PoseNormalizedConfig = Field(default_factory=PoseNormalizedConfig)
+    persons: PersonsConfig = Field(default_factory=PersonsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     # ``--project-root`` is resolved at load time; relative uv projects/workers
@@ -724,6 +847,9 @@ class PipelineConfig(_Model):
             "activespeaker": self.activespeaker,
             "speaker_fusion": self.speaker_fusion,
             "pose_normalized": self.pose_normalized,
+            # Carries `uv_project`, so `provenance/tools.json` inventories it and
+            # `inspect-environment` warns a fresh clone that the environment is absent.
+            "persons": self.persons,
         }
 
     def resolve(self, path: Path | str) -> Path:

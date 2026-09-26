@@ -334,6 +334,118 @@ ACTIVE_SPEAKER_TRACKS_SCHEMA = pa.schema(
     ]
 )
 
+# --- persons (Ultralytics YOLO detection + tracking) -----------------------
+#
+# Two tables, both answering questions no existing stage answers: how many distinct people
+# appear in a video, and when each one is on screen.
+#
+# WHY `person_id` AND NOT `track_id` — THIS IS THE ONE THING NOT TO "SIMPLIFY".
+# ACTIVE_SPEAKER_TRACKS_SCHEMA and ACTIVE_SPEAKER_FRAMES_SCHEMA carry a `track_id`: TalkNet's
+# S3FD face-tracker id. A YOLO ByteTracker id and a TalkNet track id are *unrelated*
+# integers over unrelated detectors, and §20.2 names that as a constraint, not a nuance:
+# both are small integers starting near zero, so a consumer that joins `person_id` to
+# `track_id` gets a result that looks perfectly reasonable and means nothing at all. The
+# column is therefore named differently rather than reused, the two tables live in different
+# directories (`persons/` vs `speaker/`), and the prohibition is stated in the file metadata
+# and in the README as well as here.
+#
+# WHY A PERSON TRACK IS NOT A FACE TRACK.
+# `person_id` 3 is a *body* trajectory: one id can cover a frame where the face is turned
+# away, occluded, or out of shot entirely, and a single talking head can produce several
+# person ids when the camera cuts or the detector blinks. TalkNet's `track_id` 3 is the
+# opposite: a face trajectory that says nothing about the body. A person and a face are
+# usually the same human being and the tables cannot know that — matching them needs an
+# IoU-style spatial join over the two bbox sets, which is an analysis decision, not a key.
+#
+# WHY THE FRAMES TABLE IS DENSE OVER *DETECTED* FRAMES AND NOT OVER ALL FRAMES.
+# A frame with no person produces no row here, unlike the ASD frames table. The difference
+# is that ASD must answer "who is speaking in this frame" for every frame, while this table
+# answers "where was this person"; the person count and each person's span come from the
+# summary table, and `frames_measured` in the raw document says how many frames were looked
+# at. That is what makes "zero people detected" distinguishable from "nothing was run": the
+# stage skips without a raw document rather than writing an empty table, and a completed run
+# always reports the frames it examined.
+PERSON_FRAMES_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        # Index into the frames the worker actually read (0-based), after any
+        # `frame_stride` subsampling. NOT a source presentation timestamp and NOT
+        # comparable to the ASD stage's 25 FPS `frame_number` -- use `timestamp`.
+        ("frame_number", pa.int64()),
+        # This frame's pts_seconds from source/frame_index.parquet, i.e. the pipeline's
+        # one timeline. The column to join other stages on.
+        ("timestamp", pa.float64()),
+        # The person's id in THIS stage's own namespace. Never equated with TalkNet's
+        # `track_id` or with any speaker id -- see the note above the schema.
+        ("person_id", pa.int64()),
+        ("x1", pa.float64()),
+        ("y1", pa.float64()),
+        ("x2", pa.float64()),
+        ("y2", pa.float64()),
+        # Detection confidence for THIS frame's box, in [0, 1]. Per-frame, not per-track:
+        # the same person's confidence moves when they turn, so the track table reports a
+        # mean and this row keeps the measurement.
+        ("confidence", pa.float64()),
+        # Tracker's own confidence that this box continues this id. Nullable because not
+        # every tracker publishes one and a 0.0 there would read as "measured, no
+        # confidence"; `confidence_reason` says which of the two cases a null is.
+        ("track_confidence", pa.float64()),
+        # Why track_confidence is or is not there. Closed vocabulary (see
+        # stages.persons.CONFIDENCE_REASONS) so a reader can branch on it: `tracked` means
+        # the tracker reported one, `no_track_confidence` means this tracker does not.
+        ("confidence_reason", pa.string()),
+        # Box area in source pixels. Kept as a column rather than derived by every reader:
+        # "how big in frame" is the number that separates a foreground presenter from a
+        # bystander in the back row, and it is the input to any such cut.
+        ("bbox_area", pa.float64()),
+        # How many distinct person ids the detector reported in this frame, this row's
+        # included. Redundant with a group-by over the same table and kept anyway, for the
+        # reason `active_ratio` is: "how many people are on screen at once" is the question
+        # this stage exists to answer and it should cost one MAX(), not a re-grouping.
+        # `validate` recomputes it from the rows and fails if the two ever disagree.
+        ("persons_in_frame", pa.int64()),
+    ]
+)
+
+# One row per person id in one video: the answer to "how many people, and when".
+#
+# WHY A SPAN AND NOT A SET OF INTERVALS. A tracker id is not guaranteed contiguous --
+# ByteTracker keeps a track through short occlusion and can revive an id after a blink -- so
+# `frame_count` and the timestamps are counts over the rows that exist, and
+# `longest_gap_seconds` reports the biggest hole between consecutive sightings. A reader who
+# needs contiguity has that number; a reader who assumes it has a test telling them not to.
+PERSON_TRACKS_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        ("person_id", pa.int64()),
+        # First and last sighting on the pipeline timeline (seconds).
+        ("first_timestamp", pa.float64()),
+        ("last_timestamp", pa.float64()),
+        # Wall-clock span between the first and last sighting. Longer than `frame_count`
+        # implies frames in between where this person was not detected.
+        ("duration_seconds", pa.float64()),
+        # Rows in the frames table carrying this id.
+        ("frame_count", pa.int64()),
+        # Share of the video's measured frames this person was detected in, in [0, 1].
+        # Denominator is frames *measured* (after any stride), so it is comparable across
+        # videos and honest about a subsampled run.
+        ("frame_coverage", pa.float64()),
+        # Largest gap between two consecutive sightings of this id, in seconds. 0.0 means
+        # the id was seen in every measured frame between its endpoints.
+        ("longest_gap_seconds", pa.float64()),
+        ("mean_confidence", pa.float64()),
+        ("max_confidence", pa.float64()),
+        ("mean_bbox_area", pa.float64()),
+        ("max_bbox_area", pa.float64()),
+        # Where this id sits in the ordering by first sighting (0 = earliest). A rank, not
+        # an id: it lets a reader ask "the third person to appear" without assuming
+        # tracker ids are assigned in first-seen order, which ByteTracker does not promise.
+        ("appearance_order", pa.int64()),
+    ]
+)
+
 # --- pose -----------------------------------------------------------------
 
 BODY_SCHEMA = pa.schema(
@@ -462,6 +574,11 @@ TABLE_SCHEMAS: dict[str, pa.schema] = {
     "pose_normalized": POSE_NORMALIZED_SCHEMA,
     "pose_hands": HANDS_SCHEMA,
     "pose_face": FACE_SCHEMA,
+    # Persons: own directory, own schemas, own id namespace (see the note above
+    # PERSON_FRAMES_SCHEMA). Distinct from active_speaker_tracks on purpose: two tables
+    # with a column called `track_id` invite the join §20.2 forbids.
+    "person_frames": PERSON_FRAMES_SCHEMA,
+    "person_tracks": PERSON_TRACKS_SCHEMA,
     "frame_index": FRAME_INDEX_SCHEMA,
 }
 

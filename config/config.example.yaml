@@ -224,6 +224,107 @@ activespeaker:
   # timeout_seconds: null
   # extra_args: []
 
+# Person detection + tracking (Ultralytics YOLO): how many distinct people appear, and when
+# each is on screen. Needs its own uv environment -- ultralytics pulls a torch build of its
+# own and would fight the whisperx/diarization/activespeaker pins if installed beside them:
+#   (cd environments/persons && uv sync --python 3.12)
+#
+# Off by default, like the other optional GPU stages: a fresh clone is not asked to sync a
+# sixth torch environment it did not ask for, and the corpus completes without it (the stage
+# reports a skip reason naming the setting).
+#
+# The output has its OWN ID NAMESPACE. `person_id` is a YOLO/ByteTracker body-track id; the
+# `track_id` in speaker/active_speaker_*.parquet is a TalkNet FACE-track id. Both are small
+# integers starting near zero, so joining them produces a result that looks reasonable and
+# means nothing. They are also different kinds of thing: a person id can span a frame where
+# the face is turned away, and one talking head can produce several person ids across a cut.
+persons:
+  enabled: false
+  uv_project: environments/persons
+  worker: workers/persons_worker.py
+  # Checkpoint name, resolved under weights_dir when set and otherwise downloaded by
+  # ultralytics on first use.
+  #
+  # yolo11n vs yolo11s, measured on this machine (RTX 4090, torch 2.8.0+cu126) over the five
+  # real clips with everything else at these defaults. "ids" is distinct person_id; "frag" is
+  # ids seen in <=2 frames, which is the count that says a tracker lost somebody:
+  #   clip           n: ids/frag    s: ids/frag
+  #   kabc                3 / 0          3 / 0
+  #   cnn                 4 / 0          4 / 0
+  #   la1                 8 / 2          9 / 2
+  #   person_demo        75 / 13        58 / 10
+  #   pipeline_demo       0 / 0          0 / 0
+  # Speed was WITHIN NOISE, not a win: 92 vs 93, 91 vs 88, 136 vs 134, 112 vs 112, 154 vs 156
+  # fps (elapsed includes model load). Two claims are therefore NOT made here -- n is not
+  # faster than s on these clips, and n does not fragment less on the hard clip. What the
+  # numbers do support is the reason n is the default: it is 5.4 MB against 18 MB to download
+  # and store, and on the two clips where the answer is unambiguous (a two-shot and a four
+  # panel) the two checkpoints agree exactly, so nothing is bought back there by the bigger
+  # model. The hard clip disagrees in BOTH directions (8 vs 9, 75 vs 58), which is the honest
+  # finding: on a busy, cut-heavy shot the person count is a property of the tracker's
+  # association as much as of the people present. Read `frame_count` before believing any
+  # headline count from a clip like that -- and read the `tracker` note below, which moves the
+  # answer far more than this choice does.
+  model: yolo11n.pt
+  # Same idea as activespeaker.weights_dir, and needed for the same reason plus one:
+  # ultralytics keeps its own weights_dir in a user-level settings file and it is a RELATIVE
+  # path ("weights"), so it is not governed by this file at all. Set it for a hermetic run;
+  # leave it unset to accept the download (yolo11n.pt is 5.4 MB, yolo11s.pt is 18 MB). The
+  # worker records the path it used AND the file's sha256, because a person count is only
+  # interpretable against the model that produced it.
+  # weights_dir: /path/to/yolo-weights
+  device: auto            # auto | cuda | cpu
+  device_index: 0
+  # The association algorithm, i.e. how ids survive a frame. bytetrack needs only `lap`
+  # (pinned in the environment); botsort/tracktrack add camera-motion compensation and can
+  # pull a re-ID checkpoint on first use. It is in the stage fingerprint, so switching it
+  # invalidates every person table rather than redefining the counts quietly.
+  #
+  # READ THIS BEFORE TREATING A PERSON COUNT AS A FACT ABOUT THE CLIP. This setting moves the
+  # answer far more than the checkpoint does. Measured on the same five clips, same weights
+  # (yolo11n), same imgsz:
+  #   clip           bytetrack conf=0.25   bytetrack conf=0.10   tracktrack conf=0.10
+  #   kabc                   3                     3                        2
+  #   cnn                    4                     4                        4
+  #   la1                    8                     8                        6
+  #   person_demo           75                    71                        8
+  #   pipeline_demo          0                     0                        0
+  # Same video, same detector, same frames. "How many people appear in person_demo" is 75 or
+  # 8 depending on a config string, because on a busy, cut-heavy shot an id is a claim about
+  # the tracker's association, not about a person. TrackTrack reaches 8 by merging aggressively
+  # (its new_track_thresh is 0.7 against bytetrack's 0.25) and it is not simply "more right":
+  # it also reports only 6 ids and at most 2 people on screen for la1, where bytetrack reports 8
+  # and 3, and it never sees more than 7 people at once on person_demo against bytetrack's 14.
+  # Fewer, more durable ids is a defensible target; silently counting half the on-screen crowd
+  # is not, and nothing in the table says which of the two happened unless the tracker is
+  # recorded -- which it is.
+  #
+  # bytetrack is the default here for two reasons that are about the pipeline, not about
+  # accuracy: its config file needs no re-ID weights and no camera-motion compensation, so a
+  # run cannot silently depend on a download nobody asked for; and it fragments rather than
+  # merges, which leaves the evidence (per-id frame_count, longest_gap_seconds) for a reader
+  # to decide what to merge. A merged 8 has nothing left to inspect. `frame_count` and
+  # `longest_gap_seconds` exist so that a count like 75 can be read as "five people and
+  # seventy moments of the tracker losing someone" -- read them before quoting the number.
+  #
+  # The version's own default is tracktrack.yaml, so an operator who removes this key does not
+  # get bytetrack; the tracker CONFIG actually handed to the library is recorded in the raw
+  # document, which is what a later reader compares.
+  tracker: bytetrack
+  # Person detections at or below this confidence are dropped. Lower it to keep distant or
+  # partly occluded people and expect more fragmented ids in return -- measured on
+  # person_demo: conf 0.25 finds 75 ids of which 13 last <=2 frames, conf 0.10 finds 71 of
+  # which 8 do. Note that ultralytics' track() OVERRIDES this to 0.1 when it is not passed,
+  # so it is forwarded explicitly; a stage that omitted it would silently report the counts a
+  # 0.1 threshold produced.
+  conf: 0.25
+  # COCO class ids. 0 is `person`; anything else stops being a persons table.
+  classes: [0]
+  imgsz: 640                # network input side in px; costs speed ~quadratically
+  # timeout_seconds: null   # no default: a 4-hour recording is 720k frames and a guessed
+                            # ceiling would fail a legitimate long run
+  # extra_args: []
+
 # Audio/visual agreement (T13 + T20): fuse a diarizer's turns with the per-frame active
 # speaker table. Pure python -- no GPU, no extra uv environment -- so it costs a re-read
 # of two Parquet files. Its output is a SECOND diarization result beside the existing ones:

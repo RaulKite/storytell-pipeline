@@ -49,6 +49,9 @@ STAGE_ORDER: tuple[str, ...] = (
     # the audio branch entirely.
     "pose_normalized",
     "activespeaker",
+    # Third visual signal, placed with the other video readers rather than after the audio
+    # branch: it reads the source video and the frame index, nothing else.
+    "persons",
     # Audio/visual agreement. Last of the media stages because it consumes the diarizers'
     # turn tables *and* the ASD frames table.
     "speaker_fusion",
@@ -81,6 +84,14 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # not cost the visual speaker signal (the same reasoning that keeps openpose
     # metadata-only).
     "activespeaker": ("metadata", "audio"),
+    # `metadata` alone, which is also the whole of what it reads: metadata writes both
+    # source/metadata.json and source/frame_index.parquet, and "frame_index" is an artifact
+    # name rather than a stage so it cannot appear here. A transcription or diarization
+    # failure must not cost the person counts -- the same reasoning that keeps `openpose` and
+    # `activespeaker` off the audio branch, and what §20.2 means by calling this an
+    # independent signal. It deliberately does not depend on `activespeaker` either: a
+    # TalkNet failure is about *faces*, and the person table is the evidence that survives one.
+    "persons": ("metadata",),
     # Depends on all three producers whose tables it reads, and on nothing else. Depending
     # on `diarization` alone would let a pyannote failure poison the Nemotron fusion, and
     # depending on `speaker_assignment` would tie a visual verdict to transcript bookkeeping

@@ -67,6 +67,13 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     # the manifest already reports unproduced artifacts as `artifacts_not_generated`.
     "speaker_fusion_pyannote": "speaker/fusion_pyannote.parquet",
     "speaker_fusion_nemotron": "speaker/fusion_nemotron.parquet",
+    # Persons (YOLO detect + track). Its own directory rather than `speaker/`: the tables
+    # carry a *person* id namespace that must not be adjacent to TalkNet's face `track_id`
+    # columns, and co-locating them is how a consumer ends up joining two unrelated id spaces
+    # because they appeared to be the same kind of thing.
+    "persons_raw": "persons/raw/yolo_track.json",
+    "person_frames": "persons/frames.parquet",
+    "person_tracks": "persons/tracks.parquet",
     "pipeline_log": "logs/pipeline.log",
     "provenance_config": "provenance/config.json",
     "provenance_tools": "provenance/tools.json",
@@ -91,6 +98,9 @@ STAGE_LOG_NAMES = (
     # speaker stages even though it is a derived table like speaker_fusion.
     "pose_normalized",
     "activespeaker",
+    # Own log like every stage: it runs its own worker and its failure needs a file to point
+    # at, even though it reads the video rather than the audio or the speaker tables.
+    "persons",
     "speaker_fusion",
     "finalization",
 )
@@ -150,6 +160,10 @@ class VideoPaths:
             # this the stage could never be reused with rendering switched off.
             "pose/raw_images",
             "speaker/raw",
+            # The persons stage's raw document and normalized tables. Pre-created like
+            # pose/raw so `ensure_dirs` keeps its promise that a stage's directory exists
+            # before it writes into it.
+            "persons/raw",
             "logs",
             "provenance",
         }:
