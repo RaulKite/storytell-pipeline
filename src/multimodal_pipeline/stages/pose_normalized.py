@@ -22,7 +22,8 @@ applied to pose:
 
 * per **person-frame**, ``basis_state`` says whether a frame of reference exists at all
   (``basis_ok``) and, when it does not, whether the cause is a joint that was never
-  measured (``basis_missing_joint``) or two joints that coincide (``basis_degenerate``);
+  measured (``basis_missing_joint``), two joints that coincide (``basis_degenerate``), or
+  coordinates that are numbers but not pixel positions (``basis_non_finite``);
 * per **keypoint**, ``value_status`` says whether this joint got coordinates, lost its
   own coordinate, or had nowhere to be put.
 

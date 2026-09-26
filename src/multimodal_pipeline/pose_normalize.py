@@ -74,9 +74,19 @@ BASIS_MISSING_JOINT = "basis_missing_joint"
 #: the perpendicular as the second axis this means MidHip and Neck landed on the same
 #: pixel.
 BASIS_DEGENERATE = "basis_degenerate"
+#: Both joints hold a number and those numbers are not pixel positions: the basis
+#: vector or its determinant overflowed to infinity. ``mask_coordinate`` already
+#: refuses a coordinate that is itself NaN or infinite, but two *finite* doubles can
+#: still overflow the arithmetic built from them, and a basis whose denominator is
+#: ``-inf`` produces ``nan`` coordinates that are neither null (which means absence on
+#: this table) nor a number a reader can use. Named, not collapsed into
+#: ``basis_degenerate``: that state says the two joints *coincide*, which is a claim
+#: about a body, and this one is a claim about the bytes.
+BASIS_NON_FINITE = "basis_non_finite"
 
-#: Closed vocabulary — ``validate`` treats a sixth value as a defect, not a variant.
-BASIS_STATES: tuple[str, ...] = (BASIS_OK, BASIS_MISSING_JOINT, BASIS_DEGENERATE)
+#: Closed vocabulary — ``validate`` treats a fifth value as a defect, not a variant.
+BASIS_STATES: tuple[str, ...] = (BASIS_OK, BASIS_MISSING_JOINT, BASIS_DEGENERATE,
+                                BASIS_NON_FINITE)
 
 #: Per-keypoint state, which is a different question from the person-frame's: a joint
 #: can be perfectly visible in a frame whose basis is unusable, and a basis can be
@@ -211,11 +221,26 @@ def person_frame_basis(masked: Mapping[int, tuple[float | None, float | None]], 
                    f"same pixel, so the basis vector ({vi[0]:g}, {vi[1]:g}) has zero "
                    f"determinant: dividing by it would invent coordinates",
         )
+    # ``math.hypot`` rather than ``(vi[0] ** 2 + vi[1] ** 2) ** 0.5``, and it is not a style
+    # choice: the power form raises OverflowError on ``1e200 ** 2``, which took the whole
+    # stage down on one absurd row (reproduced before this fix). hypot is scale-safe, and on
+    # the corpus's real numbers it is the same string — all 2661 MidHip->Neck bases of the
+    # seven processed videos compared under ``%g``, zero disagreements — so changing the
+    # length in ``basis_detail`` does not move the number a reader checks against R.
+    length = math.hypot(vi[0], vi[1])
+    if not math.isfinite(length) or not math.isfinite(denominator):
+        return Basis(
+            state=BASIS_NON_FINITE,
+            detail=f"{origin_name} and {basis_name} both hold a number but they are not "
+                   f"pixel positions: the basis vector ({vi[0]:g}, {vi[1]:g}) has length "
+                   f"{length:g} and determinant {denominator:g}, so every coordinate built "
+                   f"from them would be infinite or NaN",
+        )
     return Basis(
         state=BASIS_OK,
         detail=f"origin {origin_name} at ({origin[0]:g}, {origin[1]:g}), basis vector "
                f"{origin_name}->{basis_name} = ({vi[0]:g}, {vi[1]:g}) of length "
-               f"{(vi[0] ** 2 + vi[1] ** 2) ** 0.5:g} px, second axis = its perpendicular",
+               f"{length:g} px, second axis = its perpendicular",
         origin=(origin[0], origin[1]), vi=vi, vj=vj, denominator=denominator,
     )
 

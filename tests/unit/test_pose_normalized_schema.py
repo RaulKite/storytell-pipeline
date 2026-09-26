@@ -103,7 +103,8 @@ class TestSchemaShape:
             assert field.type == pa.float64() and field.nullable
 
     def test_the_vocabulary_tuples_are_closed_and_disjoint(self):
-        assert list(BASIS_STATES) == ["basis_ok", "basis_missing_joint", "basis_degenerate"]
+        assert list(BASIS_STATES) == ["basis_ok", "basis_missing_joint",
+                                      "basis_degenerate", "basis_non_finite"]
         assert list(VALUE_STATES) == ["normalized", "no_coordinate", "basis_unusable"]
         # A value that belongs to both lists cannot be switched on, and the stage's
         # cross-checks ("coordinates while basis_state != basis_ok") assume they differ.
