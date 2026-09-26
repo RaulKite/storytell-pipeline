@@ -26,6 +26,7 @@ orchestrator side and never touches torch, pyannote, spacy or parselmouth. Heavy
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 import pkgutil
@@ -70,14 +71,63 @@ def _resolve_callable(func: object, where: str, out: list[str]) -> None:
         )
 
 
-def _scan_root(root: types.ModuleType) -> tuple[list[str], dict[str, list[str]]]:
+def _callable_targets(obj: object) -> tuple[list[object], str | None]:
+    """Unwrap one class-member or module value into the callables whose annotations can resolve.
+
+    Returns `(callables, skip_reason)`. The reason is the whole point of the function. Every
+    previous version of the class branch filtered on `inspect.isfunction` and continued, and
+    `vars(cls)` does not hand back functions: it hands back `classmethod`, `staticmethod`,
+    `property` and `cached_property` descriptors, plus callable objects. Each filter-and-continue
+    revision therefore kept a different population invisible — advisories
+    R3-class-method-annotations, R3-method-descriptors and R3-property-accessor-coverage are the
+    same mistake found three times. So this unwraps what it recognises and *names* what it does
+    not, and the package test asserts the naming list is empty: a shape the guard learns to skip
+    becomes a failure instead of coverage it never had.
+
+    A non-callable (a field default, a constant, `_abc_impl`) is not a skip — it carries no
+    annotation of its own — and reports `([], None)`.
+    """
+    if inspect.isfunction(obj) or inspect.ismethod(obj):
+        return [obj], None
+    if isinstance(obj, (classmethod, staticmethod)):
+        inner = obj.__func__
+        if inspect.isfunction(inner) or inspect.ismethod(inner):
+            return [inner], None
+        return [], f"{type(obj).__name__} wrapping a {type(inner).__name__}"
+    if isinstance(obj, property):
+        accessors = [acc for acc in (obj.fget, obj.fset, obj.fdel) if acc is not None]
+        if not accessors:
+            return [], "property with no accessors"
+        unresolvable = next(
+            (acc for acc in accessors if not (inspect.isfunction(acc) or inspect.ismethod(acc))),
+            None,
+        )
+        if unresolvable is not None:
+            return [], f"property accessor of type {type(unresolvable).__name__}"
+        return accessors, None
+    if isinstance(obj, functools.cached_property):
+        inner = obj.func
+        if inspect.isfunction(inner):
+            return [inner], None
+        return [], f"cached_property wrapping a {type(inner).__name__}"
+    if callable(obj):
+        return [], f"callable of type {type(obj).__name__}"
+    return [], None
+
+
+def _scan_root(
+    root: types.ModuleType,
+) -> tuple[list[str], dict[str, list[str]], list[str]]:
     """Resolve every annotation defined in every module under `root`.
 
-    Returns the failures and, per module, the exact targets that were resolved over — so
-    coverage can be asserted against named objects rather than a total that can quietly shrink.
+    Returns the failures, the exact targets resolved over per module (so coverage is asserted
+    against named objects rather than a total that can quietly shrink), and the callables that
+    were *not* resolved because the unwrapper did not recognise them. That third list is what
+    makes the first two honest.
     """
     failures: list[str] = []
     scanned: dict[str, list[str]] = {}
+    skipped: list[str] = []
 
     for module_name in sorted(
         info.name
@@ -110,36 +160,40 @@ def _scan_root(root: types.ModuleType) -> tuple[list[str], dict[str, list[str]]]
                     if isinstance(hint, str):
                         _resolve_hint(module, where, hint, failures)
 
-                # Methods too. A class's own `__annotations__` covers only its attributes, so
-                # without this branch the 332 methods the package defines on its own classes
-                # were never resolved over — the same blind spot that let `write_table` ship,
-                # one level down (advisory R3-class-method-annotations).
+                # Methods, including the ones `vars(cls)` hands back as descriptors. A class's own
+                # `__annotations__` covers only its attributes and `inspect.isfunction` rejects
+                # every descriptor, so filtering on either alone left whole populations of methods
+                # never resolved over — the same blind spot that let `write_table` ship, one level
+                # down. `vars(cls)` is used rather than `inspect.getmembers` to keep inherited
+                # pydantic/`BaseModel` methods out: an annotation can only resolve against the
+                # module that defined it. Most of what the unwrapper rescues here are pydantic
+                # validators and computed flags in `config.py`.
                 for mattr, mobj in list(vars(obj).items()):
                     if mattr.startswith("__"):
                         continue
-                    # A class's `vars()` hands back descriptors, not functions: 62
-                    # classmethod/staticmethod and 19 property objects would otherwise stay
-                    # invisible to `inspect.isfunction` (advisory R3-method-descriptors). Most
-                    # of them are pydantic validators and computed flags in `config.py`.
-                    targets: list[object] = []
-                    if inspect.isfunction(mobj):
-                        targets.append(mobj)
-                    elif isinstance(mobj, (classmethod, staticmethod)):
-                        inner = mobj.__func__
-                        if inspect.isfunction(inner):
-                            targets.append(inner)
-                    elif isinstance(mobj, property):
-                        targets.extend(
-                            f for f in (mobj.fget, mobj.fset, mobj.fdel) if inspect.isfunction(f)
-                        )
-                    for target in targets:
-                        where = f"{module_name}.{attr}.{mattr}()"
+                    where = f"{module_name}.{attr}.{mattr}()"
+                    callables, reason = _callable_targets(mobj)
+                    if callables:
                         resolved.append(where)
-                        _resolve_callable(target, where, failures)
+                        for target in callables:
+                            _resolve_callable(target, where, failures)
+                    elif reason is not None:
+                        skipped.append(f"{where}: {reason}")
+
+        # Module-level callables that are not plain functions and not classes (an instance with
+        # `__call__`, say). The branch above cannot see them; they are named, never skipped.
+        for attr, obj in list(vars(module).items()):
+            if attr.startswith("__") or getattr(obj, "__module__", None) != module_name:
+                continue
+            if inspect.isfunction(obj) or inspect.isclass(obj):
+                continue
+            _callables, reason = _callable_targets(obj)
+            if reason is not None:
+                skipped.append(f"{module_name}.{attr}(): {reason}")
 
         scanned[module_name] = resolved
 
-    return failures, scanned
+    return failures, scanned, skipped
 
 
 #: Objects whose annotations must be resolved by the scan, named rather than counted. If the
@@ -156,18 +210,25 @@ _MUST_BE_SCANNED = (
     "multimodal_pipeline.state.StageRecord.to_dict()",
     # A classmethod descriptor, which `inspect.isfunction` rejects (R3-method-descriptors).
     "multimodal_pipeline.config.InputConfig._normalise_extensions()",
-    # A property getter.
+    # A property getter (there are 19; the package has no cached_property, measured).
     "multimodal_pipeline.config.OpenPoseConfig.hands_enabled()",
 )
 
 
 def test_every_annotation_in_the_pipeline_package_resolves() -> None:
     package = importlib.import_module(PACKAGE)
-    failures, scanned = _scan_root(package)
+    failures, scanned, skipped = _scan_root(package)
     assert not failures, (
         "annotations that do not resolve. With `from __future__ import annotations` these are "
         "strings that nothing evaluates at import time, so the suite stays green over them:\n"
         + "\n".join(failures)
+    )
+    # Nothing may be passed over in silence. Three advisories were raised about populations this
+    # scan could not see; asserting an empty skip list turns the fourth such shape into a failing
+    # test naming the object, instead of a fourth advisory about coverage that never existed.
+    assert not skipped, (
+        "the scan found callables it does not know how to unwrap, so their annotations went "
+        "unresolved while this file reported success:\n" + "\n".join(sorted(skipped))
     )
     # Coverage, asserted against named objects rather than a total that can shrink in silence.
     seen = {where for targets in scanned.values() for where in targets}
@@ -185,13 +246,13 @@ def test_every_annotation_in_the_pipeline_package_resolves() -> None:
 def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_path) -> None:
     """The guard has to be able to die, so it is run against a package that is deliberately bad.
 
-    Three modules are written to a temp dir: one clean, one with a module-level function whose
-    annotation names something that does not exist (the `write_table` bug, rebuilt from scratch),
-    one with three well-behaved method kinds plus a classmethod carrying the same defect. The
-    scan must report exactly those three findings, in order, and must also *visit* the clean
-    methods — which is the part `inspect.isfunction` alone cannot see, since `vars(cls)` hands
-    back `classmethod`/`staticmethod`/`property` descriptors. This is what stops the package-wide
-    test above from passing by going blind.
+    Three modules are written to a temp dir: one clean; one with a module-level function and a
+    plain method whose annotations name things that do not exist (the `write_table` bug, rebuilt
+    from scratch); one with four well-behaved method kinds, a classmethod carrying the same
+    defect, and a property whose accessor is a `partial`. The scan must report exactly the three
+    findings, in order, must *visit* the healthy methods — the part `inspect.isfunction` alone
+    cannot see, since `vars(cls)` hands back descriptors — and must *name* the one shape it cannot
+    unwrap. This is what stops the package-wide test above from passing by going blind.
     """
     pkg = tmp_path / "annotation_probe_pkg"
     pkg.mkdir()
@@ -208,12 +269,14 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "class AlsoBad:\n"
         "    def method(self, y: AlsoMissing) -> None: return None\n"
     )
-    # A classmethod: `vars(cls)` returns a descriptor, which `inspect.isfunction` rejects.
+    # `cached_property` is the other descriptor `inspect.isfunction` rejects; a property whose
+    # accessor is not a function is the shape that must be *named*, not skipped.
     (
         pkg
         / "methods.py"
     ).write_text(
         "from __future__ import annotations\n"
+        "from functools import cached_property, partial\n"
         "class Good:\n"
         "    @classmethod\n"
         "    def maker(cls, v: list[str]) -> list[str]: return v\n"
@@ -221,15 +284,19 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "    def helper(v: int) -> int: return v\n"
         "    @property\n"
         "    def ready(self) -> bool: return True\n"
+        "    @cached_property\n"
+        "    def loaded(self) -> str: return 'x'\n"
         "class AlsoBad:\n"
         "    @classmethod\n"
         "    def maker(cls, v: ClassMissing) -> None: return None\n"
+        "class Odd:\n"
+        "    weird = property(fget=partial(lambda: 1))\n"
     )
 
     sys.path.insert(0, str(tmp_path))
     try:
         root = importlib.import_module("annotation_probe_pkg")
-        failures, scanned = _scan_root(root)
+        failures, scanned, skipped = _scan_root(root)
     finally:
         sys.path.remove(str(tmp_path))
         for name in [n for n in list(sys.modules) if n.startswith("annotation_probe_pkg")]:
@@ -250,8 +317,15 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "annotation_probe_pkg.methods.Good.maker()",
         "annotation_probe_pkg.methods.Good.helper()",
         "annotation_probe_pkg.methods.Good.ready()",
+        "annotation_probe_pkg.methods.Good.loaded()",
         "annotation_probe_pkg.methods.AlsoBad.maker()",
     ], scanned["annotation_probe_pkg.methods"]
+    # And the one shape the unwrapper genuinely cannot handle is named rather than dropped. This
+    # is the assertion that makes the package-wide empty skip list mean something: without it, an
+    # unwrapper that classified everything as "not a function" would look identical.
+    assert skipped == [
+        "annotation_probe_pkg.methods.Odd.weird(): property accessor of type partial"
+    ], skipped
     # The clean module was visited and produced nothing — proof the scan does not just fire
     # on everything, which would make the package-wide pass a coincidence.
     assert scanned["annotation_probe_pkg.good"] == [
