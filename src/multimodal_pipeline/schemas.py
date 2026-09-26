@@ -351,6 +351,54 @@ BODY_SCHEMA = pa.schema(
     ]
 )
 
+# Derived from BODY_SCHEMA, kept as a new table rather than extra columns on it (§20.4).
+#
+# Why a new table: the pixel coordinates are the measured quantity and every dataset
+# already produced joins on them, so writing normalised values into `pose/body.parquet`
+# would silently redefine an existing corpus. Normalised coordinates are a *change of
+# basis*, and a change of basis means nothing without the triple that produced it, which
+# is why the three columns naming the frame travel with every row instead of living only
+# in file metadata a reader may never open.
+#
+# Why two state columns instead of nulls alone: `x_norm`/`y_norm` are null in two
+# different situations that a consumer must not be able to collapse — the keypoint was
+# never measured, versus the keypoint was measured but the frame it would be expressed in
+# could not be built. `basis_state` answers that for the person-frame (see
+# pose_normalize.BASIS_STATES, the `face_status` lesson from §17) and `value_status`
+# answers it for the joint. Neither is ever encoded as a zero: a zero is a measurement,
+# and on this table's axes a zero means "exactly at the hip".
+POSE_NORMALIZED_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        ("frame_number", pa.int64()),
+        ("timestamp", pa.float64()),
+        # Frame-local person index, copied from the body table. Not a cross-frame
+        # identity unless OpenPose tracking was on — same reading as BODY_SCHEMA.
+        ("detection_index", pa.int64()),
+        ("keypoint_id", pa.int64()),
+        ("keypoint_name", pa.string()),
+        # The frame these numbers are expressed in, repeated per row on purpose: one
+        # file can hold several configurations' worth of meaning only if the frame
+        # travels with the number.
+        ("origin_keypoint_name", pa.string()),
+        ("basis_keypoint_name", pa.string()),
+        # "perpendicular" = the second axis is vi rotated, i.e. dfMaker's i == j branch.
+        ("second_axis", pa.string()),
+        # Closed vocabulary over the person-frame: basis_ok | basis_missing_joint |
+        # basis_degenerate.
+        ("basis_state", pa.string()),
+        # The measured numbers behind that state — which joint was missing, or how long
+        # the basis vector was. The column a human reads first.
+        ("basis_detail", pa.string()),
+        # Coordinates in the body-centred frame. Null only when `value_status` says why.
+        ("x_norm", pa.float64()),
+        ("y_norm", pa.float64()),
+        # Closed vocabulary over this keypoint: normalized | no_coordinate | basis_unusable.
+        ("value_status", pa.string()),
+    ]
+)
+
 HANDS_SCHEMA = pa.schema(
     [
         ("schema_version", pa.string()),
@@ -409,6 +457,9 @@ TABLE_SCHEMAS: dict[str, pa.schema] = {
     "acoustic_frames": ACOUSTIC_FRAMES_SCHEMA,
     "acoustic_segments": ACOUSTIC_SEGMENTS_SCHEMA,
     "pose_body": BODY_SCHEMA,
+    # Derived from pose_body, in the same directory, so the pixel table and the frame
+    # it can be re-expressed in are found together.
+    "pose_normalized": POSE_NORMALIZED_SCHEMA,
     "pose_hands": HANDS_SCHEMA,
     "pose_face": FACE_SCHEMA,
     "frame_index": FRAME_INDEX_SCHEMA,

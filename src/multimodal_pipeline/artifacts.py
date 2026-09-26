@@ -50,6 +50,9 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     # promise" set: an empty directory is not an artifact.
     "pose_images_raw": "pose/raw_images",
     "pose_body": "pose/body.parquet",
+    # Derived from pose_body and written next to it, never into it: the pixel table is
+    # the measured quantity and this is a re-expression of it (§20.4).
+    "pose_normalized": "pose/normalized.parquet",
     "pose_hands": "pose/hands.parquet",
     "pose_face": "pose/face.parquet",
     "activespeaker_raw": "speaker/raw/active_speaker.json",
@@ -84,6 +87,9 @@ STAGE_LOG_NAMES = (
     "spacy_english",
     "acoustic",
     "openpose",
+    # Reads pose/body.parquet only, so it sits with the pose stage rather than with the
+    # speaker stages even though it is a derived table like speaker_fusion.
+    "pose_normalized",
     "activespeaker",
     "speaker_fusion",
     "finalization",

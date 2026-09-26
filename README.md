@@ -180,7 +180,8 @@ data/processed/<video_id>/
 │   ├── segment_features.parquet  ← per-segment aggregates + pause statistics
 │   └── raw/acoustic_features.jsonl
 ├── pose/
-│   ├── body.parquet              ← BODY_25 keypoints, one row per person/keypoint
+│   ├── body.parquet              ← BODY_25 keypoints, one row per person/keypoint (pixels)
+│   ├── normalized.parquet        ← the same keypoints in a body-centred frame (see below)
 │   ├── hands.parquet             ← 21 points × left/right
 │   ├── face.parquet              ← 70 points
 │   ├── raw/<video>_NNNNNNNNNNNN_keypoints.json   ← OpenPose's own output, untouched
@@ -739,7 +740,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1137 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1220 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -795,7 +796,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1137 tests
+tests/unit/                1220 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
