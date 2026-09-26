@@ -228,11 +228,35 @@ Progress legend: `[ ]` pending · `[~]` in progress · `[x]` done (evidence reco
 
 Mapped to observable evidence in §10. Two criteria (live diarization, live
 translation) were gated on credentials this machine did not have when this section
-was written; they are now verified live — see criteria 10 and 12. What remains
-unverifiable here is a **non-English source**: flite ships English-only voices, there
-is no espeak, and the endpoint's tts returns 500, so language detection, the `es`
-spaCy model and genuine es->en translation are covered only by unit tests against a
-real HTTP server. Legacy text retained for context: their code
+was written; they are now verified live — see criteria 10 and 12.
+
+The remaining caveat this paragraph carried — that no **non-English source** was
+available, so language detection, the `es` spaCy model and genuine es->en
+translation were "covered only by unit tests" — became false the moment the
+operator added `2019-06-29_2000_ES_La-1_Telediario_1_542-550` to
+`data/input_videos/`, and nobody updated the sentence. Re-read against that
+dataset's artifacts (all numbers re-measured from the files, not from memory):
+
+- **Language auto-detection on Spanish speech**: `speech/raw/whisperx.json.provenance.json`
+  records the request as `"language": "auto"`; the worker result carries
+  `detected_language: "es"` and the manifest's `source.detected_language` is `es`.
+  Criterion 9's `en` case was the demo; the `es` case is now observed too.
+- **The `es` spaCy model on real Spanish**: `linguistic/source/` holds 4 sentences
+  and 21 tokens × 32 columns under `spacy_model: es_core_news_lg` (`Muy` → lemma
+  `mucho`). Not a mock.
+- **Genuine es->en translation**: `translation/segments_en.parquet`, 4 segments,
+  model `chat` — `Muy buena entrada.` → `Very good intro.`.
+- **`spacy_english` on a real translation**: `linguistic/english/`, 25 tokens ×
+  32 columns under `en_core_web_lg`, so criterion 14's "runs when translation
+  exists" has now been observed on translated-from-Spanish text, not only on
+  natively-English fixtures.
+
+What is genuinely still synthetic-only: a non-English *fixture in the repository*
+(the flite/espeak reasoning below still holds for `tests/`), and the e2e suite
+still runs English fixtures. That is a test-fixture gap, not a product claim; the
+acceptance criteria above are served by the operator dataset.
+
+Legacy text retained for context: their code
 paths are tested against a real HTTP server and a real uv worker contract, and
 the stages degrade to `skipped` with an actionable reason rather than failing.
 
@@ -263,12 +287,12 @@ pipeline_silent      completed 15.9s
 | 6 | 16 kHz mono PCM audio | `audio/audio.wav`; `test_media.py` asserts rate/channels/sample width | ✅ |
 | 7 | Frame index with true PTS | `source/frame_index.parquet`, 249 rows for the demo | ✅ |
 | 8 | WhisperX transcription + word alignment | GPU run: 1 segment, 23 words, 100 % `alignment_status=aligned`, `language=en` | ✅ |
-| 9 | Language auto-detection | `language="auto"` resolved to `en`, surfaced in manifest `source.detected_language` | ✅ |
+| 9 | Language auto-detection | `language="auto"` resolved to `en`, surfaced in manifest `source.detected_language`. Also observed on Spanish speech: La-1 Telediario requested `auto`, resolved `es` (provenance + manifest). | ✅ |
 | 10 | Pyannote community-1 diarization | **Live GPU run** with a real token: community-1 found 2 speakers in the KABC/Kimmel clip (0.03-4.25 SPEAKER_00, 3.05-3.14 SPEAKER_01), 1 in the CNN clip, and correctly 0 turns in pipeline_silent. Turns land in speech/speaker_turns.parquet. | ✅ |
 | 11 | Speaker-assigned transcript + overlap metrics | 38 unit tests on real interval arithmetic; `speaker_overlap_ratio`, `speaker_assignment_method` columns present | ✅ (code) |
 | 12 | English translation via LiteLLM | **Live run** against a real OpenAI-compatible endpoint (vLLM, model chat): 1 request, 281 tokens, 450 ms; 'Now that you say that, I can remember hearing your voice at the Laker game.' became 'Now that you mention it, I remember hearing your voice at the Lakers game.' translation/segments_en.parquet populated and spacy_english ran on it. | ✅ |
 | 13 | spaCy linguistics, source language | 26 tokens × 32 columns, POS/lemma/dep/NER + per-token timestamps | ✅ |
-| 14 | spaCy linguistics, English | same schema under `linguistic/english/`, runs when translation exists | ✅ (code) |
+| 14 | spaCy linguistics, English | same schema under `linguistic/english/`, runs when translation exists. Observed on real translated-from-Spanish text: La-1 gives 25 tokens × 32 columns under `en_core_web_lg`. | ✅ |
 | 15 | Acoustics via Parselmouth | 1001 frames (`f0_hz`, `intensity_db`, `voiced`, `f1..f3_hz`) + 1 segment row | ✅ |
 | 16 | OpenPose BODY_25 + hands + face | real run on `person_demo.avi`: 37 857 / 56 054 / 37 768 rows over 205 frames | ✅ |
 | 17 | Single normalized timeline | `temporal_model` declared in every manifest; finalization rejects timestamps < 0 or > duration | ✅ |
