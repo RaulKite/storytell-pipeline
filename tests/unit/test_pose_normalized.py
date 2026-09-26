@@ -11,24 +11,27 @@ one that skips wherever nobody has run OpenPose. That rebuilding is itself verif
 against the real table where the corpus is present.
 
 
-Two kinds of test live here, and both matter for different reasons.
+One class lives here: `TestAgainstTheReference`, the test that earns the feature. It runs
+the *stage* over the ``pose/body.parquet`` of two processed clips and compares every
+computed coordinate with ``dfMaker()`` from CRAN ``multimolang`` 0.1.1, whose output is
+committed under ``tests/fixtures/pose_normalized/``. Those CSVs were produced by the
+reference, not by this code: the join key is ``(frame, people_id - 1, points) ==
+(frame_number, detection_index, keypoint_id)``. A sign or transposition error in the change
+of basis produces a table that looks entirely plausible — the neck still lands where it
+should and only the feet are wrong — so this is the check that cannot be a mock and cannot
+be a hand-derived expectation from the same algebra it is testing.
 
-`TestAgainstTheReference` is the test that earns the feature. It runs the *stage* over the
-real ``pose/body.parquet`` of two processed clips and compares every computed coordinate
-with ``dfMaker()`` from CRAN ``multimolang`` 0.1.1, whose output is committed under
-``tests/fixtures/pose_normalized/``. Those CSVs were produced by the reference, not by this
-code: the join key is ``(frame, people_id - 1, points) == (frame_number, detection_index,
-keypoint_id)``, and the tolerance is 1e-9 against an agreement this machine measures
-at 8.4e-15. A sign or transposition error in the change of basis produces a table that
-looks entirely plausible — the neck still lands where it should and only the feet are
-wrong — so this is the check that cannot be a mock and cannot be a hand-derived expectation
-from the same algebra it is testing.
+The tests that cover what the corpus cannot are in the two sibling files, not here, because
+they were committed as separate review links and each one has to be small enough to review:
 
-`TestMaskingIsPerCoordinate`, `TestBasisStates` and `TestAbsenceIsNamed` cover what the
-corpus cannot: the per-coordinate masking rule (no half-zero keypoint exists in either
-fixture video, so the fixtures are silent on it), the degenerate basis, and the three
-absence states §20.4 asks for. Every expected number there is hand-computed from the
-coordinates written in the test.
+* ``test_pose_normalize_math.py`` — `TestMaskingIsPerCoordinate` (no half-zero keypoint
+  exists in either fixture video, so the fixtures are silent on the per-coordinate rule)
+  and `TestBasisStates` (the degenerate basis).
+* ``test_pose_normalized_stage.py`` — `TestAbsenceIsNamed`, the three absence states §20.4
+  asks for.
+
+Every expected number in those two files is hand-computed from the coordinates written in
+the test.
 """
 
 from __future__ import annotations
@@ -64,9 +67,12 @@ REFERENCE_RUNS = (
 )
 
 #: Every fixture coordinate agrees with the pipeline's pixel table at this tolerance, and
-#: the computed coordinates agree with the reference at it too. The agreement observed here
-#: is 8.4e-15; 1e-9 leaves room for a different last-bit path and still refuses
-#: anything a reflection or a swapped axis could produce (those are O(1) or larger).
+#: the computed coordinates agree with the reference at it too. Measured agreement, on this
+#: machine, with the tolerance forced to zero so the tests report it: 6.66e-15 over the 154
+#: numeric kabc rows and 7.11e-15 over the 290 numeric cnn rows, and 9.55e-15 across all
+#: 53588 numeric points of the whole corpus (section 21 of the ODD task). 1e-9 leaves room
+#: for a different last-bit path and still refuses anything a reflection or a swapped axis
+#: could produce (those are O(1) or larger).
 TOLERANCE = 1e-9
 
 
@@ -266,6 +272,99 @@ class TestAgainstTheReference:
                 disagreements.append((key, row["x"], row["y"], pixels[key]))
         assert not disagreements, f"{tag}: fixture and pose_body disagree on pixels: " \
                                   f"{disagreements[:3]}"
+
+    @pytest.mark.parametrize("tag", REFERENCE_RUNS)
+    def test_the_rebuilt_table_is_the_real_one(self, tag):
+        """The claim `body_rows_from_fixture` rests on, checked against the real table.
+
+        The hermetic path rebuilds ``pose/body.parquet`` from the fixture because
+        ``data/processed/`` is gitignored. That rebuild is only a stand-in while it keeps
+        exactly the rows the pipeline's own normalizer kept — so where the corpus exists,
+        the rebuilt table and the real one are compared key-for-key and value-for-value
+        over the five fixture frames of each clip. Skips without the corpus; the rule
+        itself is pinned hermetically by the next test.
+        """
+        real = {
+            (row["frame_number"], row["detection_index"], row["keypoint_id"]):
+                (row["x"], row["y"], row["confidence"], row["keypoint_name"])
+            for row in read_table(dataset_for(tag) / "pose" / "body.parquet").to_pylist()
+            if row["frame_number"] in fixture_frames(tag)
+        }
+        rebuilt = {
+            (row["frame_number"], row["detection_index"], row["keypoint_id"]):
+                (row["x"], row["y"], row["confidence"], row["keypoint_name"])
+            for row in body_rows_from_fixture(tag)
+        }
+        only_rebuilt = sorted(set(rebuilt) - set(real))
+        only_real = sorted(set(real) - set(rebuilt))
+        differs = [k for k in set(rebuilt) & set(real) if rebuilt[k] != real[k]]
+        assert not (only_rebuilt or only_real or differs), (
+            f"{tag}: rebuilt-from-fixture differs from pose/body.parquet — "
+            f"only-rebuilt={only_rebuilt[:3]} only-real={only_real[:3]} "
+            f"value-differs={[(k, rebuilt[k], real[k]) for k in differs[:3]]}")
+
+    @pytest.mark.parametrize("tag", REFERENCE_RUNS)
+    def test_the_rebuilt_table_follows_the_real_normalizer_rule(self, tag):
+        """The fresh-clone path, checked against the normalizer that owns the rule.
+
+        ``body_rows_from_fixture`` keeps the fixture rows whose ``x`` is not ``NA``. The
+        rule that actually decides ``pose/body.parquet`` lives in
+        :func:`openpose_frame_rows`, which drops ``score <= 0`` and ``Background`` — a rule
+        this file does not own and must not restate from memory. So an OpenPose JSON
+        document is rebuilt from the fixture (a row the reference NA-ed becomes a
+        ``0, 0, 0`` triple, which is what dfMaker received), the pipeline's real
+        normalizer runs over it, and what it keeps must equal what the rebuild keeps.
+        Without this, a change to the normalizer's filter would leave every fresh clone
+        feeding the stage a table production would never have produced, and the reference
+        comparison would still pass.
+
+        The fixture covers keypoints 0-24 (its ``0`` is Nose, the row OpenPose numbers
+        zero); ``Background`` appears in neither table, so this pins the score filter, not
+        the Background drop — that one is openpose's own test's job.
+        """
+        from multimodal_pipeline.normalization import openpose_frame_rows
+
+        rows = fixture_rows(tag)
+        by_frame: dict[int, dict[int, dict[int, dict[str, str]]]] = {}
+        for row in rows:
+            by_frame.setdefault(int(row["frame"]), {}) \
+                     .setdefault(int(row["people_id"]), {})[int(row["points"])] = row
+
+        rebuilt = {
+            (row["frame_number"], row["detection_index"], row["keypoint_id"]):
+                (row["x"], row["y"], row["confidence"], row["keypoint_name"])
+            for row in body_rows_from_fixture(tag)
+        }
+        normalised: dict[tuple[int, int, int], tuple[float, float, float, str]] = {}
+        for frame, people in sorted(by_frame.items()):
+            ids = sorted(people)
+            # detection_index is the array position, so the fixture's people ids have to be
+            # contiguous from 1 within a frame for the document below to say what we mean.
+            assert ids == list(range(1, len(ids) + 1)), f"{tag} frame {frame}: people ids {ids}"
+            document = {"version": "1.5.1", "people": []}
+            for person_id in ids:
+                keypoints = by_frame[frame][person_id]
+                triples = [0.0] * (25 * 3)
+                for keypoint_id in range(25):
+                    match = keypoints.get(keypoint_id)
+                    if match is not None and match["x"] != "NA":
+                        base = keypoint_id * 3
+                        triples[base] = float(match["x"])
+                        triples[base + 1] = float(match["y"])
+                        triples[base + 2] = float(match["c"])
+                document["people"].append({"pose_keypoints_2d": triples})
+            for row in openpose_frame_rows(document, fixture_video_id(tag), frame, 0.0)["body"]:
+                normalised[(frame, row["detection_index"], row["keypoint_id"])] = (
+                    row["x"], row["y"], row["confidence"], row["keypoint_name"])
+
+        only_rebuilt = sorted(set(rebuilt) - set(normalised))
+        only_normalised = sorted(set(normalised) - set(rebuilt))
+        differs = [k for k in set(rebuilt) & set(normalised) if rebuilt[k] != normalised[k]]
+        assert not (only_rebuilt or only_normalised or differs), (
+            f"{tag}: the fixture rebuild no longer matches openpose_frame_rows — "
+            f"only-rebuilt={only_rebuilt[:3]} only-normalizer={only_normalised[:3]} "
+            f"value-differs={[(k, rebuilt[k], normalised[k]) for k in differs[:3]]} — "
+            "the hermetic stand-in has drifted from the rule that writes pose/body.parquet")
 
     @pytest.mark.parametrize("tag", REFERENCE_RUNS)
     def test_every_computed_coordinate_matches_the_reference(self, context, tag):
