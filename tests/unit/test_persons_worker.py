@@ -689,6 +689,34 @@ class TestOutputPathsMustNotAliasInputs:
                              out=shared, result=shared)
         assert payload["status"] == "error"
         assert "--output-json" in payload["error"]
+        # The review asked for this specifically: --output-json is not an input, and a refusal
+        # that calls it one teaches the reader to distrust the message on the cases that matter.
+        assert "--output-json output" in payload["error"]
+        assert "--output-json input" not in payload["error"]
+
+    def test_an_unresolvable_path_does_not_crash_the_guard(self, worker, tmp_path, clip,
+                                                          frame_index_file):
+        """A symlink loop must not escape the guard before ``main``'s try block.
+
+        ``resolve()`` fails on a loop with ``RuntimeError``, which is not an ``OSError``, and
+        the alias check runs before any handler is installed. Escaping there kills the worker
+        with no result document at all, which is what this asserts against: the harness reads
+        the result file, so a crash surfaces here as a missing file rather than a bad payload.
+
+        What the run then does is a separate matter and it is not data loss: ``rename`` does not
+        follow a final symlink component, so writing to the loop replaced the *link* with the
+        JSON document (measured -- the status came back ``ok``). The video, which is what this
+        guard exists to protect, was untouched.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        loop_a = tmp_path / "loop_a"
+        loop_b = tmp_path / "loop_b"
+        loop_a.symlink_to(loop_b)
+        loop_b.symlink_to(loop_a)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             out=loop_a)
+        assert "Symlink loop" not in json.dumps(payload), "the guard's own resolve() escaped"
+        assert clip.read_bytes() == b"\x00"
 
     def test_the_same_file_reached_by_a_different_spelling_is_still_caught(self, worker,
                                                                           tmp_path, clip,
