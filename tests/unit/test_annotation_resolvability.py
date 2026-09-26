@@ -71,6 +71,11 @@ def _resolve_callable(func: object, where: str, out: list[str]) -> None:
         )
 
 
+#: How many annotation keys a skip message names before summarising. The number is pinned by a
+#: test rather than picked at the call site, so truncation cannot grow silently.
+_MAX_NAMED_KEYS = 4
+
+
 def _callable_targets(obj: object) -> tuple[list[object], str | None]:
     """Unwrap one class-member or module value into the callables whose annotations can resolve.
 
@@ -84,8 +89,9 @@ def _callable_targets(obj: object) -> tuple[list[object], str | None]:
     not, and the package test asserts the naming list is empty: a shape the guard learns to skip
     becomes a failure instead of coverage it never had.
 
-    A non-callable (a field default, a constant, `_abc_impl`) is not a skip — it carries no
-    annotation of its own — and reports `([], None)`.
+    A non-callable (a field default, a constant, `_abc_impl`) has nothing of its own to resolve
+    and reports `([], None)` — unless it carries `__annotations__` in its own `__dict__`, which is
+    a nameable skip: an object sitting on a class holding annotations the scan will never reach.
     """
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         return [obj], None
@@ -118,8 +124,20 @@ def _callable_targets(obj: object) -> tuple[list[object], str | None]:
     # true rather than assumed (advisory R3-unknown-descriptor-silence). So the one case that
     # would hurt is named: an object sitting here while carrying its own annotations.
     if getattr(obj, "__dict__", {}).get("__annotations__"):
-        named = sorted(getattr(obj, "__dict__")["__annotations__"])
-        return [], f"non-callable of type {type(obj).__name__} carrying annotations {named[:4]}"
+        keys = sorted(getattr(obj, "__dict__")["__annotations__"])
+        # The total is always stated. Naming a prefix without saying so would rebuild, inside one
+        # f-string, the defect this branch exists to close (advisory R3-annotation-key-sorting):
+        # a real object in this package carries 48 annotation keys
+        # (`multimodal_pipeline.config.ConfigDict`), so a truncated list that reads as the whole
+        # story is exactly the silence the skip list was added to prevent.
+        shown = ", ".join(keys[:_MAX_NAMED_KEYS])
+        if len(keys) > _MAX_NAMED_KEYS:
+            shown += f", … ({len(keys) - _MAX_NAMED_KEYS} more)"
+        word = "key" if len(keys) == 1 else "keys"
+        return [], (
+            f"non-callable of type {type(obj).__name__} carries {len(keys)} annotation "
+            f"{word}: [{shown}]"
+        )
     return [], None
 
 
@@ -292,6 +310,10 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "        # Annotations on the object itself, not inherited from a class the scan also\n"
         "        # walks: this is the shape the non-callable branch has to name.\n"
         "        self.__annotations__ = {'depth': int}\n"
+        "class ManyAnnotated:\n"
+        "    def __init__(self):\n"
+        "        # More keys than _MAX_NAMED_KEYS, to prove the message says how many it left out.\n"
+        "        self.__annotations__ = {f'k{i}': int for i in range(6)}\n"
         "class Good:\n"
         "    @classmethod\n"
         "    def maker(cls, v: list[str]) -> list[str]: return v\n"
@@ -307,6 +329,7 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "class Odd:\n"
         "    weird = property(fget=partial(lambda: 1))\n"
         "    annotated_default = AnnotatedDefault()\n"
+        "    many_annotated = ManyAnnotated()\n"
     )
 
     sys.path.insert(0, str(tmp_path))
@@ -344,7 +367,9 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
     assert skipped == [
         "annotation_probe_pkg.methods.Odd.weird(): property accessor of type partial",
         "annotation_probe_pkg.methods.Odd.annotated_default(): non-callable of type "
-        "AnnotatedDefault carrying annotations ['depth']",
+        "AnnotatedDefault carries 1 annotation key: [depth]",
+        "annotation_probe_pkg.methods.Odd.many_annotated(): non-callable of type ManyAnnotated "
+        "carries 6 annotation keys: [k0, k1, k2, k3, … (2 more)]",
     ], skipped
     # The clean module was visited and produced nothing — proof the scan does not just fire
     # on everything, which would make the package-wide pass a coincidence.
