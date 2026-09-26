@@ -24,6 +24,13 @@ environments/*/.venv/
 # Tool scratch
 .pytest-tmp/
 
+# Model checkpoints are downloaded on first use and are data, not source. Ultralytics'
+# own `weights_dir` is a RELATIVE path held in a user-level settings file, so with
+# persons.weights_dir unset the worker's checkpoint lands in whatever directory started
+# the process -- the repository root for a normal `multimodal-pipeline run`. Set
+# persons.weights_dir to keep it somewhere deliberate instead (see config/config.example.yaml).
+*.pt
+
 # OS
 .DS_Store
 
