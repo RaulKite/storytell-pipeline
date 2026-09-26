@@ -204,9 +204,10 @@ def model_weights_path(model: Any, fallback: Path | None) -> Path | None:
 def resolve_device(requested: str) -> tuple[Any, str, str | None]:
     """Translate the config's device into what ultralytics accepts.
 
-    Returns ``(device_argument, resolved_name, fallback_reason)``. ``"auto"`` becomes
-    ``None``, which is ultralytics' own "select cuda if available, else cpu" — so the
-    decision is made once by torch and reported here rather than guessed at twice.
+    Returns ``(device_argument, resolved_name, fallback_reason)``. The argument is always a
+    concrete value: ``"auto"`` asks torch once, here, and becomes ``0`` (cuda) or ``"cpu"``.
+    It is deliberately never ``None``, because ``None`` is ultralytics' own auto-select and two
+    layers making that choice is how a run ends up on a device nobody recorded.
     """
     import torch
 
@@ -328,6 +329,9 @@ def track_video(*, video: Path, model_name: str, weights_dir: Path | None, devic
     }
     if classes:
         kwargs["classes"] = list(classes)
+    # Every branch of resolve_device returns a concrete value, so this always fires; the
+    # ``is not None`` is here so a future None cannot silently hand the choice to ultralytics
+    # and leave the recorded ``device`` disagreeing with the one used.
     if device_arg is not None:
         kwargs["device"] = device_arg
 
