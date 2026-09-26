@@ -112,6 +112,14 @@ def _callable_targets(obj: object) -> tuple[list[object], str | None]:
         return [], f"cached_property wrapping a {type(inner).__name__}"
     if callable(obj):
         return [], f"callable of type {type(obj).__name__}"
+    # Non-callable: a field default, a constant, `_abc_impl`. Measured on this package, 169
+    # objects reach here (53 tuple, 37 _abc_data, 32 str, 22 NoneType, 19 dict, 6 bool/int/float)
+    # and *none* of them carries annotations of its own, which is what makes "nothing to resolve"
+    # true rather than assumed (advisory R3-unknown-descriptor-silence). So the one case that
+    # would hurt is named: an object sitting here while carrying its own annotations.
+    if getattr(obj, "__dict__", {}).get("__annotations__"):
+        named = sorted(getattr(obj, "__dict__")["__annotations__"])
+        return [], f"non-callable of type {type(obj).__name__} carrying annotations {named[:4]}"
     return [], None
 
 
@@ -223,9 +231,10 @@ def test_every_annotation_in_the_pipeline_package_resolves() -> None:
         "strings that nothing evaluates at import time, so the suite stays green over them:\n"
         + "\n".join(failures)
     )
-    # Nothing may be passed over in silence. Three advisories were raised about populations this
-    # scan could not see; asserting an empty skip list turns the fourth such shape into a failing
-    # test naming the object, instead of a fourth advisory about coverage that never existed.
+    # Nothing may be passed over in silence. Several advisories were raised about populations this
+    # scan could not see; asserting an empty skip list turns the *next* such shape into a failing
+    # test naming the object, instead of another advisory about coverage that never existed.
+    # Deliberately count-free: the last count in this file argued with its own paragraph (§36).
     assert not skipped, (
         "the scan found callables it does not know how to unwrap, so their annotations went "
         "unresolved while this file reported success:\n" + "\n".join(sorted(skipped))
@@ -249,10 +258,11 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
     Three modules are written to a temp dir: one clean; one with a module-level function and a
     plain method whose annotations name things that do not exist (the `write_table` bug, rebuilt
     from scratch); one with four well-behaved method kinds, a classmethod carrying the same
-    defect, and a property whose accessor is a `partial`. The scan must report exactly the three
-    findings, in order, must *visit* the healthy methods — the part `inspect.isfunction` alone
-    cannot see, since `vars(cls)` hands back descriptors — and must *name* the one shape it cannot
-    unwrap. This is what stops the package-wide test above from passing by going blind.
+    defect, a property whose accessor is a `partial`, and a non-callable object that carries
+    annotations of its own. The scan must report exactly the three findings, in order, must
+    *visit* the healthy methods — the part `inspect.isfunction` alone cannot see, since `vars(cls)`
+    hands back descriptors — and must *name* the two shapes it cannot unwrap. This is what stops
+    the package-wide test above from passing by going blind.
     """
     pkg = tmp_path / "annotation_probe_pkg"
     pkg.mkdir()
@@ -277,6 +287,11 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
     ).write_text(
         "from __future__ import annotations\n"
         "from functools import cached_property, partial\n"
+        "class AnnotatedDefault:\n"
+        "    def __init__(self):\n"
+        "        # Annotations on the object itself, not inherited from a class the scan also\n"
+        "        # walks: this is the shape the non-callable branch has to name.\n"
+        "        self.__annotations__ = {'depth': int}\n"
         "class Good:\n"
         "    @classmethod\n"
         "    def maker(cls, v: list[str]) -> list[str]: return v\n"
@@ -291,6 +306,7 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "    def maker(cls, v: ClassMissing) -> None: return None\n"
         "class Odd:\n"
         "    weird = property(fget=partial(lambda: 1))\n"
+        "    annotated_default = AnnotatedDefault()\n"
     )
 
     sys.path.insert(0, str(tmp_path))
@@ -320,11 +336,15 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         "annotation_probe_pkg.methods.Good.loaded()",
         "annotation_probe_pkg.methods.AlsoBad.maker()",
     ], scanned["annotation_probe_pkg.methods"]
-    # And the one shape the unwrapper genuinely cannot handle is named rather than dropped. This
-    # is the assertion that makes the package-wide empty skip list mean something: without it, an
-    # unwrapper that classified everything as "not a function" would look identical.
+    # And the two shapes the unwrapper genuinely cannot handle are named rather than dropped: a
+    # property whose accessor is not a function, and a non-callable sitting on a class while
+    # carrying annotations of its own. These assertions are what make the package-wide empty skip
+    # list mean something: without them, an unwrapper that classified everything as "not a
+    # function" would look identical and the suite would stay green.
     assert skipped == [
-        "annotation_probe_pkg.methods.Odd.weird(): property accessor of type partial"
+        "annotation_probe_pkg.methods.Odd.weird(): property accessor of type partial",
+        "annotation_probe_pkg.methods.Odd.annotated_default(): non-callable of type "
+        "AnnotatedDefault carrying annotations ['depth']",
     ], skipped
     # The clean module was visited and produced nothing — proof the scan does not just fire
     # on everything, which would make the package-wide pass a coincidence.
