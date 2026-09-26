@@ -1314,3 +1314,22 @@ Two advisories, both non-blocking, both worth fixing:
 
 Suite after the fixes: **1252 collected, 1244 passed, 8 skipped**. The count ratchet failed
 first (README said 1251 against 1252 collected), which is the guard doing its job.
+
+### 23.2 Receipt for the advisory-fix commit
+
+`6b0db61` reviewed on its own, lineage `t12-advisories-6b0db61-a`, base `24ad40c`
+(committed range), tier **high** — the tier came from `subprocess` appearing in
+`tests/unit/test_readme_claims.py`, and this time the signal is honest: that test really
+does run the README snippet as a child process. 3 paths / 76 changed lines, all four
+lenses captured, **approved**. Authority burned at store revision
+`sha256:9fed29f3901c6eb4a437645d8f76f016dc1be2d57c13782042802f70dab2f05c`, target identity
+`sha256:feb344de5866bfff47d5d51a0f84f82b264c2f32efa86fd6de39653d5420bf8c`.
+
+One advisory, accepted as a standing limitation rather than fixed:
+`R3-verbatim-check-skips` (`tests/unit/test_readme_claims.py:539-540`) — the verbatim check
+skips when `data/processed/pipeline_demo` is absent, so on a fresh clone and in CI the
+claim is unguarded. That is the same tradeoff every corpus-reading test in this file makes
+and it is the right one here: the alternative is committing a fixture clip to make the
+guard hermetic, which buys a check on a snapshot nobody is updating. What it means in
+practice is that the verbatim block is enforced on the machines that can produce it — which
+is where the README gets edited — and not in CI.
