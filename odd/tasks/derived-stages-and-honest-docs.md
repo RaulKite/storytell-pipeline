@@ -1953,3 +1953,31 @@ Worth naming the pattern, because it is the second one this week: a universal cl
 ("absent from every dataset", "0 s accumulated") is exactly the shape that stops being true
 silently, and a test that checks the *shape* of the prose rather than its *numbers* will stay green
 while the world moves under it.
+
+### R3-rerun-upper-bound: the bound was in the prose, not in the registry
+
+The second advisory on `f63f79f` (`review-5b22106b7008cbd5`, tier high, 46 lines, four lenses,
+approved, store `sha256:ba43a078…`) said the re-run's upper bound was the weaker of its two
+comparisons: `n_rerun <= len(MANIFEST_ARTIFACTS)` reaches for the registry constant while
+`n_plain_count` reaches for the prose, and the tighter truth is that a re-run can only move some of
+the declared-absent seven into `artifacts`.
+
+It was right, and the fix is better than tightening one comparison: every number the invariant needs
+is already in the README sentence, so the test now parses all of them — the plain count (twice, from
+two different sentences, which is itself a claim the README can contradict), the registry's declared
+total, "the other seven", and the re-run's count — and checks them against each other:
+
+    plain + other == registry          # the prose's own arithmetic
+    registry == len(MANIFEST_ARTIFACTS)  # exactly one code comparison, the honest one
+    0 < rerun - plain <= other         # a re-run only converts some of the absent ones
+    plain_datasets + 1 == total_datasets
+
+Three mutations, three named deaths: re-run count 38→51 prints "a re-run can only move some of the
+declared-absent 7"; the registry's 43→40 prints "36 listed plus 7 other = 40 declared"; "the other
+seven"→"eight" prints "36 listed plus 8 other = 43 declared". The corpus half is unchanged. Suite
+still 1442 passed / 8 skipped (1450 collected: the test got stronger, not more numerous).
+
+Two drafts of that parsing were deleted before committing, both mine: an expression for the number
+word ending in `if False else`, and an `assert n_registry == 43 or n_registry` that could never
+fail. A test that cannot die is a defect, and here it was a defect I caught by re-reading the diff
+rather than by running it — the run stayed green, which is exactly how such a line ships.
