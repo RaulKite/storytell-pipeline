@@ -1928,6 +1928,27 @@ the slot exists whether or not the stage ever runs; and `status.json` carries
 `ed3f1e7`'s fingerprint work anyway). The README paragraph now says this out loud, because "a
 directory that is empty" reads to a human as "a write that was interrupted", and it is neither.
 
+### R3-corpus-skip: a guard that skipped on a fresh clone guarded nothing
+
+`review-035ae719895e0598` (tier high, 88 lines, four lenses, all answering) approved the fix and
+left one WARNING, and it was about the guard itself: `data/processed/` is gitignored, so the test's
+`pytest.skip` when the corpus is missing means the README's numbers are unguarded on a fresh clone
+and on CI — which is where a claim like this is worth checking.
+
+The fix is not to delete the skip; the byte-level half genuinely cannot run without the corpus. It
+is to move the skip below the half that can. The prose-shape half now runs everywhere and re-checks
+the sentence against itself: the regexes must find their sentences, `N of the M datasets` plus the
+one described re-run must add up to M, the re-run count must land strictly between the plain count
+and the registry's 43 (a re-run can only add some of the seven, never fewer), and the plain count
+must equal 43 minus seven. Verified in a detached worktree with no corpus at all: prose edited to
+say 37 fails with "the prose's plain count 37 is not the registry's 43 minus the seven newer
+artifacts", and edited to say "Five of the seven" fails with "5 plain datasets of 7 … those do not
+add up". With the corpus present the byte-level half still checks disk.
+
+The first version of that middle assertion read `n_plain_count + 5 == n_rerun or n_rerun >
+n_plain_count` — half tautology, half accidental, and it would have passed for almost any pair of
+numbers. Caught by reading it before committing rather than by the test run, which stayed green.
+
 Worth naming the pattern, because it is the second one this week: a universal claim about a corpus
 ("absent from every dataset", "0 s accumulated") is exactly the shape that stops being true
 silently, and a test that checks the *shape* of the prose rather than its *numbers* will stay green

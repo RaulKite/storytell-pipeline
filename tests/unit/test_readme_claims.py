@@ -506,10 +506,10 @@ class TestWorkedExampleMatchesTheManifest:
         """
         root = ROOT / "data" / "processed"
         manifests = sorted(root.glob("*/manifest.json"))
-        if len(manifests) < 2:
-            pytest.skip("needs the committed corpus under data/processed/")
 
-        # 1. What the prose says, extracted rather than restated.
+        # 1. What the prose says, extracted rather than restated. This half needs no disk,
+        # so it runs everywhere — the corpus is gitignored, and a guard that skipped with it
+        # would guard nothing on a fresh clone or CI (advisory R3-corpus-skip).
         stated_plain = re.search(
             r"(\w+)\s+of\s+the\s+(\w+)\s+datasets\s+here\s+list\s+(\d+)\s+artifacts\s+with\s+an\s+"
             r"empty\s+`artifacts_not_generated`", README)
@@ -523,6 +523,25 @@ class TestWorkedExampleMatchesTheManifest:
         n_plain_count = int(stated_plain.group(3))
         n_rerun = int(stated_rerun.group(1))
         assert n_plain and n_total, f"unparsed number word in: {stated_plain.group(0)!r}"
+
+        # The sentence has to add up on its own terms before disk is consulted: "N of the M
+        # datasets" plus exactly one described re-run must account for M, and the artifact
+        # counts must be the registry's 43 minus the never-produced seven. This is the part
+        # that can be wrong (and was, once) with no corpus in sight.
+        from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
+
+        assert n_plain + 1 == n_total, (
+            f"the prose says {n_plain} plain datasets of {n_total}, and separately describes "
+            f"one re-run dataset; those do not add up")
+        assert n_plain_count < n_rerun <= len(MANIFEST_ARTIFACTS), (
+            f"the prose says the plain datasets list {n_plain_count} artifacts and the re-run "
+            f"lists {n_rerun}; a re-run can only add some of the registry's "
+            f"{len(MANIFEST_ARTIFACTS)}, never fewer than the plain datasets")
+        assert n_plain_count == len(MANIFEST_ARTIFACTS) - 7, (
+            f"the prose's plain count {n_plain_count} is not the registry's "
+            f"{len(MANIFEST_ARTIFACTS)} minus the seven newer artifacts")
+        if len(manifests) < 2:
+            pytest.skip("byte-level half needs the corpus under data/processed/")
 
         # 2. What the bytes say.
         docs = {p.parent.name: json.loads(p.read_text()) for p in manifests}
