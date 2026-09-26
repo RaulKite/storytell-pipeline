@@ -1849,10 +1849,7 @@ the one direction that matters: a readable fingerprint and a `None` fingerprint 
 the first run after a source goes unreadable reruns; the loss only bites from the *second* such run
 onward. And reaching it at all requires `inspect.getsource` to fail on a module that is already
 imported, since every call site imports the module it digests one line earlier — which means the
-source loaded fine and then vanished from under the process. If the operator wants the stronger
-form, it is one line of design: one fingerprint key per module instead of a combined digest, which
-degrades the unreadable one alone. That would also make `status` output name *which* source it could
-not read, which the combined digest cannot.
+source loaded fine and then vanished from under the process.
 
 The asymmetry with `worker_code_digest` is not the `None` — it is what one `None` covers. That
 helper digests exactly one path, so when it gives up, the fingerprint loses the one thing it was
@@ -1862,3 +1859,28 @@ returns one value, so a single unreadable source silently stops the *others* fro
 the operator wants the stronger form, it is one key per module instead of a combined digest: that
 degrades the unreadable one alone and would let `status` name which source it could not read, which
 the combined digest cannot express.
+
+### The four documents commits, and why three of them exist
+
+The code unit carries its own review. The receipts needed their own, and then three more, because
+the first read of my own numbers was wrong twice and the correction created more text to review.
+
+| lineage | range | tier | lines | outcome |
+|---|---|---|---|---|
+| `review-9c626adb07555f09` | `ed3f1e7..27d2e26` | low | 95 | approved, revision `sha256:eb213be2…`, burned |
+| `review-1d7cd506dcf779aa` | `ed3f1e7..6bf1904` | low | 102 | approved, revision `sha256:36f2a8ca…`, burned |
+| `review-45dec52589e67f06` | `6bf1904..0d101fb` | low | 12 | approved, revision `sha256:88ada1a8…`, burned |
+
+`review-9c626adb07555f09` covered `27d2e26` (the 56 948 correction and this advisory note) and was
+burned; `6bf1904` was then committed, so that authority never covered it. Rather than let text sit
+on master unreviewed, `review-1d7cd506dcf779aa` reviewed the extended range and `0d101fb` got its
+own. Every START in this batch returned `candidate-view-git-failure` with `mutation_outcome:
+unknown` and a bound STATUS that said `approved`; each was burned from that STATUS, never from the
+ambiguous START.
+
+Two things worth recording because they cost a commit each. The first is that a tier low candidate
+has no lenses — nothing read `6bf1904` before it was pushed, and it happened to be correct. The
+second is that the edit in `0d101fb` left a duplicated paragraph ("If the operator wants the
+stronger form…" appeared twice, lines 1852 and 1861); a fourth commit removes the earlier copy.
+Editing prose by replacing a paragraph, without re-reading what sits above it, is how that
+happened, and no lens was there to catch it.
