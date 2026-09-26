@@ -1198,8 +1198,12 @@ fixtures cover 5 frames. With `TOLERANCE` forced to `0.0` the tests report their
 case: **6.66e-15 over the 154 numeric kabc rows, 7.11e-15 over the 290 numeric cnn rows**.
 Both figures, and the corpus-wide 9.55e-15, are now stated where each applies.
 
-Suite after the fix: **1237 unit collected, 1228 passed, 8 skipped** (the 8 pre-existing
-matplotlib guards), README counts moved 1233 → 1237.
+Suite after the fix, re-run at `a560ff4` to report it rather than the run-before-last:
+**1237 unit collected, 1229 passed, 8 skipped** (the 8 pre-existing matplotlib guards),
+README counts moved 1233 → 1237. The number written in `e0c466d`'s message and in the first
+draft of this section was 1228, copied from the run that still had the stale README-count
+failure in it — off by one, caught by re-running the suite after the commit and reported here
+as its own commit because `e0c466d` is already in `origin/master`.
 
 **Link 5's own review came back with no findings at all** (`review-c29f8477ff8ab47e`,
 medium tier, `review-reliability`, store revision `sha256:ccbdc2d3…`, authority burned). It
