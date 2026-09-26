@@ -2033,11 +2033,50 @@ Suite 1442 → 1444 passed, 8 skipped, 1452 collected (README ratchet moved in b
 ratchet test is what caught the drift on the first run). `pyflakes src/` now reports no
 undefined names anywhere in the package.
 
-Also found during the same inventory, deliberately **not** touched: four assigned-but-unused
+Also found during the same inventory, deliberately **not** touched: five assigned-but-unused
 locals that pyflakes reports (`orchestrator.py:277 outcome`, `stages/base.py:519 cfg_env`,
-`stages/acoustic.py:139 frame_rows`, `stages/whisperx.py:122 raw_path`, plus
-`whisperx.py:170 check`) and one unused import (`stages/base.py:30 ValidationIssue`). These are
+`stages/acoustic.py:139 frame_rows`, `stages/whisperx.py:122 raw_path`, `whisperx.py:170 check`)
+and one unused import (`stages/base.py:30 ValidationIssue`). These are
 deletions in files whose owners are other work units, `acoustic.py:139` and `whisperx.py:170` sit
 inside normalisation paths that a future review has to read anyway, and none of them is a defect:
 the values are computed and dropped, not wrong. They belong in a cleanup commit with its own
 reason, not smuggled into a one-line annotation fix.
+
+## §34 — the §33 guard had the blind spot §33 complains about, one level down
+
+`review-4ae07c0c75b4edb9` (tier high, 234 lines, four lenses) came back **approved** with two
+advisories, both about `tests/unit/test_annotation_resolvability.py`, and both were right.
+
+**R3-class-method-annotations.** The class branch resolved `cls.__annotations__`, which is only the
+class's *attribute* annotations. Methods were never resolved over. Measured after the fix: the
+package defines **332** functions inside its own classes, all outside the scan (0 of them broken
+today, also measured — this was a coverage hole, not a live bug). That is the same class of defect
+§33 exists to catch, smuggled into the guard itself: `write_table` could have had a method-shaped
+twin and the suite would still have been green. The scan now covers methods and resolves **760**
+annotations across 37 modules instead of 510.
+
+**R2-001.** Both resolve sites did `except Exception` and appended `f"{where}: {Name}: {exc}"`, so an
+internal failure of the *guard* would have been reported as "the pipeline has a broken annotation"
+and sent a reader to blame innocent code. The handlers now split the two kinds: `NameError` /
+`AttributeError` is an annotation defect; anything else is reported as
+`UNEXPECTED <Exc> while resolving … (this is the guard failing, not the annotation)`.
+
+Proofs of life, all four observed dying by name:
+
+- deleting the method branch → the named-target list dies on `state.StageRecord.to_dict()`, and the
+  synthetic package's expected second finding goes to zero;
+- annotating a real method wrongly (`StageRecord.to_dict(self, probe: NoSuchType)`) → the package
+  test fails with the original `NameError`;
+- reverting the handler split to a bare `except Exception` → the harness-fixture test fails because
+  the message no longer says the guard failed;
+- the synthetic package now carries two defects (module function + method on a class) and the test
+  requires exactly those two, in order.
+
+One discarded draft, caught by running it: the harness fixture first used a class with a raising
+`__class_getitem__` and expected a `ZeroDivisionError`; `dict[str, Exploding]` never calls it, the
+resolver returned no failures, and the assertion died on `assert 0 == 1` — for the wrong reason.
+Replaced with an attribute access on an object whose `__getattr__` raises. A fixture must trigger
+the path it claims to trigger.
+
+Suite 1444 → 1445 passed, 8 skipped, 1453 collected; README ratchet updated in both places (again
+caught by the ratchet test itself on the first run).
