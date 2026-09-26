@@ -37,11 +37,37 @@ from multimodal_pipeline import __name__ as PACKAGE
 
 
 def _resolve_hint(module: types.ModuleType, where: str, hint: str, out: list[str]) -> None:
-    """Evaluate one string annotation in the module's own namespace."""
+    """Evaluate one string annotation in the module's own namespace.
+
+    Two kinds of failure are reported and they mean different things (advisory R2-001). A
+    `NameError`/`AttributeError` is the defect this file exists to find: the annotation names
+    something the module cannot see. Anything else means the *harness* broke while evaluating,
+    and labelling that as a broken annotation would point a reader at innocent package code. So
+    the second kind is labelled as what it is rather than swallowed or presented as a finding
+    about the pipeline.
+    """
     try:
         eval(hint, vars(module))  # noqa: S307 - resolving the package's own annotations
-    except Exception as exc:  # noqa: BLE001 - the exception IS the finding
+    except (NameError, AttributeError) as exc:
         out.append(f"{where}: {type(exc).__name__}: {exc}")
+    except Exception as exc:  # noqa: BLE001 - reported, but never as an annotation defect
+        out.append(
+            f"{where}: UNEXPECTED {type(exc).__name__} while resolving: {exc} "
+            "(this is the guard failing, not the annotation)"
+        )
+
+
+def _resolve_callable(func: object, where: str, out: list[str]) -> None:
+    """`get_type_hints` on a function, with the same two-kind split as `_resolve_hint`."""
+    try:
+        typing.get_type_hints(func)  # type: ignore[arg-type]
+    except (NameError, AttributeError) as exc:
+        out.append(f"{where}: {type(exc).__name__}: {exc}")
+    except Exception as exc:  # noqa: BLE001 - reported, but never as an annotation defect
+        out.append(
+            f"{where}: UNEXPECTED {type(exc).__name__} while resolving: {exc} "
+            "(this is the guard failing, not the annotation)"
+        )
 
 
 def _scan_root(root: types.ModuleType) -> tuple[list[str], dict[str, list[str]]]:
@@ -75,10 +101,7 @@ def _scan_root(root: types.ModuleType) -> tuple[list[str], dict[str, list[str]]]
             if inspect.isfunction(obj):
                 where = f"{module_name}.{attr}()"
                 resolved.append(where)
-                try:
-                    typing.get_type_hints(obj)
-                except Exception as exc:  # noqa: BLE001 - the exception IS the finding
-                    failures.append(f"{where}: {type(exc).__name__}: {exc}")
+                _resolve_callable(obj, where, failures)
 
             elif inspect.isclass(obj):
                 for cattr, hint in list(getattr(obj, "__annotations__", {}).items()):
@@ -86,6 +109,17 @@ def _scan_root(root: types.ModuleType) -> tuple[list[str], dict[str, list[str]]]
                     resolved.append(where)
                     if isinstance(hint, str):
                         _resolve_hint(module, where, hint, failures)
+
+                # Methods too. A class's own `__annotations__` covers only its attributes, so
+                # without this branch the 332 methods the package defines on its own classes
+                # were never resolved over — the same blind spot that let `write_table` ship,
+                # one level down (advisory R3-class-method-annotations).
+                for mattr, mobj in list(vars(obj).items()):
+                    if mattr.startswith("__") or not inspect.isfunction(mobj):
+                        continue
+                    where = f"{module_name}.{attr}.{mattr}()"
+                    resolved.append(where)
+                    _resolve_callable(mobj, where, failures)
 
         scanned[module_name] = resolved
 
@@ -102,6 +136,8 @@ _MUST_BE_SCANNED = (
     "multimodal_pipeline.state.StageRecord:status",
     "multimodal_pipeline.fusion.TurnTableSpec:engine",
     "multimodal_pipeline.config:PERSON_TRACKER_TYPES",
+    # A method on a class, which the attribute-only class branch could not see.
+    "multimodal_pipeline.state.StageRecord.to_dict()",
 )
 
 
@@ -146,6 +182,8 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
     (pkg / "bad.py").write_text(
         "from __future__ import annotations\n"
         "def broken(x: MissingTypeName) -> None: return None\n"
+        "class AlsoBad:\n"
+        "    def method(self, y: AlsoMissing) -> None: return None\n"
     )
 
     sys.path.insert(0, str(tmp_path))
@@ -157,12 +195,41 @@ def test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen(tmp_p
         for name in [n for n in list(sys.modules) if n.startswith("annotation_probe_pkg")]:
             del sys.modules[name]
 
-    assert len(failures) == 1, f"expected exactly one broken annotation, got: {failures}"
+    assert len(failures) == 2, f"expected two broken annotations, got: {failures}"
     assert "annotation_probe_pkg.bad.broken" in failures[0], failures[0]
     assert "NameError" in failures[0], failures[0]
+    # The second finding must come from a method on a class: that branch is what
+    # R3-class-method-annotations was raised about, and it needs its own proof of life.
+    assert "annotation_probe_pkg.bad.AlsoBad.method()" in failures[1], failures[1]
+    assert "NameError" in failures[1], failures[1]
     # The clean module was visited and produced nothing — proof the scan does not just fire
     # on everything, which would make the package-wide pass a coincidence.
     assert scanned["annotation_probe_pkg.good"] == [
         "annotation_probe_pkg.good:COUNT",
         "annotation_probe_pkg.good.ok()",
     ], scanned
+
+
+def test_a_guard_failure_is_reported_as_the_guards_own_failure() -> None:
+    """R2-001: the resolve sites used to `except Exception` and label anything that raised as a
+    broken annotation. A hint that raises something other than a name lookup means the harness
+    broke; the report has to say so, or a reader is sent to blame package code that is fine.
+    """
+
+    class Boom:
+        def __getattr__(self, name):
+            raise ZeroDivisionError("the harness broke")
+
+    fake = types.ModuleType("fake_two")
+    fake.__dict__["Boom"] = Boom()
+
+    out: list[str] = []
+    _resolve_hint(fake, "fake.two:x", "Boom.attr", out)
+    assert len(out) == 1, out
+    assert "UNEXPECTED ZeroDivisionError" in out[0], out[0]
+    assert "the guard failing" in out[0], out[0]
+
+    # And a genuine name failure still reads as an annotation defect, not as harness trouble.
+    names: list[str] = []
+    _resolve_hint(fake, "fake.two:y", "dict[str, NotInThisModule]", names)
+    assert len(names) == 1 and "UNEXPECTED" not in names[0] and "NameError" in names[0], names
