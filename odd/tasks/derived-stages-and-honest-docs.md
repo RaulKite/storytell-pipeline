@@ -2260,3 +2260,70 @@ claim over the package — 841 annotations resolve, nothing is skipped silently 
 §35. Recorded as a decision, not silence: if a seventh advisory arrives on this file it goes into the
 ODD as a noted limitation, and the review effort goes back to the stages. The operator can reverse
 that by asking for more.
+
+### §38 The seventh advisory on one file, recorded and deliberately not closed
+
+`review-d35ee343b7978afb` approved `f71d2c6` (tier high, 79 lines, four lenses, store
+`sha256:36016662…`) with one advisory, `R3-non-string-annotation-keys`, on the
+`sorted(...)` in the skip message.
+
+That is the seventh advisory on `tests/unit/test_annotation_resolvability.py`, and §37 committed to
+a stopping rule: a further one gets measured and recorded, not another tier-high review cycle. So
+this is that measurement.
+
+**Is it real?** Yes, mechanically. `sorted({1: int, 'b': str})` raises
+`TypeError: '<' not supported between instances of 'str' and 'int'`, and I reproduced that against
+`_callable_targets` directly rather than reasoning about it.
+
+**Is it reachable?** No. Walking every module and every class member in the package, annotation
+dicts with a non-string key: **0**. Python only writes string keys into `__annotations__`
+automatically; a non-string key requires someone assigning the dict by hand.
+
+**What would it do if it fired?** This is the part that decides it. It raises. The exception escapes
+`_callable_targets` → `_scan_root` → the test, and the suite fails with a loud `TypeError` naming
+the line. It cannot pass quietly, and cannot report a clean scan over unmeasured ground.
+
+So the file's own standard — *nothing may be skipped in silence* — is not violated by this. Every
+advisory closed so far was closed because coverage could be lost without anyone noticing. This one
+costs a clear error message instead of a prettier one. Paying a tier-high cycle (4 reviewer runs) to
+turn `TypeError: '<' not supported…` into a neatly formatted skip line buys legibility, which is not
+what this guard was built to protect.
+
+The one-line fix, for whoever wants it: `sorted(keys, key=str)`. It is deliberately not in this
+commit, so the decision stays visible rather than buried in a diff.
+
+Review-thread ledger for this file, so the count is in one place:
+
+| # | advisory | closed? |
+| - | --- | --- |
+| 1 | `R3-class-method-annotations` | yes — real coverage hole |
+| 2 | `R2-001` | yes — guard failure was mislabelled as an annotation defect |
+| 3 | `R3-method-descriptors` | yes — 62 descriptors invisible |
+| 4 | `R3-property-accessor-coverage` | yes — 19 properties never taken |
+| 5 | `R3-unknown-descriptor-silence` | yes — assumption named instead of returned |
+| 6 | `R3-annotation-key-sorting` | yes — the message hid its own truncation |
+| 7 | `R3-non-string-annotation-keys` | **no** — loud failure, unreachable here, recorded |
+
+The guard's claim over the package has been unchanged since §35: **841** annotations resolve, nothing
+is skipped without a name. Seven reviews have not moved that number, which is the honest signal that
+the file is done being widened.
+
+### §39 What the grouped capture did on its own failure, and what that cost
+
+Worth recording as process fact, because it is the first `pi-host-relay-transport-failure` in this
+clone's recent thread. `gentle_review_capture_group` ran four reviewers, admitted `review-risk` and
+`review-resilience`, then Go **refused `review-readability` at admission**: the reviewer echoed a
+subject hash that did not match the binding's. The refusal explicitly did not consume the slot and
+preserved the rejected payload at
+`.git/gentle-ai/rejected-results/review-d35ee343b7978afb/review-readability-1-617a8b42b6ed.json`.
+
+The handling that worked: fresh bound STATUS, which reoffered only the two remaining lenses, then
+`gentle_review_capture` **slot by slot** — and `review-reliability` deliberately before
+`review-readability`, the one that had just failed, so that if it failed again the third lens was
+still admitted. It did not fail; it closed the lineage `approved`.
+
+Nothing was invented and nothing was replayed: the refused bytes were never resubmitted, per the
+refusal's own instruction. Cost of the detour: one extra STATUS and one extra capture call, versus a
+grouped capture that would have thrown away two accepted lenses had it aborted the same way. This is
+now the known fallback for a lens that has failed admission once — group when nothing is known to be
+fragile, slot-by-slot as soon as something is.
