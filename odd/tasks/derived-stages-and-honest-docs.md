@@ -143,8 +143,12 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       `d9120dd`, evidence in §17. Named `speaker_fusion`, not `diarization_v2`: it does not
       re-segment audio, so a `diarization`-prefixed name would promise a diarizer and read as
       a replacement for the stage whose output it consumes.
-- [ ] **T14** §20.4 `pose_normalized`: body-centred basis (dfMaker algebra) in Python,
-      validated, explicit no-valid-basis state.
+- [x] **T14** §20.4 `pose_normalized`: body-centred basis (dfMaker algebra) in Python,
+      validated, explicit no-valid-basis state. Four linked commits (`5eb1214`, `4ec3a33`,
+      `f862e06`, `23045e5`); §21 is the build and corpus measurement, §22 the review,
+      including the link the reviewer could not finish and the two docstring defects its
+      advisories exposed. Whole-corpus agreement with `dfMaker` 0.1.1: 53588 numeric points,
+      worst 9.55e-15, 0 absence disagreements.
 - [ ] **T15** §20.2 `persons`: own uv environment, Ultralytics detect+track, ids kept
       separate from TalkNet's.
 - [ ] **T16** §20.3 `stories`: prototype the prompt against the live endpoint, read the
@@ -1120,3 +1124,77 @@ the one route it did offer was a workspace candidate that would have frozen this
 unverified T14 work with it. So `8ea9b11` sits in `origin/master` unreviewed. AGENTS.md:28
 ("receipt-driven development is disabled for this clone") is stale: `gentle-ai review
 mode status` reads `on (decided by default)` on both scopes.
+
+## 22. T14 review — the candidate the reviewer could not read, split into four
+
+**The first candidate was rejected by the provider, not by a reviewer.** A single commit
+carrying all of T14 (17 paths, ~521 KB of diff) came back `lens_context_budget_exceeded`
+with no authority created. That is a hard refusal, so the work was rebuilt as a chain of
+four commits, each independently green and each small enough to review. The original
+attempt is kept locally as tag `t14-split-original`; the chain reproduces the same tree.
+
+| link | commit | diff | tier | lenses | outcome |
+|---|---|---|---|---|---|
+| fixtures + R generator | `5eb1214` | 95 KB (two CSVs) | see §22 | see §22 | see §22 |
+| the coordinate maths | `4ec3a33` | 27 KB | medium | 1 (reliability) | **approved**, 3 advisories |
+| stage + registration | `f862e06` | 95 KB | high | 4 | **incomplete** — see below |
+| reference comparison + docs | `23045e5` | 38 KB | medium | 1 (reliability) | **approved**, 2 advisories |
+
+The fixture commit was the one link this task intended to leave unreviewed: it is two CSVs
+no code reads except through the tests that check them against the reference, and their bytes
+are the reference's own output, so the only reviewable claim in them is the generator script
+that reproduces them. That was an intention, not a measurement — so it is checked below
+rather than asserted.
+
+**Link 3 could not be completed, and no verdict was invented for it.** The provider pinned
+the lineage (`review-ad44829afd37f703`, target `sha256:b3d3174cdb…`) and asked for four
+lenses. `review-risk`, `review-readability` and `review-reliability` were captured.
+`review-resilience` failed four times with `reviewer-empty-output` — once after 297 s with
+`stopReason: length`, three times in ~27 ms with `stopReason: stop`, i.e. the relay refusing
+before generating. Each failure reported `mutation_performed: false`, and fresh STATUS
+reoffered the same one-slot binding every time. An incomplete capture never reaches
+acknowledgement, so this link has **no approval receipt**. The decision to stop there is
+deliberate: the alternative was to author a verdict for a lens that never ran.
+
+What the unrun lens was most likely to find is also the thing link 3's own risk signal
+claimed, and it is false: the START cited `process_boundary / shell_process` at
+`stages/pose_normalized.py` as the reason for the high tier. That file contains exactly one
+match for that pattern — the word "subprocess", in a docstring saying the stage does not
+start subprocesses. The tier was raised by a string, not by a process boundary.
+
+**Link 4's two advisories were real defects and are fixed here, not deferred.**
+
+- `R3-promised-edge-tests-missing` (`test_pose_normalized.py:27-31`): the module docstring
+  promised `TestMaskingIsPerCoordinate`, `TestBasisStates` and `TestAbsenceIsNamed` live in
+  this file. Splitting the suite moved them to `test_pose_normalize_math.py` and
+  `test_pose_normalized_stage.py` and the docstring was not updated — so it pointed at
+  three classes a reader would never find here. The docstring now names each class and the
+  file that holds it, and says why the split exists.
+- `R3-nonhermetic-input` (`test_pose_normalized.py:158`): three places cited
+  `test_the_rebuilt_table_is_the_real_one` as proof that the fixture-rebuilt pixel table
+  equals the real `pose/body.parquet`. **That test never existed.** The claim was load-bearing
+  and unbacked: on a fresh clone every reference comparison runs on a table this file
+  rebuilds from the CSV, and nothing checked that the rebuild keeps what the pipeline's own
+  normalizer keeps. Two tests now exist for it:
+  `test_the_rebuilt_table_is_the_real_one` (corpus present: key-for-key and value-for-value
+  against the real table over the five fixture frames, 154 and 349 rows, exact match) and
+  `test_the_rebuilt_table_follows_the_real_normalizer_rule` (hermetic: rebuilds an OpenPose
+  JSON document from the fixture, runs the pipeline's real `openpose_frame_rows` over it, and
+  requires it to keep exactly the rows the rebuild keeps). The second one is what runs in CI.
+  Mutating the rebuild to also drop `keypoint_id == 0` killed all four new tests.
+
+A prior assumption of mine died in that check. The fixtures carry `points == 0` rows with
+numeric coordinates, and I read that as the `Background` keypoint the normalizer drops —
+which would have made the rebuild silently wrong. It is not: BODY_25 numbers `Nose` as 0, and
+the real table's `keypoint_id == 0` row for KABC frame 0 person 0 carries `x = 447.514,
+confidence = 0.86427`, the fixture's own numbers. The rebuild was right; the reasoning that
+"proved" it wrong was the bug.
+
+**A stale number was removed rather than defended.** The docstring and a comment claimed
+agreement "at 8.4e-15". That is the whole-corpus figure from §21 and it was in a file whose
+fixtures cover 5 frames. With `TOLERANCE` forced to `0.0` the tests report their own worst
+case: **6.66e-15 over the 154 numeric kabc rows, 7.11e-15 over the 290 numeric cnn rows**.
+Both figures, and the corpus-wide 9.55e-15, are now stated where each applies.
+
+Suite after the fix: **1237 unit collected, 1228 passed, 8 skipped** (the 8 pre-existing
+matplotlib guards), README counts moved 1233 → 1237.
