@@ -7,7 +7,7 @@ check a table's structure instead of trusting the writer.
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 import pyarrow as pa
 import pyarrow.parquet as pq
