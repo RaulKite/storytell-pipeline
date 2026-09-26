@@ -373,13 +373,18 @@ no person for OpenPose to find. `manifest.json` carries the same 36 keys in `art
 
 Why 13 stages and 36 artifacts when the stage table above lists more? Because a manifest
 describes the run that produced it. This dataset was last written before `pose_normalized`,
-`speaker_fusion` and `persons` were added to the queue, so its `stage_order` has 13 entries
-and its manifest lists 36 of the 43 artifacts the registry can now declare; the other seven
+`speaker_fusion` and `persons` were added to the queue, so its `processing.stages` has 13 entries
+and its manifest lists 36 of the 43 artifacts the registry can now declare. The other seven
 (`pose/normalized.parquet`, `pose/raw_images`, `speaker/fusion_pyannote.parquet`,
 `speaker/fusion_nemotron.parquet`, `persons/raw/yolo_track.json`, `persons/frames.parquet`,
-`persons/tracks.parquet`) are absent from every dataset under `data/processed/`
-because no run here has produced them since. Another reason to read `status.json` rather
-than assume the queue: it is the file that records what actually ran.
+`persons/tracks.parquet`) are absent from *this* dataset for that reason — but not from every
+dataset on this disk, and that is the point of reading the manifest instead of the prose. Six of
+the seven datasets here list 36 artifacts with an empty `artifacts_not_generated`; the KABC clip
+lists **38**, declaring `pose_normalized` and `speaker_fusion_pyannote`, because it was re-run
+after those stages existed, and it declares its remaining five in `artifacts_not_generated`. So an
+empty `persons/raw/` directory on disk is not a half-written stage either: `ensure_dirs` pre-creates
+that slot the way it pre-creates `pose/raw`, and the two manifest keys — `artifacts` and
+`artifacts_not_generated` — are what record whether the stage actually ran.
 
 Now the files, with what those numbers mean:
 
@@ -1474,7 +1479,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1449 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1450 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1531,7 +1536,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1449 tests
+tests/unit/                1450 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

@@ -14,6 +14,7 @@ in a way a fresh clone can actually run" is a fact about this file and
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -480,7 +481,9 @@ class TestWorkedExampleMatchesTheManifest:
 
     def test_the_artifact_count_it_quotes_is_the_manifest_key_count(self) -> None:
         # 43 registered manifest candidates minus the seven produced only by stages newer
-        # than every dataset on this disk.
+        # than six of the seven datasets on this disk (KABC was re-run after two of them
+        # existed — the next test pins that, because "absent from every dataset" was a
+        # claim the README made and disk disproved).
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
 
         never_produced = {"pose_normalized", "pose_images_raw",
@@ -488,6 +491,70 @@ class TestWorkedExampleMatchesTheManifest:
                           "persons_raw", "person_frames", "person_tracks"}
         assert len(MANIFEST_ARTIFACTS) == 43
         assert len(set(MANIFEST_ARTIFACTS) - never_produced) == 36
+
+    def test_the_corpus_counts_the_prose_states_match_the_manifests_on_disk(self) -> None:
+        """The README states per-dataset artifact counts for *this* machine's corpus, and
+        those numbers have to come from the bytes, not from memory.
+
+        The test pulls the numbers out of the prose itself and re-checks them against every
+        manifest under `data/processed/`. That kills drift in both directions: edit the
+        sentence and it disagrees with disk, re-run the pipeline over the corpus and the
+        sentence goes stale against disk. The prose it guards previously asserted "absent
+        from every dataset under data/processed/" — a universal claim that was already false
+        when read, because the KABC manifest declared two of the supposedly-absent artifacts,
+        and no test could see a manifest that disagreed with a sentence.
+        """
+        root = ROOT / "data" / "processed"
+        manifests = sorted(root.glob("*/manifest.json"))
+        if len(manifests) < 2:
+            pytest.skip("needs the committed corpus under data/processed/")
+
+        # 1. What the prose says, extracted rather than restated.
+        stated_plain = re.search(
+            r"(\w+)\s+of\s+the\s+(\w+)\s+datasets\s+here\s+list\s+(\d+)\s+artifacts\s+with\s+an\s+"
+            r"empty\s+`artifacts_not_generated`", README)
+        stated_rerun = re.search(r"the KABC clip\s+lists \*\*(\d+)\*\*", README)
+        assert stated_plain and stated_rerun, (
+            "the corpus-count sentence the README makes about this machine changed shape; "
+            "re-point this test at it instead of deleting the check")
+        words = {"six": 6, "seven": 7, "five": 5, "eight": 8, "nine": 9, "ten": 10}
+        n_plain = words.get(stated_plain.group(1).lower())
+        n_total = words.get(stated_plain.group(2).lower())
+        n_plain_count = int(stated_plain.group(3))
+        n_rerun = int(stated_rerun.group(1))
+        assert n_plain and n_total, f"unparsed number word in: {stated_plain.group(0)!r}"
+
+        # 2. What the bytes say.
+        docs = {p.parent.name: json.loads(p.read_text()) for p in manifests}
+        plain = {n: d for n, d in docs.items() if not d["artifacts_not_generated"]}
+        rerun = {n: d for n, d in docs.items() if d["artifacts_not_generated"]}
+        assert len(docs) == n_total, (
+            f"the prose says {n_total} datasets on this disk; {len(docs)} manifests found")
+        assert len(plain) == n_plain and {len(d["artifacts"]) for d in plain.values()} == {n_plain_count}, (
+            f"the prose says {n_plain} datasets list {n_plain_count} artifacts with nothing "
+            f"declared not-generated; disk says {sorted((n, len(d['artifacts'])) for n, d in plain.items())}")
+        assert len(rerun) == 1, f"the prose describes exactly one re-run dataset; disk has {sorted(rerun)}"
+        name, doc = next(iter(rerun.items()))
+        assert name.startswith("2017-12-30_0735_US_KABC"), (
+            f"the prose names KABC as the re-run dataset; disk names {name}")
+        assert len(doc["artifacts"]) == n_rerun, (
+            f"the prose says the re-run dataset lists {n_rerun}; its manifest lists "
+            f"{len(doc['artifacts'])}")
+        assert set(doc["artifacts_not_generated"]) == {
+            "pose_images_raw", "speaker_fusion_nemotron", "persons_raw",
+            "person_frames", "person_tracks"}
+        # 3. The two names the prose credits the re-run with are really in its manifest.
+        for produced in ("pose_normalized", "speaker_fusion_pyannote"):
+            assert produced in doc["artifacts"], (
+                f"the prose credits the re-run with {produced}; its manifest does not list it")
+        # 4. An empty persons/raw/ on disk is pre-created scaffolding, not a half-run stage.
+        empty_persons_dirs = [n for n, d in docs.items()
+                              if "persons_raw" in d["artifacts_not_generated"]
+                              and (root / n / "persons" / "raw").is_dir()
+                              and not any((root / n / "persons" / "raw").iterdir())]
+        assert empty_persons_dirs, (
+            "the README explains an empty persons/raw/ as ensure_dirs scaffolding; no "
+            "dataset on this disk still shows that shape, so the explanation is stale")
 
     def test_the_example_never_walks_an_absent_artifact_as_a_file_that_exists(self) -> None:
         """No row of the walked table may present a never-produced artifact as present.
