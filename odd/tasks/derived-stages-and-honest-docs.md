@@ -1981,3 +1981,63 @@ Two drafts of that parsing were deleted before committing, both mine: an express
 word ending in `if False else`, and an `assert n_registry == 43 or n_registry` that could never
 fail. A test that cannot die is a defect, and here it was a defect I caught by re-reading the diff
 rather than by running it — the run stayed green, which is exactly how such a line ships.
+
+## §33 — `write_table` carried an annotation that could not resolve, and the suite was green over it
+
+Found while taking the "what is left besides T16" inventory, not while fixing anything. `pyflakes
+src/` reports one `undefined name` in the whole package:
+
+    src/multimodal_pipeline/schemas.py:605:88: undefined name 'Any'
+
+`schemas.py` opens with `from __future__ import annotations` and imported only
+`Iterable, Iterator, Sequence` from `typing`, yet `write_table` annotated
+`extra_metadata: dict[str, Any] | None`. Under PEP 563 that annotation is a *string*, evaluated
+only if somebody asks. Nothing in this pipeline asks: the module imports, every stage writes its
+tables, and all 1444 unit tests pass. Measured directly:
+
+    typing.get_type_hints(schemas.write_table)   -> NameError: name 'Any' is not defined
+    write_table(p, t, schema, extra_metadata={'k': 'v'})  -> writes fine, 581 bytes
+
+So the defect is latent, not live: it costs nothing today and would break anything that ever
+introspects — a pydantic/`TypeAdapter` rebuild, a docs generator, a future `model_rebuild`. It is
+also not hypothetical plumbing: `write_table` is called with `extra_metadata=` from 21 places.
+Nothing in CI would have caught it either — `pyflakes` is not run by `.github/workflows/`.
+
+**Fix:** `Any` added to the existing `typing` import. One line.
+
+**Guard:** `tests/unit/test_annotation_resolvability.py` resolves every annotation of every module
+under `multimodal_pipeline` — 510 annotations across 37 modules, measured — and fails on any that
+raises. Importing the whole package from a test is safe by construction: the package is the
+orchestrator side and never touches torch, pyannote, spacy or parselmouth.
+
+Two drafts of that guard were thrown away after being run, both for the same reason — they could
+not fail:
+
+1. `assert checked > 200`. Mutating the scan so it visits all 37 modules but resolves no function
+   annotations leaves 296 annotations still resolving. The test stayed **green**. A total is not
+   coverage.
+2. `assert no module contributed zero annotations`. False on real code: `exceptions`,
+   `stages.diarization`, `stages.diarization_nemotron`, `stages.spacy_english` and
+   `stages.speaker_assignment` genuinely have none.
+
+What replaces them is structural, not numeric: five named targets (`schemas.write_table()`,
+`state.utc_now()`, `state.StageRecord:status`, `fusion.TurnTableSpec:engine`,
+`config:PERSON_TRACKER_TYPES`) must appear in the scan report, and the second test feeds the scan a
+synthetic two-module package whose only sin is one unresolvable function annotation — the
+`write_table` bug rebuilt from scratch in a tmp dir — and requires it to report exactly that one.
+Mutations, both fatal: disabling the function branch kills two tests by name (the named-target
+list, and the synthetic package's expected finding going empty); re-adding the `Any` typo kills the
+package test with the original `NameError`.
+
+Suite 1442 → 1444 passed, 8 skipped, 1452 collected (README ratchet moved in both places, and the
+ratchet test is what caught the drift on the first run). `pyflakes src/` now reports no
+undefined names anywhere in the package.
+
+Also found during the same inventory, deliberately **not** touched: four assigned-but-unused
+locals that pyflakes reports (`orchestrator.py:277 outcome`, `stages/base.py:519 cfg_env`,
+`stages/acoustic.py:139 frame_rows`, `stages/whisperx.py:122 raw_path`, plus
+`whisperx.py:170 check`) and one unused import (`stages/base.py:30 ValidationIssue`). These are
+deletions in files whose owners are other work units, `acoustic.py:139` and `whisperx.py:170` sit
+inside normalisation paths that a future review has to read anyway, and none of them is a defect:
+the values are computed and dropped, not wrong. They belong in a cleanup commit with its own
+reason, not smuggled into a one-line annotation fix.
