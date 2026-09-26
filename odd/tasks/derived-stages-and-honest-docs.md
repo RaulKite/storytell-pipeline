@@ -1637,3 +1637,38 @@ now readable from every table's file metadata, every preserved raw document carr
    no literal credential for the sweep to find. A scanner that matches variable names will cry
    wolf exactly where an operator is looking for a real leak. The sweep that matters is the
    one against literal values, and this dataset's provenance contains none.
+
+## 28. T14's link 3 finally got reviewed, and the lens that had gone silent was right
+
+`f862e06` had no approval because `review-resilience` produced `reviewer-empty-output` twice on
+2026-09-25 (§22). The retry that closes that debt is the most expensive kind of success: the
+lens answered, and its finding was CRITICAL and real.
+
+`R4-001`. One `@field_validator` covered `origin_keypoint`, `basis_keypoint` *and*
+`second_axis`, so its `value != SECOND_AXIS_PERPENDICULAR` exemption — which exists because
+`"perpendicular"` is a legal `second_axis` — exempted the sentinel **from every field it
+validated**. `origin_keypoint: perpendicular` loaded happily and the stage died in `execute()`
+on `BODY_25_KEYPOINT_NAMES.index("perpendicular")`. A config typo surfacing as a mid-run stage
+failure, in exactly the method whose comment promises "resolve and check everything before an
+output file is opened". Reproduced against the shipped code before touching anything:
+the config validated, `tuple.index` raised. The fix gives `second_axis` its own validator and
+takes the exemption away from the keypoint fields.
+
+Lineage `review-9a2b5fd6d3fe73c6` (tier high, 4 lenses, 1670 lines, target
+`sha256:b3d3174cdb821ea040ae1d02c5d98f355bce8cdc49c7919e1c3c64d994ffd1db`): the three reliable
+lenses were captured first, individually, leaving the historically-silent one for last — and
+its capture closed the lineage directly in `correction_required`. That ordering mattered: in a
+grouped capture a failing lens aborts the remaining steps (§22 lost two lenses that way), while
+slot-by-slot capture let three lenses be admitted even though the fourth set the outcome.
+
+The correction plan was captured with **58 measured lines** (the fix was already written and
+mutation-tested in the working tree before the number was declared, so it is a measurement, not
+a guess), and the provider then closed with `corrected_candidate_unavailable` — the **fourth**
+time in this repository. The disposition has been the same every time and is now clearly a
+property of committed-only candidates, not an incident: the reviewed tree is pinned, so a fix
+ships as its own commit and gets a fresh lineage. That is `9873de6`.
+
+What the debt was actually worth: four days of believing T14's stage link was reviewed-and-fine
+except on paper, when the one lens that kept dying was the one holding a CRITICAL. A lens that
+returns nothing is not a pass, and a review that proceeds without it is not a review — §22's
+refusal to invent a verdict is what kept this honest, and the retry is what made it useful.
