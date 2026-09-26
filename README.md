@@ -113,6 +113,30 @@ the file as its positional argument instead of a flag:
 so `| jq` and CI capture work without scraping. (`inspect-environment --json` is not a
 thing — it exits 2 with typer's "No such option", measured.)
 
+`status` numbers its stage columns by position instead of naming them, because fifteen
+stage names (or even fifteen abbreviations) do not fit the 80 columns `rich` assumes
+when its output is not a tty. The legend under the table gives both mappings — the letter
+and the stage behind each index — and each video's id is printed whole on its own line
+when it is too long to share one:
+
+```
+        1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 ov
+alpha   c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c
+2017-12-30_1930_US_CNN_Global_Warning_Arctic_Melt_1237_273_1241_393_hear
+        c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c
+  c=completed  F=failed  P=partial  .=pending  r=running  s=skipped
+  stages: 1=metadata 2=audio … 15=finalization  ov=overall
+```
+
+That shape is not cosmetic. The previous `rich` table measured 143 columns against those
+80, and `rich` resolves that by stealing width in silence: `video_id` collapsed to a
+single `…` and every header to `m…`, exit code 0, so no row said which video it was.
+Shortening the headers could not fix it — a real id in this corpus is 72 characters, so
+the table never fits. `tests/unit/test_cli_status_layout.py` asserts the structure (which
+index holds which stage's mark, and that an id survives as one string) rather than the
+presence of a word, because "the id is in the output" is exactly the assertion that
+cannot see this failure.
+
 Exit codes are part of the API:
 
 | Code | Meaning |
@@ -715,7 +739,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1108 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1114 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -771,7 +795,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1108 tests
+tests/unit/                1114 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
