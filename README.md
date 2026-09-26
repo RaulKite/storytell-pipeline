@@ -50,8 +50,8 @@ linguistics always run on English text). Stages with a required install are not 
 because they do not skip — see
 [Resume, reuse and invalidation](#resume-reuse-and-invalidation).
 
-The six heavy tool environments live in their own uv projects and must be synced
-separately. This is deliberate — see [Why six environments](#why-six-environments).
+The seven heavy tool environments live in their own uv projects and must be synced
+separately. This is deliberate — see [Why seven environments](#why-seven-environments).
 
 ```bash
 (cd environments/whisperx   && uv sync --python 3.12)
@@ -60,6 +60,7 @@ separately. This is deliberate — see [Why six environments](#why-six-environme
 (cd environments/acoustic   && uv sync --python 3.12)
 (cd environments/activespeaker && uv sync --python 3.12)   # optional: TalkNet needs its own torch
 (cd environments/diarization_nemotron && uv sync --python 3.12)  # optional: second diarizer, see below
+(cd environments/persons && uv sync --python 3.12)  # optional: person tracking, see below
 scripts/install_spacy_models.sh             # language models you actually need
 ```
 
@@ -97,7 +98,7 @@ warning before the batch, or as a skip reason naming the setting to change.
 | Step | Check it with | What its absence costs |
 |---|---|---|
 | `uv` | `uv --version` | Everything. Every command here runs through `uv run`, and every heavy stage is `uv run --project environments/<x> python workers/<x>_worker.py`. `provenance/tools.json` records the version under `system.uv`. |
-| Python 3.10–3.13 for the orchestrator | `pyproject.toml` `requires-python = ">=3.10,<3.14"` | The root install fails. Every `uv sync` in the quick start names `--python 3.12`, which is what this corpus was produced with — and it is the only version inside **all six** environment ranges, which are narrower than the root's: `activespeaker` is `>=3.10,<3.13` and `diarization_nemotron` is `>=3.12,<3.13`, so 3.13 is available to the orchestrator and to four of the six, never to those two. |
+| Python 3.10–3.13 for the orchestrator | `pyproject.toml` `requires-python = ">=3.10,<3.14"` | The root install fails. Every `uv sync` in the quick start names `--python 3.12`, which is what this corpus was produced with — and it is the only version inside **all seven** environment ranges, which are narrower than the root's: `activespeaker` and `persons` are `>=3.10,<3.13` and `diarization_nemotron` is `>=3.12,<3.13`, so 3.13 is available to the orchestrator and to four of the seven, never to those three. |
 | `ffmpeg` and `ffprobe` on `PATH` (or `ffmpeg.executable` / `ffmpeg.ffprobe` in the config) | `ffmpeg -version` | `metadata` and `audio` — and therefore every stage — cannot run. The verified build here is ffmpeg 7.x; `tests/e2e/test_cli_smoke.py::test_the_ffmpeg_major_this_pipeline_was_verified_against` skips rather than fails on another major. |
 | ffmpeg's `flite` filter | `ffmpeg -filters \| grep flite` | Only `scripts/make_fixtures.sh`, which synthesises the demo clip with it. A pipeline run is unaffected; the fixture script stops and names the check. |
 | OpenPose under `openpose.root` | `inspect-environment` → `tools.openpose.executable` | With `openpose.enabled: true` and no binary, `inspect-environment` prints `OpenPose binary not found under /opt/openpose` and the stage **fails** the run. With `openpose.enabled: false` it skips with `openpose.enabled = false`. |
@@ -112,7 +113,7 @@ warning before the batch, or as a skip reason naming the setting to change.
 `provenance.openpose_report()` probes, and `tools.json` in a finished dataset records what
 it found for that video.
 
-**2. Install the projects.** Root project first, then the six heavy environments, then
+**2. Install the projects.** Root project first, then the seven heavy environments, then
 the language models (the quick start has the exact commands). A project directory that
 exists but has never been synced is *not* a problem — `uv run --project` resolves and
 syncs it on first use, verified on this machine against a throwaway project — so
@@ -147,7 +148,7 @@ uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
 The payload is `system`, `tools` (GPU/CUDA, ffmpeg and ffprobe versions, the OpenPose
 binary and model inventory, and whether each uv project directory exists) and
 `environment_warnings`. What a fresh clone with a copied `.env.example` and the example
-config reports on a machine that has ffmpeg, OpenPose and all six environments is three
+config reports on a machine that has ffmpeg, OpenPose and all seven environments is three
 lines — and all three are correct:
 
 ```json
@@ -724,7 +725,7 @@ you it is the only stage that reruns.
 
 Enabling it costs a separate uv environment and a model download, and the environment pin
 is an unreleased `transformers` commit — see
-[Why six environments](#why-six-environments). If the environment is absent the stage
+[Why seven environments](#why-seven-environments). If the environment is absent the stage
 *skips* with the reason naming the fix, and the corpus still completes, because a second
 opinion is not a prerequisite.
 
@@ -1344,11 +1345,11 @@ nothing else. A completed run's rerun costs ~0 s.
 
 ---
 
-## Why six environments
+## Why seven environments
 
 whisperx pins `torch~=2.8.0`, pyannote.audio pulls its own transformers/torchcodec
-combination, TalkNet needs an *older* torch than both, spaCy wants neither, and the
-orchestrator should import none of them.
+combination, TalkNet needs an *older* torch than both, ultralytics pulls the newest torch
+build it can find, spaCy wants neither, and the orchestrator should import none of them.
 Installing everything together produces an unsatisfiable resolution or — worse — a
 "working" resolution where one tool silently gets another's CUDA build.
 
@@ -1365,6 +1366,7 @@ touching the pipeline. Verified pins on this machine:
 | `acoustic` | praat-parselmouth 0.4.7 (Praat 6.1.38), numpy ≥1.26,<3 |
 | `activespeaker` | **torch 2.5.1 +cu124**, torchvision 0.20.1, facenet-pytorch 2.5.3, scenedetect 0.6.5, numpy 2.0.2 |
 | `diarization_nemotron` | **torch 2.8.0 +cu128**, transformers from git `5880561a`, librosa 1.0.0, accelerate 1.15.0 |
+| `persons` | ultralytics 8.4.163, **torch 2.8.0 +cu126**, torchvision 0.23.0, lap 0.5.13 — no `opencv-python` pin, deliberately |
 
 `diarization_nemotron` is the one pin that is **not a release**. NVIDIA ships
 `nvidia/Nemotron-3-Diarization` two ways, and only one of them runs here: NeMo 3.0.0
@@ -1435,7 +1437,7 @@ masking, and the manifest's promise that every listed artifact exists.
 | `pose/*.parquet` have 0 rows | The video contains no person. That is a valid outcome; the raw JSON in `pose/raw/` confirms it. |
 | `activespeaker.talknet_root is not set` | Clone TalkNet-ASD and set `activespeaker.talknet_root`. Without it the stage skips and the rest of the dataset is unaffected. |
 | `activespeaker.talknet_root has no run_talknet.py` | That path is not a TalkNet-ASD checkout — the stage checks for the entrypoint rather than letting a confusing `torch.load` error surface minutes later. |
-| TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why six environments](#why-six-environments)). |
+| TalkNet dies with an unpickling or `weights_only` error | The environment drifted past torch 2.5. Re-sync `environments/activespeaker`; the pin is load-bearing (see [Why seven environments](#why-seven-environments)). |
 | `speaker/active_speaker_frames.parquet` has rows with `track_id = null` | No face was detected in those frames — off-screen, back-turned, or too small. S3FD tracks near-frontal faces only; a person walking away legitimately loses the track. Absence is recorded as a row, not dropped. `frame_reason = no_face` says the same thing from the score side. |
 | `score_imputed = true` on some frames | TalkNet scores fewer frames than it tracks (an unexplained `-1` in its MFCC windowing), so the last score was carried forward rather than measured. At most two frames per track are affected; treat those as unmeasured, not as low confidence. `frame_reason = imputed_tail` names the same rows. |
 | A frame has `face_status = "tracked_unscored"` | S3FD located a face there but TalkNet produced no usable score for it. `frame_reason` names which of the four causes: `score_not_finite` (a score existed and was NaN/inf), `track_has_no_scores` (the track never produced one), `past_scored_tail` (beyond the two frames that may be imputed), or `tail_score_not_finite` (inside the window, the value to carry was broken). The scores stay `null` and the frame is never active — this is "we could not measure", not "nobody was on screen" and not a confidence of zero. |

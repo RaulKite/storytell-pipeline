@@ -1,0 +1,67 @@
+[project]
+name = "mp-persons-env"
+version = "0.1.0"
+description = "Isolated Ultralytics YOLO person detection/tracking environment (worker-only, never imported by the orchestrator)"
+requires-python = ">=3.10,<3.13"
+# Resolved on 2026-09-26 against this machine (RTX 4090, driver 555.42.06 = CUDA 12.5).
+#
+# WHY THIS ENVIRONMENT EXISTS AT ALL
+# Ultralytics pulls a torch build of its own. Installed beside whisperx, diarization or
+# activespeaker it would move one of those pins, which is why the other six environments
+# already exist in this directory for the same reason (§20.2 names it as the first
+# constraint).
+#
+# WHY torch IS PINNED TO THE cu126 WHEEL TRAIN — LOAD-BEARING, READ THIS BEFORE
+# "MODERNISING" IT.
+# PyPI's default resolution for ultralytics 8.4.x installs torch 2.14.0+cu130. Measured on
+# this machine: that build reports
+#
+#     torch.cuda.is_available() -> False      # driver 555.42.06 tops out at CUDA 12.5
+#
+# and the stage then runs, finishes, and writes a table — on the CPU, at a fraction of the
+# speed, with nothing in the log saying so. That is the worst failure mode this repository
+# has: not a crash, a plausible result computed by the wrong hardware. The same failure
+# class is documented for nemo-toolkit in environments/diarization_nemotron and for the
+# libnvrtc.so.13 note in environments/whisperx.
+#
+# torch 2.8.0+cu126 from the explicit index below was measured here instead:
+#
+#     torch.cuda.is_available() -> True       # RTX 4090 named by torch.cuda.get_device_name
+#
+# cu126 is the highest official wheel train that runs on a CUDA 12.5 driver, which is the
+# same reasoning whisperx uses; activespeaker sits one lower (cu124) only because of its
+# own torch 2.5.1 requirement.
+#
+# WHY opencv-python IS DELIBERATELY NOT PINNED
+# Ultralytics requires opencv-python and picks the build itself. Both candidates were
+# installed in throwaway projects and run over this corpus's clips at full frame rate with
+# tracking on, and they were indistinguishable:
+#
+#   opencv-python 5.0.0.93 -> ids identical, no errors, no GMC warnings
+#   opencv-python 4.10.0.84 -> ids identical, no errors, no GMC warnings
+# A pin here would therefore be a constraint with no measured benefit and a real cost: it
+# fights whatever ultralytics starts needing next. If a future ultralytics release breaks
+# video decode, that is the moment to pin, and the comment has to name the version that
+# fixed it.
+dependencies = [
+    "ultralytics==8.4.163",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    # ByteTracker's solver. ultralytics `check_requirements(("lap>=0.5.3",))` at tracker
+    # import time, so without it `model.track()` fails on the first frame -- not at
+    # install time, not at import time, and the worker would report a tracking error with
+    # no hint that a package is missing. 0.5.13 resolved and imported cleanly here.
+    "lap==0.5.13",
+    # Kept because every other environment has it and the worker writes JSON/Parquet-ish
+    # artifacts through the same discipline; >=17 matches the orchestrator's own range.
+    "pyarrow>=17",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
