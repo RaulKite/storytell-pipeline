@@ -22,6 +22,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .exceptions import ConfigError
+from .pose_normalize import SECOND_AXIS_PERPENDICULAR
 
 # Values whose keys match this pattern are masked in logs/provenance/manifests.
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|authorization|access[_-]?key)", re.I)
@@ -603,6 +604,84 @@ class SpeakerFusionConfig(_Model):
         return value
 
 
+class PoseNormalizedConfig(_Model):
+    """Re-express BODY_25 keypoints in a body-centred frame (§20.4 / T14).
+
+    A *second* pose table, written beside ``pose/body.parquet``. Nothing here is read by
+    the openpose stage, so enabling it rewrites no pixel table — which is the whole
+    reason it is a new stage rather than a column.
+
+    The basis triple is configuration, not a constant, because changing it changes
+    every number in the table: it is mixed into the stage fingerprint, so a different
+    frame invalidates the file instead of quietly redefining it. ``second_axis`` names
+    the joint that supplies the second axis; the only value the reference implementation
+    was measured against is ``perpendicular`` (dfMaker's ``i == j`` branch), and that is
+    what ``MidHip -> Neck`` uses.
+    """
+
+    enabled: bool = True
+    #: Keypoint that becomes the origin, by BODY_25 name.
+    origin_keypoint: str = "MidHip"
+    #: Keypoint the first basis vector points at.
+    basis_keypoint: str = "Neck"
+    #: What supplies the second axis. Only ``perpendicular`` is implemented: it is
+    #: dfMaker's ``i == j`` branch, and the only branch the reference comparison was
+    #: run against. A third joint name is refused rather than quietly ignored — the
+    #: transform would keep using the perpendicular and label every row with a frame it
+    #: did not build, which is the one outcome a derived table cannot survive.
+    second_axis: str = SECOND_AXIS_PERPENDICULAR
+
+    @field_validator("origin_keypoint", "basis_keypoint", "second_axis")
+    @classmethod
+    def _keypoint_names(cls, value: str) -> str:
+        from .schemas import BODY_25_KEYPOINT_NAMES
+
+        # Names, not indices: `transformation_coords = c(1, 8, 1, 1)` is legible in R
+        # and illegible here, and a fingerprint that reads "8" cannot be reviewed.
+        if value == "Background":
+            # In BODY_25's name list but never in pose/body.parquet: the normalizer
+            # drops it as a filler channel, so a frame defined by it could only ever
+            # report basis_missing_joint for every person-frame. Refusing it here beats
+            # writing a table of nulls and calling the stage healthy.
+            raise ValueError(
+                "pose_normalized cannot use Background as a keypoint: OpenPose's "
+                "Background channel is a filler and is not written to "
+                "pose/body.parquet, so it is never measurable"
+            )
+        if value not in BODY_25_KEYPOINT_NAMES and value != SECOND_AXIS_PERPENDICULAR:
+            raise ValueError(
+                f"pose_normalized keypoint {value!r} is not a BODY_25 keypoint name "
+                f"(and is not {SECOND_AXIS_PERPENDICULAR!r}): valid names are "
+                f"{', '.join(BODY_25_KEYPOINT_NAMES[:-1])} — the last BODY_25 entry, "
+                "Background, is a filler channel and is never written to "
+                "pose/body.parquet, so it cannot define a frame either"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _basis_triple_is_buildable(self) -> "PoseNormalizedConfig":
+        if self.origin_keypoint == self.basis_keypoint:
+            # Not a preference: with origin == basis the vector between them is the zero
+            # vector, so the determinant is 0 and every coordinate would be 0/0. The
+            # stage would write a table of nulls and call it a normalisation.
+            raise ValueError(
+                "pose_normalized.origin_keypoint and basis_keypoint must name different "
+                f"keypoints: both are {self.origin_keypoint!r}, so the basis vector has "
+                "zero length and the transform's determinant is 0 — nothing could be "
+                "divided by it"
+            )
+        if self.second_axis != SECOND_AXIS_PERPENDICULAR:
+            # Reachable: the field validator lets a BODY_25 name through here.
+            raise ValueError(
+                f"pose_normalized.second_axis={self.second_axis!r} is not implemented: the "
+                f"only second axis validated against the reference is "
+                f"{SECOND_AXIS_PERPENDICULAR!r} (dfMaker's i == j branch). Accepting a "
+                "joint name and then computing the perpendicular anyway would label every "
+                "row with a frame that was never built"
+            )
+        return self
+
+
 class LoggingConfig(_Model):
     level: str = "INFO"
     console: bool = True
@@ -624,6 +703,7 @@ class PipelineConfig(_Model):
     openpose: OpenPoseConfig = Field(default_factory=OpenPoseConfig)
     activespeaker: ActiveSpeakerConfig = Field(default_factory=ActiveSpeakerConfig)
     speaker_fusion: SpeakerFusionConfig = Field(default_factory=SpeakerFusionConfig)
+    pose_normalized: PoseNormalizedConfig = Field(default_factory=PoseNormalizedConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     # ``--project-root`` is resolved at load time; relative uv projects/workers
@@ -643,6 +723,7 @@ class PipelineConfig(_Model):
             "openpose": self.openpose,
             "activespeaker": self.activespeaker,
             "speaker_fusion": self.speaker_fusion,
+            "pose_normalized": self.pose_normalized,
         }
 
     def resolve(self, path: Path | str) -> Path:

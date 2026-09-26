@@ -43,6 +43,7 @@ from .stages.finalization import FinalizationStage
 from .stages.metadata import MetadataStage
 from .stages.activespeaker import ActiveSpeakerStage
 from .stages.openpose import OpenPoseStage
+from .stages.pose_normalized import PoseNormalizedStage
 from .stages.speaker_assignment import SpeakerAssignmentStage
 from .stages.speaker_fusion import SpeakerFusionStage
 from .stages.spacy_english import SpacyEnglishStage
@@ -66,6 +67,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         SpacyEnglishStage,
         AcousticStage,
         OpenPoseStage,
+        PoseNormalizedStage,
         ActiveSpeakerStage,
         SpeakerFusionStage,
         FinalizationStage,
@@ -470,6 +472,9 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         "spacy_english": config.spacy.enabled and config.spacy.process_english,
         "acoustic": config.acoustic.enabled,
         "openpose": config.openpose.enabled,
+        # Its own enable check, so it has to be listed or the status table calls it
+        # enabled while Stage.enabled reports a skip reason (the mapping defaults to True).
+        "pose_normalized": config.pose_normalized.enabled,
         "speaker_fusion": config.speaker_fusion.enabled,
     }
     return [name for name in STAGE_ORDER if mapping.get(name, True)]

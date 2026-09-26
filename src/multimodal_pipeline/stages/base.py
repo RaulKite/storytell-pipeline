@@ -45,6 +45,9 @@ STAGE_ORDER: tuple[str, ...] = (
     "spacy_english",
     "acoustic",
     "openpose",
+    # Reads pose/body.parquet only, so it follows openpose immediately and stays out of
+    # the audio branch entirely.
+    "pose_normalized",
     "activespeaker",
     # Audio/visual agreement. Last of the media stages because it consumes the diarizers'
     # turn tables *and* the ASD frames table.
@@ -68,6 +71,11 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "spacy_english": ("translation",),
     "acoustic": ("audio", "speaker_assignment"),
     "openpose": ("metadata",),
+    # Depends on openpose alone, as §20.4 requires. Depending on the audio branch (or on
+    # activespeaker, which also reads the video) would let a transcription failure cost the
+    # normalised pose table, and this stage never reads a transcript: it re-expresses one
+    # Parquet file that openpose already wrote.
+    "pose_normalized": ("openpose",),
     # Deliberately independent of whisperx/diarization: active speaker detection reads
     # the original video and the extracted audio only, so a transcription failure must
     # not cost the visual speaker signal (the same reasoning that keeps openpose
