@@ -150,8 +150,12 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       including the link the reviewer could not finish and the two docstring defects its
       advisories exposed. Whole-corpus agreement with `dfMaker` 0.1.1: 53588 numeric points,
       worst 9.55e-15, 0 absence disagreements.
-- [ ] **T15** §20.2 `persons`: own uv environment, Ultralytics detect+track, ids kept
-      separate from TalkNet's.
+- [x] **T15** §20.2 `persons`: own uv environment, Ultralytics detect+track, ids kept
+      separate from TalkNet's. **Built, reviewed and pushed** — `§24`–`§25`, chain
+      `c5f0a5a..f20d98d` plus the advisory closures `f29efe6`, `65f7b49`, `8e5cd6c`, `cf57d5b`, six
+      review lineages burned. The checkbox stayed open through all of it; §26 of
+      `multimodal-video-pipeline.md` has carried "built" since the chain landed.
+      Off by default: no dataset under `data/processed` has its tables — see §32.
 - [ ] **T16** §20.3 `stories`: prototype the prompt against the live endpoint, read the
       output, then decide the schema and build the stage.
 - [x] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
@@ -1885,3 +1889,46 @@ second is that the edit in `0d101fb` left a duplicated paragraph ("If the operat
 stronger form…" appeared twice, lines 1852 and 1861); a fourth commit removes the earlier copy.
 Editing prose by replacing a paragraph, without re-reading what sits above it, is how that
 happened, and no lens was there to catch it.
+
+## 32. The queue's accounting was wrong in three places, and one of them was a false README claim
+
+Asked "what is left besides T16", the honest answer required re-reading the queue rather than
+recalling it. Three things came out, and the middle one is not bookkeeping.
+
+**T15's checkbox was still open.** The queue listed T15 as the one unfinished capability besides
+T16, while §24–§25 of this same document record the whole built, reviewed and pushed chain. The
+box now points at the evidence. A checkbox that disagrees with the prose underneath it is the
+cheapest defect to fix and the most expensive to leave, because the checkbox is what people read.
+
+**The README's corpus claim was false, and the test guarding it could not see it.** §20.6's worked
+example said the seven newer artifacts "are absent from every dataset under `data/processed/`".
+Measured against the manifests on disk: six datasets list 36 artifacts with an empty
+`artifacts_not_generated`; the KABC clip lists **38**, and its own manifest declares
+`pose_normalized` and `speaker_fusion_pyannote` as produced, with the remaining five named in
+`artifacts_not_generated`. Two of the seven "absent everywhere" files are present. The prose had
+been true when written and nobody re-ran it against disk.
+
+The existing test could not catch this by construction: it checked that the walked file-by-file
+table did not *present* those paths, and that 43 minus seven equals 36. Both still pass. Neither
+reads a manifest. The new
+`test_the_corpus_counts_the_prose_states_match_the_manifests_on_disk` pulls the numbers out of the
+README sentence with a regex and re-checks them against every manifest, so drift kills it from
+either side — edit the sentence, or run a newer pipeline over the corpus and the sentence goes
+stale. Mutation-tested four ways, each with the message it prints: changing 36→37 in the prose
+("the prose says 6 datasets list 37…"); restoring the "absent from every dataset" sentence (the
+regex no longer finds its sentence and says so); the KABC count 38→36 ("its manifest lists 38");
+and pointing the empty-directory check at a directory that is not empty ("no dataset on this disk
+still shows that shape"). README ratchet 1449→1450.
+
+**An empty `persons/raw/` is scaffolding, not a half-written stage.** All seven datasets have the
+directory, KABC has no `yolo_track.json` and no tables. The cause is two mechanisms meeting:
+`ensure_dirs` pre-creates `persons/raw` the way it pre-creates `pose/raw` (`artifacts.py:170`), so
+the slot exists whether or not the stage ever runs; and `status.json` carries
+`skipped / persons.enabled = false` (the stage is off by default, and KABC's last full run predates
+`ed3f1e7`'s fingerprint work anyway). The README paragraph now says this out loud, because "a
+directory that is empty" reads to a human as "a write that was interrupted", and it is neither.
+
+Worth naming the pattern, because it is the second one this week: a universal claim about a corpus
+("absent from every dataset", "0 s accumulated") is exactly the shape that stops being true
+silently, and a test that checks the *shape* of the prose rather than its *numbers* will stay green
+while the world moves under it.
