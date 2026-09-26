@@ -2114,7 +2114,7 @@ The pattern across three advisories is the same one §30 and §31 already record
 from the shape of the bug you saw covers that shape and nothing else, and only feeding it a
 synthetic package with a *different* shape tells you how narrow you built it.
 
-### §35 The fourth advisory about the same scan, closed by making silence impossible
+### §35 The third blind-spot advisory on the same class branch, closed by making silence impossible
 
 `review-6b6350f6b3b53255` approved `b33bd40` (tier high, 103 lines, four lenses, store
 `sha256:cff0793e…`) with one advisory, `R3-property-accessor-coverage`. That is the third advisory
@@ -2160,3 +2160,59 @@ default rather than from the file.
 
 Suite unchanged at 1445 passed / 8 skipped, 1453 collected: this refactored what one test resolves
 and named what it cannot, it did not add a test, so the README ratchet correctly stayed still.
+
+### §36 The fourth blind-spot advisory on `_callable_targets`, and what the fallthrough actually carries
+
+`review-b11e2c4411eda655` approved `7473c31` (tier high, 195 lines, four lenses, store
+`sha256:b174d93d…`) with one advisory: `R3-unknown-descriptor-silence`, on the last line of
+`_callable_targets` — `return [], None`, the branch that says "not callable, nothing to resolve".
+
+Before touching it I measured what reaches it. **169** objects do: 53 `tuple`, 37 `_abc_data`,
+32 `str`, 22 `NoneType`, 19 `dict`, 6 `bool`/`int`/`float`. Of those 169, **0** carry annotations of
+their own. So today's behaviour is right, and the advisory is not about a live defect — it is about
+the branch being an assumption written as a return.
+
+The fix names the assumption. A non-callable that carries `__annotations__` in **its own `__dict__`**
+now goes to the skip list instead of falling through, and the synthetic package proves it: an object
+whose `__init__` sets `self.__annotations__` is reported as
+
+    annotation_probe_pkg.methods.Odd.annotated_default(): non-callable of type AnnotatedDefault carrying annotations ['depth']
+
+Counting, because §35's title said "fourth" while its body said "third" and both were defensible
+about different things. The precise record, in the order they arrived:
+
+| # | advisory | lineage that raised it | what it was about |
+| - | --- | --- | --- |
+| 1 | `R3-class-method-annotations` | `a08d160`'s review | the class branch saw only `__annotations__` |
+| 2 | `R2-001` | `a08d160`'s review | bare `except Exception` conflated guard failures with annotation defects |
+| 3 | `R3-method-descriptors` | `8dfd5a4`'s review | the method branch saw only `inspect.isfunction` |
+| 4 | `R3-property-accessor-coverage` | `b33bd40`'s review | property accessors were never taken |
+| 5 | `R3-unknown-descriptor-silence` | `7473c31`'s review, this one | the non-callable fallthrough was an assumption |
+
+So §35's body was right that `R3-property-accessor-coverage` was the **third** advisory about the
+class branch's blind spot, and its title counted `R2-001` as an advisory on the same file and called
+it the fourth. Both readings are true; a heading that argues with its own paragraph is a defect in
+the document, so the heading now says which axis it counts. This one is the **fourth** on the blind
+spot and the **fifth** on the file.
+
+Two things that measurement corrected in passing, both worth keeping:
+
+- the first probe conflated two things. It reported "30 objects with `__annotations__`" among the
+  fallthrough set, and those 30 were `classmethod` **objects** — which have their own
+  `__annotations__` and do *not* reach the fallthrough at all, they are unwrapped three branches
+  earlier. Re-measured properly with `obj.__dict__`, the answer is 0.
+- an ordinary instance does **not** carry its class's annotations in its own `__dict__`
+  (`A().__dict__` is `{}` while `getattr(a, "__annotations__")` finds the class's). So this branch
+  cannot double-report a field the scan already resolved through the class, which is what the first
+  draft of the synthetic class did: `depth: int = 0` on a helper class showed up as a *resolved*
+  class annotation, and the test's visited-list assertion caught that before I rationalised it.
+
+Proof of life (MUT-I): disabling the new branch makes the synthetic package report one skip instead
+of two, and the assertion on the exact `skipped` list fails by name. The package-wide assertion
+(`skipped == []` over 37 modules) stays green, which is the point: the real package cannot trigger
+this branch today, so only the synthetic shape proves the branch exists.
+
+Suite unchanged at 1445 passed / 8 skipped, 1453 collected; e2e 42 passed; pyflakes clean. No
+production code touched — this is the fourth advisory on one test helper, and every one of the four
+was answered by widening what the helper admits or by naming what it cannot admit, never by changing
+what it claims about the package.
