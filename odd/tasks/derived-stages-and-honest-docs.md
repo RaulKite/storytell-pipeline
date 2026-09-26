@@ -1403,7 +1403,11 @@ TalkNet already trusts scenedetect for `scene_id`, so comparing them is a defect
 of them. On KABC: scenedetect 1 scene, 2 face tracks, 3 person ids. On CNN: scenedetect
 **1 scene**, 1 face track, 4 person ids — three people arrive or leave inside what scenedetect
 calls a single continuous shot, so the scene table cannot be read as a bound on who is on
-screen. On La-1: scenedetect 4 scenes, 4 face tracks (ids 0, 1, 2, 4 — a gap that is itself
+screen. The independent verifier could not find that last number on disk when §25 was written
+(persons was never run on the real corpus, only in `/tmp`), so it was re-measured afterwards by
+re-running the worker on the same clip: `tracked 4 person id(s) over 124 frame(s) on cuda`, ids
+`[1, 2, 3, 4]`, against the `scenes.csv` that is still on disk and still says 1 scene. The
+conjunction holds; the artifact that proved it the first time did not survive. On La-1: scenedetect 4 scenes, 4 face tracks (ids 0, 1, 2, 4 — a gap that is itself
 worth a look), 8 person ids. The stage emits facts; it does not duplicate a scene detector.
 
 Suite: **1412 unit collected, 1404 passed, 8 skipped**; e2e 42 passed. The ratchet moved
@@ -1494,14 +1498,17 @@ Forcing `auto` to return the `None` the fake invented now kills three named test
 `resolve_device` docstring, which promised "`auto` becomes `None`", was lying and is corrected
 in the same commit.
 
-### `person_id` could be a car, and two tests defended it
+### `person_id` could be a car, and two tests were worse for it
 
 `R3-non-person-classes`, from the stage review. `persons.classes` accepted any COCO id **and**
 an empty list, so `classes: [2]` loaded, the worker tracked vehicles, and the result was
 written into `persons/frames.parquet.person_id` with a summary row answering "how many people
-appear". Two tests asserted the empty filter was *allowed*, as "a legal, deliberate choice" —
-when empty means "no filter", which means all 80 classes. A test protecting a hole is worse
-than no test, because it makes the hole read as a feature.
+appear". One test asserted the empty filter was *allowed*, as "a legal, deliberate choice" —
+when empty means "no filter", which means all 80 classes. A second test (`the class filter is
+in the digest`) then used `classes = []` as its mutation vector, so removing the permissiveness
+broke two tests and the hole read as a deliberate decision that had thought behind it. That is
+the cost side of a pattern this repository keeps paying for: a test that pins a permissive
+behaviour is worse than no test.
 
 The run was traceable — `parameters.classes` is in the raw document, the class list is in the
 fingerprint — and that is why the guard was missing: traceability is not readability. A
