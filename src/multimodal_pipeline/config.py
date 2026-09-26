@@ -631,7 +631,7 @@ class PoseNormalizedConfig(_Model):
     #: did not build, which is the one outcome a derived table cannot survive.
     second_axis: str = SECOND_AXIS_PERPENDICULAR
 
-    @field_validator("origin_keypoint", "basis_keypoint", "second_axis")
+    @field_validator("origin_keypoint", "basis_keypoint")
     @classmethod
     def _keypoint_names(cls, value: str) -> str:
         from .schemas import BODY_25_KEYPOINT_NAMES
@@ -648,14 +648,32 @@ class PoseNormalizedConfig(_Model):
                 "Background channel is a filler and is not written to "
                 "pose/body.parquet, so it is never measurable"
             )
-        if value not in BODY_25_KEYPOINT_NAMES and value != SECOND_AXIS_PERPENDICULAR:
+        if value not in BODY_25_KEYPOINT_NAMES:
+            # ``perpendicular`` lands here too, and it must. It is the one legal value of
+            # ``second_axis``, not a keypoint: a single validator shared by all three fields
+            # used to exempt the sentinel everywhere, so ``origin_keypoint: perpendicular``
+            # passed startup validation and died in ``execute()`` on
+            # ``BODY_25_KEYPOINT_NAMES.index(...)`` — a misconfiguration surfacing as a
+            # mid-run stage failure instead of a config error.
             raise ValueError(
-                f"pose_normalized keypoint {value!r} is not a BODY_25 keypoint name "
-                f"(and is not {SECOND_AXIS_PERPENDICULAR!r}): valid names are "
-                f"{', '.join(BODY_25_KEYPOINT_NAMES[:-1])} — the last BODY_25 entry, "
-                "Background, is a filler channel and is never written to "
+                f"pose_normalized keypoint {value!r} is not a BODY_25 keypoint name: "
+                f"valid names are {', '.join(BODY_25_KEYPOINT_NAMES[:-1])} — the last "
+                "BODY_25 entry, Background, is a filler channel and is never written to "
                 "pose/body.parquet, so it cannot define a frame either"
             )
+        return value
+
+    @field_validator("second_axis")
+    @classmethod
+    def _second_axis_is_a_name_or_the_sentinel(cls, value: str) -> str:
+        """Accept anything string-shaped; ``_basis_triple_is_buildable`` decides.
+
+        Deliberately not shared with the keypoint validator: the sentinel and a joint name
+        both have to survive field validation here, because the useful error for both is the
+        one that explains that no second axis but the perpendicular has been validated against
+        the reference. Splitting the validators is what lets the keypoint fields stop
+        recognising the sentinel at all.
+        """
         return value
 
     @model_validator(mode="after")
@@ -671,7 +689,9 @@ class PoseNormalizedConfig(_Model):
                 "divided by it"
             )
         if self.second_axis != SECOND_AXIS_PERPENDICULAR:
-            # Reachable: the field validator lets a BODY_25 name through here.
+            # Reachable: the second_axis field validator lets any string through, including
+            # a legal BODY_25 joint name, because that is the only way to report the
+            # difference honestly (see _second_axis_is_a_name_or_the_sentinel).
             raise ValueError(
                 f"pose_normalized.second_axis={self.second_axis!r} is not implemented: the "
                 f"only second axis validated against the reference is "

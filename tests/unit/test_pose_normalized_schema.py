@@ -302,6 +302,30 @@ class TestConfigValidators:
         with pytest.raises(ValueError, match="Background"):
             PoseNormalizedConfig(origin_keypoint="Background")
 
+    def test_the_second_axis_sentinel_is_not_accepted_as_a_keypoint(self):
+        """Native review R4-001 (CRITICAL), reproduced before it was fixed.
+
+        One field validator covered `origin_keypoint`, `basis_keypoint` *and* `second_axis`,
+        and its `value != SECOND_AXIS_PERPENDICULAR` exemption therefore applied to all
+        three. So `origin_keypoint: perpendicular` passed startup validation, and the stage
+        died later in `execute()` on `BODY_25_KEYPOINT_NAMES.index("perpendicular")` — a
+        config mistake surfacing as a mid-run failure with the output file unwritten.
+        A sentinel belongs to one field, not to the type of string.
+        """
+        from multimodal_pipeline.pose_normalize import SECOND_AXIS_PERPENDICULAR
+
+        assert SECOND_AXIS_PERPENDICULAR == "perpendicular"
+        for field in ("origin_keypoint", "basis_keypoint"):
+            with pytest.raises(ValueError, match="not a BODY_25 keypoint name"):
+                PoseNormalizedConfig(**{field: SECOND_AXIS_PERPENDICULAR})
+
+    def test_the_sentinel_still_validates_as_a_second_axis(self):
+        """The fix must not break the field that legitimately uses the sentinel."""
+        from multimodal_pipeline.pose_normalize import SECOND_AXIS_PERPENDICULAR
+
+        cfg = PoseNormalizedConfig(second_axis=SECOND_AXIS_PERPENDICULAR)
+        assert cfg.second_axis == SECOND_AXIS_PERPENDICULAR
+
     def test_a_third_joint_for_the_second_axis_is_refused_not_ignored(self):
         # Only the perpendicular branch was validated against the reference. Accepting a
         # joint name and then computing the perpendicular anyway would label every row with
