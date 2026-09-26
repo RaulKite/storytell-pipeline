@@ -37,6 +37,7 @@ from multimodal_pipeline.schemas import (
     read_table,
     write_table,
 )
+from multimodal_pipeline.stages.metadata import sha256_of
 from multimodal_pipeline.stages.pose_normalized import PoseNormalizedStage
 
 def run_stage(context) -> dict[str, Any]:
@@ -335,6 +336,59 @@ class TestStageFingerprint:
         assert (PoseNormalizedStage().config_fingerprint(context)
                 == PoseNormalizedStage().config_fingerprint(context))
 
+    def test_the_normaliser_source_is_in_the_fingerprint(self, context):
+        """The python that computes the coordinates has to be part of what reuse compares.
+
+        This stage has no worker, so nothing in the config or the input digests can notice an
+        edit to `pose_normalize.py`. The shape is asserted next to the key: a value that stopped
+        being a sha256 hex would still move when the source moved, and a reviewer would still
+        read the fingerprint as covering the code. Length is compared against a real
+        `sha256_of` result rather than against a remembered 64.
+        """
+        seed_body(context, a_person())
+        payload = PoseNormalizedStage().config_fingerprint(context)
+        digest = payload["_python_code_sha256"]
+        assert digest is not None
+        assert len(digest) == len(sha256_of(context.artifact("pose_body")))
+        assert all(c in "0123456789abcdef" for c in digest)
+
+    def test_editing_the_module_that_computes_rows_changes_the_fingerprint(self, context, monkeypatch):
+        """The defect this stage was missing: new numbers from the same config and bytes.
+
+        Patched at the seam that reads the source rather than by rewriting the repository, so
+        the test stays deterministic and never touches a tracked file. Everything else in the
+        payload is held fixed on purpose: if the assertion passed for a reason other than the
+        source digest, this test would be evidence for nothing.
+        """
+        seed_body(context, a_person())
+        stage = PoseNormalizedStage()
+        before = stage.config_fingerprint(context)
+
+        # Patched where the stage looks it up: `config_fingerprint` imports the helper from
+        # `stages.base` inside the call, so the attribute on that module is the seam.
+        import multimodal_pipeline.stages.base as base_module
+        monkeypatch.setattr(base_module, "python_source_digest", lambda *modules: "f" * 64)
+        after = stage.config_fingerprint(context)
+
+        assert after["_python_code_sha256"] == "f" * 64
+        assert after != before
+        assert {k: v for k, v in after.items() if k != "_python_code_sha256"} \
+            == {k: v for k, v in before.items() if k != "_python_code_sha256"}, \
+            "something besides the source digest moved, so this proves nothing about it"
+
+    def test_the_source_digest_is_stable_between_two_calls(self, context):
+        """A fingerprint that drifted run to run would invalidate the whole corpus every time."""
+        import multimodal_pipeline.pose_normalize as pose_normalize_module
+        import multimodal_pipeline.stages.pose_normalized as pose_normalized_stage_module
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        first = PoseNormalizedStage().config_fingerprint(context)["_python_code_sha256"]
+        second = PoseNormalizedStage().config_fingerprint(context)["_python_code_sha256"]
+        assert first == second
+        # And it is the digest of the two modules the call site claims to cover.
+        assert first == python_source_digest(pose_normalize_module,
+                                            pose_normalized_stage_module)
+
     def test_the_orchestrator_reuses_a_completed_normalisation(self, context):
         """A completed run with unchanged inputs is reused, and only then.
 
@@ -631,3 +685,120 @@ class TestItIsPurePython:
         assert stage.inputs == ("pose_body",)
         assert stage.outputs == ("pose_normalized",)
         assert stage.config_keys == ("pose_normalized",)
+
+
+class TestPythonSourceDigest:
+    """The helper itself, against files on disk.
+
+    Lives beside the stage that motivated it, because its only job is to answer one question
+    about a stage: would an edit to the python that computes my rows be noticed? A test that
+    imported two canned modules from the repository could not answer that, because nothing in
+    it would ever be edited.
+    """
+
+    @staticmethod
+    def load(tmp_path, name: str, source: str):
+        """Write ``name.py`` into tmp_path and import it, so the digest has a real file behind it.
+
+        ``sys.modules`` is cleaned up by the caller's fixture only if we leave the entry behind,
+        so each test uses a name no other test will reuse rather than deleting global state
+        another test may be relying on.
+        """
+        import importlib.util
+        import sys
+
+        path = tmp_path / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def test_editing_the_source_changes_the_digest(self, tmp_path):
+        """The one behaviour the reuse test depends on: new bytes, new digest.
+
+        Re-imported under a second name rather than mutating the first module object, which is
+        what a real edit followed by a new process does.
+        """
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        first = self.load(tmp_path, "pn_digest_before", "ORIGIN = 'MidHip'\n")
+        before = python_source_digest(first)
+        assert before is not None
+
+        second = self.load(tmp_path, "pn_digest_before", "ORIGIN = 'RHip'\n")
+        after = python_source_digest(second)
+        assert after != before, (
+            "editing the maths left the digest unchanged, so a fix to it would never "
+            "invalidate a cached table")
+
+    def test_two_different_modules_give_two_different_digests(self, tmp_path):
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        left = self.load(tmp_path, "pn_digest_left", "A = 1\n")
+        right = self.load(tmp_path, "pn_digest_right", "A = 1\n")
+        assert python_source_digest(left) != python_source_digest(right), (
+            "identical bytes under two names collapsed to one digest, so swapping which module "
+            "is covered would be invisible")
+
+    def test_the_order_of_the_modules_matters(self, tmp_path):
+        """Naming the covered modules in a different order is a different claim."""
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        left = self.load(tmp_path, "pn_digest_order_a", "A = 1\n")
+        right = self.load(tmp_path, "pn_digest_order_b", "B = 2\n")
+        assert python_source_digest(left, right) != python_source_digest(right, left)
+
+    def test_an_unreadable_source_gives_none_instead_of_raising(self, tmp_path):
+        """A fingerprint is computed on ``status --plan`` too; it may not be the thing that crashes.
+
+        ``inspect.getsource`` raises ``TypeError`` for a module with no source file and
+        ``OSError`` for one whose file has gone away. Both have to arrive at ``None``, which is
+        the same contract `worker_code_digest` has for a script that is not on disk yet.
+        """
+        import math
+        import types
+
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        assert python_source_digest(math) is None  # built-in: TypeError from getsource
+
+        ghost = types.ModuleType("pn_digest_ghost")  # no __file__ at all
+        assert python_source_digest(ghost) is None
+
+        deleted = self.load(tmp_path, "pn_digest_deleted", "A = 1\n")
+        assert python_source_digest(deleted) is not None
+        # The file the module was loaded from is gone; the cache `inspect` reads through has to
+        # be dropped, exactly as a new process would never have had it.
+        import linecache
+
+        linecache.clearcache()
+        (tmp_path / "pn_digest_deleted.py").unlink()
+        assert python_source_digest(deleted) is None  # OSError from getsource
+
+    def test_a_mixture_of_readable_and_unreadable_gives_none(self, tmp_path):
+        """One unreadable module must not be quietly skipped from an otherwise real digest."""
+        import math
+
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        readable = self.load(tmp_path, "pn_digest_mixed", "A = 1\n")
+        assert python_source_digest(readable, math) is None
+
+    def test_the_repository_modules_it_is_called_on_are_readable(self):
+        """Guards the helper's own use: if these ever return None, the coverage is silently gone.
+
+        A module that became a C extension, or a source-less loader, would leave the fingerprint
+        carrying ``None`` forever and every test above still green.
+        """
+        import multimodal_pipeline.fusion as fusion
+        import multimodal_pipeline.pose_normalize as pose_normalize
+        import multimodal_pipeline.stages.persons as persons
+        import multimodal_pipeline.stages.pose_normalized as pose_normalized_stage
+        import multimodal_pipeline.stages.speaker_fusion as speaker_fusion_stage
+        from multimodal_pipeline.stages.base import python_source_digest
+
+        assert python_source_digest(pose_normalize, pose_normalized_stage) is not None
+        assert python_source_digest(fusion, speaker_fusion_stage) is not None
+        assert python_source_digest(persons) is not None
