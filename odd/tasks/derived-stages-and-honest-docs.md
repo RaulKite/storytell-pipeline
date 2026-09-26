@@ -1754,8 +1754,15 @@ the stage process*, which for `persons` is only the normalisation half.
 The reason this had been left open was written here as a compute-cost decision the operator owns.
 That was wrong, and §31 corrects it: the cost was never measured, and when it was, the whole
 corpus takes **0.15 s** to re-normalise (`pose_normalized`: 56 948 body rows across seven videos,
-end to end through the pure transform) and the batch report records `pose_normalized`, `persons`
-and `speaker_fusion` at **0 s accumulated**. Nothing about closing this gap is expensive.
+end to end through the pure transform). Nothing about closing this gap is expensive.
+
+The batch report was re-read before quoting it, because the first reading was too generous to the
+argument. `data/processed/batch_report.json` records `pose_normalized`, `persons` and
+`speaker_fusion` at `0.0` s, but that is one video's report, `persons` is `0.0` because that video
+*skipped* the stage, and the clock cannot see a sub-second stage at all: `state.py:utc_now()` stamps
+`started_at`/`completed_at` with `timespec="seconds"`, so `_duration_seconds` — which itself rounds
+the delta to three decimals — only ever receives whole seconds. It corroborates cheapness; it does
+not measure it. The 0.15 s re-normalisation does, and that is the number the decision rests on.
 
 Review: `review-655c2cc38d8349ee`, tier high, 4 lenses (all answered), 91 lines, target
 `sha256:500ef96908916fa7e264b62587b8c4f5a9d1da9f8cd26417698d155689a15719` — **approved**, store
