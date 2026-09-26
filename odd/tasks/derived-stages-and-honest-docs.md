@@ -1333,3 +1333,87 @@ and it is the right one here: the alternative is committing a fixture clip to ma
 guard hermetic, which buys a check on a snapshot nobody is updating. What it means in
 practice is that the verbatim block is enforced on the machines that can produce it — which
 is where the README gets edited — and not in CI.
+
+## 24. T15 — `persons`: what YOLO measured, and the two claims of mine it falsified
+
+Implemented as a seventh uv environment, a worker, a stage and two tables. Off by default.
+`person_id` lives in its own namespace and its own directory; §20.2's warning that a YOLO
+tracker id and TalkNet's `track_id` are unrelated is honoured in the column name, the schema
+docstrings and the README's invariant list.
+
+**Two claims in the parent's own task brief were wrong, and the worker caught both.** That is
+worth recording more carefully than the feature, because both were stated as measurements:
+
+- *"bytetrack is the ultralytics default".* False in 8.4.163.
+  `ultralytics/cfg/default.yaml` says `tracker: tracktrack.yaml`. The consequence is not
+  cosmetic: `engine/model.py` contains `kwargs["conf"] = 0.1 if kwargs.get("conf") is None
+  else kwargs["conf"]`, so a stage that documented `conf=0.25` and forwarded nothing would
+  report the counts a 0.1 threshold produced while its own raw document agreed with the docs.
+  `conf` and `imgsz` are now forwarded explicitly and recorded from the actual call.
+- *"yolo11n fragmented fewer ids than yolo11s, at ~25% more speed".* Measured again: speed was
+  within noise, and `yolo11n` fragmented **more** on the hard clip. `yolo11n` stays the default
+  for a reason that survives measurement — 5.4 MB versus 18 MB, identical on the unambiguous
+  clips — not for the reason I invented.
+
+A third belief of mine, carried in from the T15 classification probe, was that ultralytics'
+camera-motion compensation was broken on this machine: **489 `GMC failed` warnings** in one
+batch. It was the harness. `GMC` keeps `prevFrame` on the tracker object, and reusing one
+`YOLO(...)` across several videos leaves that buffer stale forever, because the exception
+fires before it is refreshed. Same five clips, one process each: **0 warnings**, and pinning
+`opencv-python` 4.10.0.84 changed nothing (measured again through the real worker — the
+output documents were byte-identical apart from elapsed time, which is why
+`environments/persons/pyproject.toml` deliberately ships **no** opencv pin). The worker is
+therefore one-video-per-process by construction, with the model built inside `track_video()`,
+`persist=False` unconditionally, and a `gmc_failure_count` in the artifact so the failure mode
+is a number rather than a log line.
+
+**The defect no mock could see.** `main()` accepted `--imgsz`, recorded it in the raw document,
+passed it to ultralytics, and dropped it at the internal call. Every clip died in ~3 s with
+`TypeError: track_video() missing 1 required keyword-only argument: 'imgsz'`, GPU idle, and
+every mock-based test green. Found only by running the real CLI on real clips. Reverting the
+one forwarding line: 22 failed, 26 passed. Restored: 48 passed.
+
+**What the stage measures here** (`yolo11n.pt` sha `0ebbc80d…`, `conf=0.25`, `imgsz=640`,
+bytetrack, RTX 4090, driver 555.42.06, torch 2.8.0+cu126 — PyPI's default torch 2.14.0+cu130
+reports `cuda available: False` on this driver, which is the reason for the cu126 index):
+
+| clip | frames | with a person | distinct ids | max in one frame | wall |
+|---|---|---|---|---|---|
+| KABC | 126 | 126 | 3 | 3 | 1.4 s |
+| CNN | 124 | 124 | 4 | 4 | 1.4 s |
+| La-1 | 240 | 238 | 8 | 3 | 1.8 s |
+| person_demo | 205 | 205 | **75** | 14 | 1.8 s |
+| pipeline_demo | 249 | 0 | 0 | 0 | 1.6 s |
+
+`person_demo`'s 75 is a measurement of a hard clip, not a fact about it: 13 of those ids last
+two frames or fewer, and the summary table keeps them so a reader sees the fragmentation
+instead of inheriting a tidy number. `pipeline_demo`'s zeros are the honest empty case, like
+its `pose_body` 0 rows, and they are distinguishable from "never ran" because a run that cannot
+start **skips** and names the reason rather than writing an empty table.
+
+**The tracker moves the answer more than the checkpoint does**, which is why the tracker is
+configuration and why these tables sit in `config.example.yaml` rather than in prose: same
+weights, same frames, bytetrack@0.25 = 3/4/8/75/0, bytetrack@0.10 = 3/4/8/71/0,
+tracktrack@0.10 = 2/4/6/8/0. `tracktrack` merges aggressively (`new_track_thresh` 0.7 against
+bytetrack's 0.25) and never saw more than 7 people on a frame where bytetrack saw 14. bytetrack
+is the default because a fragmented track leaves evidence and a merged one leaves nothing.
+
+**The cross-check §20.2 asked for, done as analysis rather than as a second scene engine.**
+TalkNet already trusts scenedetect for `scene_id`, so comparing them is a defect report on one
+of them. On KABC: scenedetect 1 scene, 2 face tracks, 3 person ids. On CNN: scenedetect
+**1 scene**, 1 face track, 4 person ids — three people arrive or leave inside what scenedetect
+calls a single continuous shot, so the scene table cannot be read as a bound on who is on
+screen. On La-1: scenedetect 4 scenes, 4 face tracks (ids 0, 1, 2, 4 — a gap that is itself
+worth a look), 8 person ids. The stage emits facts; it does not duplicate a scene detector.
+
+Suite: **1412 unit collected, 1404 passed, 8 skipped**; e2e 42 passed. The ratchet moved
+1252 → 1300 → 1357 → 1412 across the chain so each link was green on its own tree. Two links
+of that chain were caught red before they were committed: one shipped the stage without its
+57 tests (README counted 1411 against 1300 collected, and the README-claims guard had been
+reverted to a stale `== 40`), and the README's `36 of the 40 artifacts` had to become
+`36 of the 43` — the 36 stays correct because the three `persons` artifacts are a fifth group
+no dataset on this disk has produced.
+
+Not implemented: no `environments/persons/README.md` (no other environment has one; inventing
+a convention was out of scope), and botsort/deepocsort/ocsort remain unmeasured — only
+bytetrack and tracktrack were run.
