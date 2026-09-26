@@ -21,11 +21,14 @@ import pytest
 from multimodal_pipeline.pose_normalize import (
     BASIS_DEGENERATE,
     BASIS_MISSING_JOINT,
+    BASIS_NON_FINITE,
     BASIS_OK,
+    VALUE_BASIS_UNUSABLE,
     mask_coordinate,
     mask_point,
     normalize_point,
     person_frame_basis,
+    value_state,
 )
 
 # ---------------------------------------------------------------- pure transform
@@ -112,6 +115,41 @@ class TestBasisStates:
         basis = basis_of({8: mask_point(100.0, 300.0), 1: mask_point(100.0, float("nan"))})
         assert basis.state == BASIS_MISSING_JOINT
         assert "Neck" in basis.detail
+
+    def test_finite_but_absurd_coordinates_are_named_not_divided_by(self):
+        """Native review R3-numeric-conversion-overflow / R3-derived-nonfinite-basis.
+
+        `mask_coordinate` refuses a coordinate that is itself NaN or infinite, but two
+        *finite* doubles still overflow the arithmetic built from them. Before the fix this
+        returned basis_ok with denominator=-inf, and normalize_point then produced
+        (nan, nan) labelled `normalized` — a coordinate that is neither null (which means
+        absence on this table) nor a number, under the status that means "measured".
+        """
+        basis = basis_of({8: mask_point(1e308, -1e308), 1: mask_point(1e308, 1e308)})
+        assert basis.state == BASIS_NON_FINITE
+        assert basis.usable is False
+        assert "not" in basis.detail and "pixel positions" in basis.detail
+        assert normalize_point(basis, mask_point(1e308, 5.0)) is None
+        # The point of naming it: a reader can tell this apart from a body that was seen.
+        assert value_state(basis, mask_point(1e308, 5.0), None) == VALUE_BASIS_UNUSABLE
+
+    def test_an_overflowing_basis_vector_length_does_not_kill_the_stage(self):
+        """The second symptom, which was worse: the detail string itself raised.
+
+        ``(vi[0] ** 2 + vi[1] ** 2) ** 0.5`` overflows on ``1e200 ** 2`` and Python raises
+        OverflowError where IEEE division would have produced inf. One absurd row took the
+        whole stage down mid-run instead of producing one labelled row.
+        """
+        basis = basis_of({8: mask_point(1.0, 1.0), 1: mask_point(1e200, 2.0)})
+        assert basis.state == BASIS_NON_FINITE
+
+    def test_a_real_pixel_basis_still_reports_the_length_the_reference_used(self):
+        # Guard for the hypot swap: at pixel scale hypot and the power form are the same
+        # string (all 2661 corpus bases compared under %g, zero disagreements), so the
+        # number a reader checks against R must not have moved.
+        basis = basis_of({8: mask_point(1.0, 1.0), 1: mask_point(144.7, -57.2)})
+        assert basis.state == BASIS_OK
+        assert "of length 155.038 px" in basis.detail
 
 
 class TestNormalizePoint:

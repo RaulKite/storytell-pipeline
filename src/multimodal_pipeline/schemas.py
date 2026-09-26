@@ -498,7 +498,8 @@ POSE_NORMALIZED_SCHEMA = pa.schema(
         # "perpendicular" = the second axis is vi rotated, i.e. dfMaker's i == j branch.
         ("second_axis", pa.string()),
         # Closed vocabulary over the person-frame: basis_ok | basis_missing_joint |
-        # basis_degenerate.
+        # basis_degenerate (the two joints coincide) | basis_non_finite (they hold numbers
+        # that overflow the basis, so no coordinate could be built from them).
         ("basis_state", pa.string()),
         # The measured numbers behind that state — which joint was missing, or how long
         # the basis vector was. The column a human reads first.

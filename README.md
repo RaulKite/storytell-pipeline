@@ -861,9 +861,10 @@ pose_normalized:
 **Missing keypoints are the normal case, and they are named, never zeroed.** A basis needs two
 joints, and this corpus contains people who are partially off-frame; the frame either exists or
 it does not, and "it does not" gets a reason in `basis_state` — `basis_missing_joint` (a
-defining joint was never measured) or `basis_degenerate` (both were, and they coincide, so the
-determinant is zero). Per keypoint, `value_status` says whether the joint got coordinates, lost
-its own coordinate, or had nowhere to be put. Every person-frame that has a keypoint still has
+defining joint was never measured), `basis_degenerate` (both were, and they coincide, so the
+determinant is zero), or `basis_non_finite` (both hold a number, but the numbers overflow the
+basis, so every coordinate from them would be infinite or NaN). Per keypoint, `value_status`
+says whether the joint got coordinates, lost its own coordinate, or had nowhere to be put. Every person-frame that has a keypoint still has
 rows, because a dropped row is a person who stopped existing. A zero is never used for absence:
 on these axes a zero means *exactly at the hip*, which is a measurement.
 
@@ -1473,7 +1474,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1429 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1432 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1529,7 +1530,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1429 tests
+tests/unit/                1432 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
