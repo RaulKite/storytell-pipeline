@@ -854,7 +854,7 @@ Written so the next session does not re-derive it from the stage list.
 | 20.2 `persons` | **built**, off by default | §24–§25, ten commits `c5f0a5a..cf57d5b`, six review lineages |
 | 20.3 `stories` | **blocked, not started** | needs the operator's endpoint and a spend decision |
 | 20.4 `pose_normalized` | **built** | §20–§22, validated against the real R `dfMaker` |
-| 20.5 `pose_skeletons` | **partly served** — no stage of its own | `openpose --write_images` + `pose_images_raw`, §19 |
+| 20.5 `pose_skeletons` | **built** inside `openpose` — deliberately no stage of its own | §19 + §26 note below: `write_images`/`image_max_side` + `pose_images_raw` |
 | 20.6 documentation that installs | **built** | §23, `24ad40c`/`6b0db61`, receipt `18f6123` |
 
 Three constraints from 20.2 were load-bearing enough to be worth restating where someone
@@ -879,8 +879,18 @@ mining stage is that on the CNN clip scenedetect reports **1 scene** while four 
 person ids appear inside it, so scene boundaries cannot be used as the candidate window
 boundary for "who is talking to whom".
 
-Review debt carried, in the order worth paying it: `f862e06` (T14 link 3) has no approval
-because `review-resilience` produced no reviewer text twice; `5eb1214` (T14 link 1, the R
-fixtures) was dispositioned unreviewed by judgement; `8ea9b11` (`status` layout) was reviewed
-implicitly by the range candidates that sit on top of it and never on its own. None of them is
-a blocker and none got an invented verdict.
+Review debt: paid, except the two links dispositioned as unreviewed on purpose. `f862e06` (T14 link
+3) had no approval because `review-resilience` produced no reviewer text twice; the retry answered,
+found CRITICAL R4-001, and the fix is approved (§28–§29 of
+`odd/tasks/derived-stages-and-honest-docs.md`). `5eb1214` (T14 link 1, the R fixtures) and `e8d3db6`
+(ODD prose) remain unreviewed by judgement, not by omission. `8ea9b11` (`status` layout) is still
+true to what it said: reviewed implicitly by the range candidates on top of it, never on its own.
+None of these is a blocker and none got an invented verdict.
+
+Two queue corrections from the same re-read. 20.5 `pose_skeletons` is **built**, not "partly served
+with no stage of its own": the decision taken in §19 was to serve it inside the `openpose` stage
+(`write_images`, `image_max_side`, `pose_images_raw`, per-module `--face_render`/`--hand_render`) so
+the rendered view and the measured keypoints cannot disagree about which frames had a usable
+detection; a separate stage would re-read the raw JSON to produce a view of it. And 20.4 is no longer
+only "built": since `ed3f1e7` its Python, and that of `speaker_fusion` and `persons`, is inside what
+reuse fingerprints (§31).
