@@ -56,7 +56,7 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 #: Schema of the raw document this worker writes. Checked by the stage, so a change here
 #: has to be a change there.
@@ -491,6 +491,46 @@ def parse_classes(raw: str) -> list[int]:
     return values
 
 
+def _same_path(one: Path, two: Path) -> bool:
+    """True when two spellings reach the same file: same realpath, or same live inode."""
+    if one.resolve() == two.resolve():
+        return True
+    try:
+        return os.path.samefile(one, two)
+    except OSError:
+        return False
+
+
+class OutputAlias(NamedTuple):
+    """One pair among this run's four paths that turns out to name the same file."""
+
+    out_flag: str
+    in_flag: str
+    out_path: Path
+    in_path: Path
+
+
+def output_aliases(args: argparse.Namespace) -> list[OutputAlias]:
+    """Every pair among the inputs and outputs that resolves to one file.
+
+    Checked at the boundary rather than in the stage because the stage assembles these paths
+    itself and nothing upstream would notice a mistake: an artifact is written with
+    ``os.replace()``, so an output that names an input silently swaps the operator's video or
+    frame index for JSON after a full tracking run and reports success.
+    """
+    inputs = {"--video": args.video, "--frame-index": args.frame_index}
+    outputs = {"--output-json": args.output_json, "--result-path": args.result_path}
+    found: list[OutputAlias] = []
+    for out_flag, out in outputs.items():
+        for in_flag, source in inputs.items():
+            if _same_path(out, source):
+                found.append(OutputAlias(out_flag, in_flag, out, source))
+    if _same_path(args.output_json, args.result_path):
+        found.append(OutputAlias("--result-path", "--output-json",
+                                 args.result_path, args.output_json))
+    return found
+
+
 def validate(args: argparse.Namespace) -> None:
     if not args.video.is_file():
         raise WorkerFailure(f"input video not found: {args.video}")
@@ -505,10 +545,26 @@ def validate(args: argparse.Namespace) -> None:
         raise WorkerFailure("--imgsz must be a positive pixel count")
     if not args.model.strip():
         raise WorkerFailure("--model must name a checkpoint")
+    aliases = output_aliases(args)
+    if aliases:
+        raise WorkerFailure(
+            "; ".join(f"{a.out_flag} points at the {a.in_flag} input ({a.out_path})"
+                      for a in aliases)
+            + " -- refusing to write an artifact over another path this run uses"
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    # The result contract is written in a ``finally`` block, so a refusal would itself be
+    # delivered by overwriting whatever --result-path names. If that is an input, honouring
+    # the contract *is* the data loss: say so on stderr, write nothing anywhere, exit non-zero
+    # (the stage then fails on its own missing-result check rather than on a video-shaped JSON).
+    if any(a.out_flag == "--result-path" and a.in_flag in ("--video", "--frame-index")
+           for a in output_aliases(args)):
+        log(f"refusing to run: --result-path names {args.result_path}, which this run also "
+            f"reads as an input; no file was written")
+        return 1
     payload: dict[str, Any] = {"status": "error", "stage": "persons"}
     try:
         validate(args)

@@ -165,10 +165,11 @@ def frame_index_file(tmp_path):
     return path
 
 
-def run_worker(worker, tmp_path, *, video=None, frame_index=None, extra=()) -> dict[str, Any]:
+def run_worker(worker, tmp_path, *, video=None, frame_index=None, extra=(),
+               out=None, result=None) -> dict[str, Any]:
     """Invoke ``main`` the way the orchestrator does and return the result payload."""
-    out = tmp_path / "raw" / "yolo_track.json"
-    result = tmp_path / "raw" / "persons_worker_result.json"
+    out = out or tmp_path / "raw" / "yolo_track.json"
+    result = result or tmp_path / "raw" / "persons_worker_result.json"
     argv = [
         "--video", str(video or (tmp_path / "missing.mp4")),
         "--frame-index", str(frame_index or (tmp_path / "nope.parquet")),
@@ -186,9 +187,22 @@ def run_worker(worker, tmp_path, *, video=None, frame_index=None, extra=()) -> d
     code = worker.main(argv)
     payload = json.loads(result.read_text(encoding="utf-8"))
     payload["_exit"] = code
-    payload["_document"] = (json.loads(out.read_text(encoding="utf-8")) if out.is_file()
-                            else None)
+    # The alias tests deliberately point ``out`` at the video or the frame index, which is
+    # binary-by-design; parsing it would raise before the assertion that matters can run.
+    readable = out.is_file() and not any(_same_file(out, other)
+                                        for other in (video, frame_index))
+    payload["_document"] = json.loads(out.read_text(encoding="utf-8")) if readable else None
     return payload
+
+
+def _same_file(one, two) -> bool:
+    """Test-side path identity, kept separate from the worker's own guard."""
+    if one is None or two is None:
+        return False
+    try:
+        return Path(one).resolve() == Path(two).resolve()
+    except OSError:
+        return False
 
 
 # ------------------------------------------------- arguments that must reach the run
@@ -607,6 +621,99 @@ class TestArgumentValidation:
         payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
                              extra=["--model", "  "])
         assert payload["status"] == "error"
+
+
+class TestOutputPathsMustNotAliasInputs:
+    """A worker must never write its artifact over the data it was asked to read.
+
+    This is not a hypothetical argument typo. ``write_json_atomic`` ends in ``os.replace``, so
+    before this guard the real worker -- real GPU, real clip, the command line a caller can
+    actually type -- tracked a 126-frame clip for 1.4 s, replaced the MP4 with the tracking
+    JSON, and returned ``status: ok`` with the video gone. Reproduced by running the worker
+    from commit b9e1c68 against a /tmp copy: ``file`` reported ``JSON data`` afterwards and the
+    result document still claimed 3 people over 126 frames.
+    """
+
+    def test_an_output_that_names_the_video_is_refused_before_any_tracking(self, worker,
+                                                                          tmp_path,
+                                                                          clip, frame_index_file):
+        """The refusal happens before the run, not after the tracking has already cost a GPU pass."""
+        FakeModel.results = [FakeResult(0, [1])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             out=clip)
+        assert payload["status"] == "error"
+        assert "--output-json points at the --video input" in payload["error"]
+        assert FakeModel.last_kwargs is None, "tracking ran anyway"
+        assert clip.read_bytes() == b"\x00", "the video was overwritten"
+
+    def test_an_output_that_names_the_frame_index_is_refused(self, worker, tmp_path, clip,
+                                                            frame_index_file):
+        FakeModel.results = [FakeResult(0, [1])]
+        index_bytes = frame_index_file.read_bytes()
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             out=frame_index_file)
+        assert payload["status"] == "error"
+        assert "--frame-index" in payload["error"]
+        assert frame_index_file.read_bytes() == index_bytes
+
+    def test_a_result_path_that_names_the_video_is_refused_without_writing_anything(
+            self, worker, tmp_path, clip, frame_index_file, caplog):
+        """The guard cannot itself be delivered by destroying the input.
+
+        The result contract is written in a ``finally`` block, so an ordinary refusal here
+        would still overwrite the video with the error JSON -- the first draft of this fix did
+        exactly that, and it was caught by running the real worker against a copy of a real
+        clip. So this path answers on stderr, exits 1, and touches no path at all; the stage
+        then fails on its own missing-result check. Writing *nothing* is also why the run does
+        not report a plausible failure for a video it never read.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        video_bytes = clip.read_bytes()
+        out = tmp_path / "raw" / "yolo_track.json"
+        code = worker.main([
+            "--video", str(clip), "--frame-index", str(frame_index_file),
+            "--output-json", str(out), "--result-path", str(clip),
+            "--video-id", "vid_a", "--device", "cpu",
+        ])
+        assert code == 1
+        assert clip.read_bytes() == video_bytes, "the guard destroyed the video it was refusing"
+        assert not out.exists(), "tracking ran, or its document was written"
+        assert FakeModel.last_kwargs is None
+
+    def test_the_two_outputs_naming_one_file_are_refused(self, worker, tmp_path, clip,
+                                                        frame_index_file):
+        """Otherwise the second write silently erases the tracking document."""
+        FakeModel.results = [FakeResult(0, [1])]
+        shared = tmp_path / "raw" / "one.json"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             out=shared, result=shared)
+        assert payload["status"] == "error"
+        assert "--output-json" in payload["error"]
+
+    def test_the_same_file_reached_by_a_different_spelling_is_still_caught(self, worker,
+                                                                          tmp_path, clip,
+                                                                          frame_index_file):
+        """`..`, a symlink and a doubled separator all name the operator's video.
+
+        The stage builds these paths from config, so a textual comparison would have been
+        enough only if config were written with one canonical spelling forever.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        link = tmp_path / "link_to_clip.mp4"
+        link.symlink_to(clip)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             out=tmp_path / "raw" / ".." / "link_to_clip.mp4")
+        assert payload["status"] == "error"
+        assert "--video" in payload["error"]
+        assert clip.read_bytes() == b"\x00"
+
+    def test_paths_that_share_a_prefix_are_not_treated_as_aliases(self, worker, tmp_path,
+                                                                  clip, frame_index_file):
+        """The guard must not refuse the ordinary layout the stage actually uses."""
+        FakeModel.results = [FakeResult(0, [1])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file)
+        assert payload["status"] == "ok"
+        assert (tmp_path / "raw" / "yolo_track.json").is_file()
 
 
 class TestAtomicOutput:
