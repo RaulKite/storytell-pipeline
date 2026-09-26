@@ -1749,9 +1749,13 @@ each stage's resolved `config_fingerprint`, not by assuming a class hierarchy: o
 `workers/persons_worker.py`, which is the detection half; the row normalisation that turns that
 JSON into the two Parquet tables lives in `stages/persons.py` and is not in any digest. So the
 inconsistency is narrower than "the three Python stages": it is *the Python that computes rows in
-the stage process*, which for `persons` is only the normalisation half. Making that consistent
-changes every fingerprint in the corpus and reruns the derived stages, which is a decision about
-compute cost the operator owns, not something to slip into an advisory fix.
+the stage process*, which for `persons` is only the normalisation half.
+
+The reason this had been left open was written here as a compute-cost decision the operator owns.
+That was wrong, and §31 corrects it: the cost was never measured, and when it was, the whole
+corpus takes **0.15 s** to re-normalise (`pose_normalized`: 59 948 body rows across seven videos,
+end to end through the pure transform) and the batch report records `pose_normalized`, `persons`
+and `speaker_fusion` at **0 s accumulated**. Nothing about closing this gap is expensive.
 
 Review: `review-655c2cc38d8349ee`, tier high, 4 lenses (all answered), 91 lines, target
 `sha256:500ef96908916fa7e264b62587b8c4f5a9d1da9f8cd26417698d155689a15719` — **approved**, store
@@ -1762,3 +1766,62 @@ test coverage of `normalized_rows` and stays open: nothing here changed what it 
 The posture correction is the point of this section. §22 wrote "non-blocking, not reopening any
 review" about two findings, and one of them could destroy a whole run. An advisory is non-blocking
 for *the commit that was reviewed*; it is not a claim that the defect is small.
+
+## 31. The Python that computes rows is now part of what reuse checks
+
+§30 left a structural gap open and justified it with a cost. The cost was never measured; when it
+was, it was ~0.15 s for the whole corpus, so there was nothing to justify. This closes it.
+
+`WorkerStage` has always mixed `worker_code_digest` into `digest_payload`, and its docstring says
+why: "a bug fix in a worker is never picked up" is exactly what a raw-request digest that tracks
+only parameters would allow. A stage that computes rows **inside the pipeline process** has no
+worker script to hash, so it had no protection:
+
+| stage | what computed rows | in any digest before this? |
+|---|---|---|
+| `pose_normalized` | `pose_normalize.py` + the stage's row assembly | no |
+| `speaker_fusion` | `fusion.py` + the stage's write path | no |
+| `persons` | detection: `workers/persons_worker.py` — normalisation: `stages/persons.py` | detection yes, normalisation no |
+
+Commit `9b5f056` is the proof this was not theoretical: it changed the basis maths over a corpus
+that was already on disk and invalidated nothing. It reproduced byte-identical, so nothing was
+harmed, but a maths change that *does* move numbers would have been served from cache forever.
+
+`python_source_digest(*modules)` (`stages/base.py`, beside `worker_code_digest`) now hashes the
+source of the named modules and is mixed in as `_python_code_sha256`. It takes module objects, not
+paths, so the call site says what it covers; it depends on each module's `__name__` and on order,
+so swapping two arguments is a different digest rather than a coincidence; and it returns `None`
+rather than raising when a source is unreadable, because a fingerprint is computed on
+`status --plan` too and a stage that cannot name its own source has to degrade to unverified, not
+crash the run.
+
+### The seam the fix had to get right
+
+`PersonsStage` is the interesting one, and the implementation deviates from the obvious choice for
+a measured reason. `digest_payload` feeds **two** things: `config_fingerprint` *and*
+`request_digest()`, which is the `request_hash` stamped into the raw sidecar — the value
+`validate()` compares to decide whether the preserved YOLO output belongs to this configuration at
+all. Mixing the *normaliser's* bytes in there would claim that re-normalising requires a new
+detection run: editing a docstring in `stages/persons.py` would invalidate all seven preserved raw
+artifacts and cost a full GPU pass per video to rebuild tables that only needed re-normalising.
+
+So `PersonsStage` overrides `config_fingerprint` and extends the parent's payload, leaving
+`digest_payload` and `request()` alone. `test_the_stage_source_is_not_in_the_raw_request_digest`
+and
+`test_a_source_edit_moves_the_fingerprint_without_invalidating_the_preserved_raw` assert that
+boundary on purpose: a fix to the maths costs a re-normalise, a fix to the worker costs a model
+run. The two digests mean different things and are pinned apart.
+
+Verified against real state rather than argument. `request()` is unchanged (no deleted line in the
+diff) and the new block sits after `request_digest`, so all seven `/tmp/pfull` sidecars keep their
+hashes. And `status --plan` after the change says `configuration changed` for `pose_normalized` and
+`speaker_fusion` on KABC — the fix doing its job on a dataset produced before it existed — while
+`whisperx`, `acoustic`, `activespeaker`, `openpose` and the rest stay `valid previous result`. Only
+the three intended stages moved.
+
+Nine new tests. Deleting the key from all three fingerprints kills **11 named tests** — 3 per
+stage, plus two more in `persons` that pin the raw-request boundary
+(`test_the_stage_source_is_not_in_the_raw_request_digest`,
+`test_a_source_edit_moves_the_fingerprint_without_invalidating_the_preserved_raw`). Stubbing the
+helper to a constant kills five named tests of the helper itself: source-edit sensitivity, two
+modules differing, order mattering, and both unreadable-source paths.
