@@ -2080,3 +2080,36 @@ the path it claims to trigger.
 
 Suite 1444 → 1445 passed, 8 skipped, 1453 collected; README ratchet updated in both places (again
 caught by the ratchet test itself on the first run).
+
+### R3-method-descriptors: the method branch could not see 62 descriptors either
+
+`review-a123af3050180210` approved `8dfd5a4` (tier high, 130 lines, four lenses, store
+`sha256:b6da0059…`) with one advisory, and it was right again: the new method branch filtered on
+`inspect.isfunction(mobj)`, but `vars(cls)` returns *descriptors*. Measured against the real
+package: **62** `classmethod`/`staticmethod` objects and **19** `property` objects were skipped —
+and they are not exotic code, they are almost all the pydantic validators and computed flags in
+`config.py` (`InputConfig._normalise_extensions`, `TranslationConfig._provider`,
+`OpenPoseConfig.hands_enabled` and friends). A missing type in any of those would have shipped
+green, which is the exact sentence §33 was written to make false.
+
+The branch now unwraps each kind: `classmethod.__func__`, `staticmethod.__func__`, and a property's
+`fget`/`fset`/`fdel`. Resolved annotations went **760 → 841**, which is +81 = 62 + 19 exactly —
+the arithmetic agreeing with the measurement is the part worth trusting here.
+
+Proofs of life:
+
+- disabling the two new branches kills two tests by name — the named-target list reports
+  `config.InputConfig._normalise_extensions()` and `config.OpenPoseConfig.hands_enabled()` as
+  never resolved, and the synthetic package drops from three expected findings to two;
+- the synthetic package gained a third module (`methods.py`) holding three healthy method kinds
+  plus a classmethod with the defect, and the test asserts both the three findings in order *and*
+  the exact visited list for the clean class — so a scan that skipped descriptors silently would
+  fail on the visited list even if the finding count happened to work out.
+
+Suite unchanged at 1445 passed / 8 skipped, 1453 collected: this widened what one test resolves, it
+did not add a test, and the ratchet correctly stayed still. The §33/§34 `pyflakes src/` sweep still
+reports no undefined names, so no live defect was waiting in those 81.
+
+The pattern across three advisories is the same one §30 and §31 already recorded: a guard written
+from the shape of the bug you saw covers that shape and nothing else, and only feeding it a
+synthetic package with a *different* shape tells you how narrow you built it.
