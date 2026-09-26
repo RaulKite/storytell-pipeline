@@ -492,12 +492,23 @@ def parse_classes(raw: str) -> list[int]:
 
 
 def _same_path(one: Path, two: Path) -> bool:
-    """True when two spellings reach the same file: same realpath, or same live inode."""
-    if one.resolve() == two.resolve():
-        return True
+    """True when two spellings reach the same file: same realpath, or same live inode.
+
+    Both calls are guarded, not just ``samefile``: ``resolve()`` also fails, and this runs
+    before the try block in ``main``, so an escaping exception here would kill the worker with
+    no result document at all -- the stage would report a missing result instead of the reason.
+    It fails with two different exception types, which is why both are named: ``OSError`` for a
+    path that cannot be reached, and ``RuntimeError``, because ``pathlib.resolve`` converts
+    ``ELOOP`` into that on a symlink loop (measured, not assumed: a two-symlink loop raised
+    ``RuntimeError: Symlink loop`` straight out of ``main``). An unresolvable path cannot be
+    shown to name the same file as anything, so it is reported as "not an alias" and the
+    ordinary input/output checks go on to reject it themselves.
+    """
     try:
+        if one.resolve() == two.resolve():
+            return True
         return os.path.samefile(one, two)
-    except OSError:
+    except (OSError, RuntimeError):
         return False
 
 
@@ -508,6 +519,11 @@ class OutputAlias(NamedTuple):
     in_flag: str
     out_path: Path
     in_path: Path
+
+    @property
+    def other_kind(self) -> str:
+        """"input" or "output": ``--output-json`` is not an input, and the refusal should not say it is."""
+        return "input" if self.in_flag in ("--video", "--frame-index") else "output"
 
 
 def output_aliases(args: argparse.Namespace) -> list[OutputAlias]:
@@ -548,8 +564,8 @@ def validate(args: argparse.Namespace) -> None:
     aliases = output_aliases(args)
     if aliases:
         raise WorkerFailure(
-            "; ".join(f"{a.out_flag} points at the {a.in_flag} input ({a.out_path})"
-                      for a in aliases)
+            "; ".join(f"{a.out_flag} points at the {a.in_flag} "
+                      f"{a.other_kind} ({a.out_path})" for a in aliases)
             + " -- refusing to write an artifact over another path this run uses"
         )
 
