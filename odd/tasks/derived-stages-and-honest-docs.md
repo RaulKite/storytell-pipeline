@@ -1753,7 +1753,7 @@ the stage process*, which for `persons` is only the normalisation half.
 
 The reason this had been left open was written here as a compute-cost decision the operator owns.
 That was wrong, and §31 corrects it: the cost was never measured, and when it was, the whole
-corpus takes **0.15 s** to re-normalise (`pose_normalized`: 59 948 body rows across seven videos,
+corpus takes **0.15 s** to re-normalise (`pose_normalized`: 56 948 body rows across seven videos,
 end to end through the pure transform) and the batch report records `pose_normalized`, `persons`
 and `speaker_fusion` at **0 s accumulated**. Nothing about closing this gap is expensive.
 
