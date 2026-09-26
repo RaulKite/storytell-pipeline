@@ -2216,3 +2216,47 @@ Suite unchanged at 1445 passed / 8 skipped, 1453 collected; e2e 42 passed; pyfla
 production code touched — this is the fourth advisory on one test helper, and every one of the four
 was answered by widening what the helper admits or by naming what it cannot admit, never by changing
 what it claims about the package.
+
+### §37 The skip message itself was doing the thing the skip list exists to prevent
+
+`review-1ac1d0cc016a0865` approved `f9ce8bc` (tier high, 100 lines, four lenses, store
+`sha256:117dfa81…`) with one advisory, `R3-annotation-key-sorting`, on the message the new branch
+builds. It read `sorted(keys)[:4]` — so the message named four keys and gave no hint of how many it
+had dropped, in a branch whose entire job is refusing to let a count go unstated.
+
+Measured first, because the advisory's size depends on whether truncation ever happens here: the
+largest annotation dict on any object in the package is **48 keys**, on
+`multimodal_pipeline.config.ConfigDict`. So this is not hypothetical for a future shape.
+
+The message now always carries the total and says what it left out:
+
+    non-callable of type ManyAnnotated carries 6 annotation keys: [k0, k1, k2, k3, … (2 more)]
+
+with the cut at a module constant `_MAX_NAMED_KEYS = 4`, and the synthetic package gained
+`ManyAnnotated` (6 keys) alongside the 1-key `AnnotatedDefault` so both the truncated and the
+untruncated form are asserted by string equality.
+
+Two mutations, both killing `test_the_scan_finds_a_broken_annotation_in_a_package_it_has_never_seen`
+by name:
+
+- **MUT-J** — restore `sorted(keys)[:4]` with no total: the message loses `carries 6 annotation
+  keys`, the assertion fails on the exact string.
+- **MUT-K** — raise `_MAX_NAMED_KEYS` to 99, i.e. a limit that quietly stops truncating: the message
+  becomes `[k0, k1, k2, k3, k4, k5]`, the assertion fails again. So the constant is genuinely pinned
+  by a test, which is what its comment claims.
+
+Also fixed in passing: the helper's own docstring still said a non-callable "is not a skip", written
+before the branch that makes one kind of non-callable a skip. The suite could not catch that; a
+reader would have.
+
+Suite unchanged: 1445 passed / 8 skipped, 1453 collected; pyflakes clean; no production code touched.
+
+**Where this thread stops.** That is the sixth advisory answered on `test_annotation_resolvability.py`
+(`R3-class-method-annotations`, `R2-001`, `R3-method-descriptors`, `R3-property-accessor-coverage`,
+`R3-unknown-descriptor-silence`, `R3-annotation-key-sorting`). The first three were real coverage
+holes that let annotations ship unresolved; the last three improved a message and a comment. Every
+round has cost a tier-high review, and the findings are getting smaller while the guard's actual
+claim over the package — 841 annotations resolve, nothing is skipped silently — has not changed since
+§35. Recorded as a decision, not silence: if a seventh advisory arrives on this file it goes into the
+ODD as a noted limitation, and the review effort goes back to the stages. The operator can reverse
+that by asking for more.
