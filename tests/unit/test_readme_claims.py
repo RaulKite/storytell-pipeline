@@ -493,16 +493,23 @@ class TestWorkedExampleMatchesTheManifest:
         assert len(set(MANIFEST_ARTIFACTS) - never_produced) == 36
 
     def test_the_corpus_counts_the_prose_states_match_the_manifests_on_disk(self) -> None:
-        """The README states per-dataset artifact counts for *this* machine's corpus, and
-        those numbers have to come from the bytes, not from memory.
+        """The README states per-dataset artifact counts for *this* machine's corpus, in two
+        halves: arithmetic the sentence owes itself, and arithmetic it owes the bytes.
 
-        The test pulls the numbers out of the prose itself and re-checks them against every
-        manifest under `data/processed/`. That kills drift in both directions: edit the
-        sentence and it disagrees with disk, re-run the pipeline over the corpus and the
-        sentence goes stale against disk. The prose it guards previously asserted "absent
-        from every dataset under data/processed/" — a universal claim that was already false
-        when read, because the KABC manifest declared two of the supposedly-absent artifacts,
-        and no test could see a manifest that disagreed with a sentence.
+        The prose half runs everywhere and needs no corpus — it parses every number out of the
+        sentences and checks them against each other (plain + other == registry, the re-run
+        converting only some of the declared-absent, the dataset counts adding up), with the
+        registry constant consulted exactly once, to confirm the README's declared total is the
+        registry's. The byte half then re-checks those same parsed numbers against every manifest
+        under `data/processed/`, and skips without one — the shape that previously let the guard
+        skip past a fresh clone entirely (R3-corpus-skip).
+
+        Drift therefore dies from either side: edit the sentence and it contradicts the registry
+        or disk; re-run the pipeline over the corpus and disk contradicts the sentence. What it
+        guards against is not hypothetical — the prose previously asserted "absent from every
+        dataset under data/processed/", a universal claim already false when read, because the
+        KABC manifest declared two of the supposedly-absent artifacts and no test could see a
+        manifest that disagreed with a sentence.
         """
         root = ROOT / "data" / "processed"
         manifests = sorted(root.glob("*/manifest.json"))
@@ -514,32 +521,45 @@ class TestWorkedExampleMatchesTheManifest:
             r"(\w+)\s+of\s+the\s+(\w+)\s+datasets\s+here\s+list\s+(\d+)\s+artifacts\s+with\s+an\s+"
             r"empty\s+`artifacts_not_generated`", README)
         stated_rerun = re.search(r"the KABC clip\s+lists \*\*(\d+)\*\*", README)
-        assert stated_plain and stated_rerun, (
-            "the corpus-count sentence the README makes about this machine changed shape; "
-            "re-point this test at it instead of deleting the check")
+        stated_registry = re.search(r"lists (\d+) of the (\d+) artifacts the registry", README)
+        stated_other = re.search(r"The other (\w+)\n?\(`", README)
+        assert stated_plain and stated_rerun and stated_registry and stated_other, (
+            "the corpus-count sentences the README makes about this machine changed shape; "
+            "re-point this test at them instead of deleting the check")
         words = {"six": 6, "seven": 7, "five": 5, "eight": 8, "nine": 9, "ten": 10}
         n_plain = words.get(stated_plain.group(1).lower())
         n_total = words.get(stated_plain.group(2).lower())
         n_plain_count = int(stated_plain.group(3))
         n_rerun = int(stated_rerun.group(1))
-        assert n_plain and n_total, f"unparsed number word in: {stated_plain.group(0)!r}"
+        n_plain_stated = int(stated_registry.group(1))
+        n_registry = int(stated_registry.group(2))
+        n_other = words.get(stated_other.group(1).lower())
+        assert n_plain and n_total and n_other, (
+            f"unparsed number word in: {stated_plain.group(0)!r} / {stated_other.group(0)!r}")
 
-        # The sentence has to add up on its own terms before disk is consulted: "N of the M
-        # datasets" plus exactly one described re-run must account for M, and the artifact
-        # counts must be the registry's 43 minus the never-produced seven. This is the part
-        # that can be wrong (and was, once) with no corpus in sight.
+        # The sentence has to add up on its own terms before disk or code is consulted. Every
+        # bound here comes out of the prose (36 / 43 / "the other seven" / 38), so the only
+        # comparison against the registry is the single one that says 43 is the registry's
+        # count — a re-run can only convert some of the declared-absent seven, never invent a
+        # ninth artifact (advisory R3-rerun-upper-bound).
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
 
+        assert n_plain_count == n_plain_stated, (
+            f"the README states the plain count twice and disagrees with itself: "
+            f"{n_plain_stated} vs {n_plain_count}")
+        assert n_plain_count + n_other == n_registry, (
+            f"the prose says {n_plain_count} listed plus {n_other} other = "
+            f"{n_registry} declared; that does not add up")
+        assert n_registry == len(MANIFEST_ARTIFACTS), (
+            f"the prose says the registry declares {n_registry}; "
+            f"MANIFEST_ARTIFACTS has {len(MANIFEST_ARTIFACTS)}")
         assert n_plain + 1 == n_total, (
             f"the prose says {n_plain} plain datasets of {n_total}, and separately describes "
             f"one re-run dataset; those do not add up")
-        assert n_plain_count < n_rerun <= len(MANIFEST_ARTIFACTS), (
-            f"the prose says the plain datasets list {n_plain_count} artifacts and the re-run "
-            f"lists {n_rerun}; a re-run can only add some of the registry's "
-            f"{len(MANIFEST_ARTIFACTS)}, never fewer than the plain datasets")
-        assert n_plain_count == len(MANIFEST_ARTIFACTS) - 7, (
-            f"the prose's plain count {n_plain_count} is not the registry's "
-            f"{len(MANIFEST_ARTIFACTS)} minus the seven newer artifacts")
+        assert 0 < n_rerun - n_plain_count <= n_other, (
+            f"the prose says the re-run dataset lists {n_rerun} against the plain datasets' "
+            f"{n_plain_count}; a re-run can only move some of the declared-absent {n_other} "
+            f"into `artifacts`, never fewer and never more")
         if len(manifests) < 2:
             pytest.skip("byte-level half needs the corpus under data/processed/")
 
