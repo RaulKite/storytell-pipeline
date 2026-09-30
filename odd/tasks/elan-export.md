@@ -200,7 +200,94 @@ committed stage-graph PNG regenerated. Mutation deaths named and observed (each 
 after, in-memory — a `git checkout` would have discarded the uncommitted feature):
 prose 43→44 died, stages 17→16 died, verbatim 43→44 died, ratchet 1551→1550 died.
 
-**Suite after all of it:** unit `1543 passed, 8 skipped` (collected 1551), e2e `42 passed`
-(run with the stage registered but before the README-only edits; the docs commits touch no
-code path e2e exercises), pyflakes clean, `validate` ok.
+**Suite after all of it:** unit `1543 passed, 8 skipped` (collected 1551) at the point the
+writer's work and the parent's gap-closing landed. That number moved twice more (below), and
+the e2e figure was re-measured on the final HEAD rather than inherited.
+
+## Review receipts (chain of 5 commits, one native lineage each)
+
+The candidate was ~2000 added lines, well past the size this repository's reviewer has
+shown it can hold: links reviewed here have historically spanned +53…+762 added lines and
+candidates near ~1600 have been refused for `lens_context_budget_exceeded`. So it landed as
+a chain, each link frozen and reviewed on its own, and the split was chosen so that a link
+never changes a registry invariant without the guard and the prose that pin it (`README.md`
+corpus guards and `test_artifacts.py` pin `STAGE_ORDER`/`MANIFEST_ARTIFACTS` by name).
+
+| link | commit | what it can break | lineage | tier / lines | verdict |
+|---|---|---|---|---|---|
+| 1 | `4b74cbe` | the export module: tables → one `.eaf`, 12 tiers | `review-1c583ddde2b7abbf` | high / 1343 | correction required |
+| 1b | `66b1ccd` | the fix link 1 asked for | `review-de6b0b29bdb32177` | high / 119 | **approved**, ack burned |
+| 2 | `d68a500` | the stage, the registration, the manifest deadlock | `review-90e22e4a4413e917` | high / 920 | correction required |
+| 2b | `171a571` | the fix link 2 asked for | `review-38cbfd5097017b85` | low / 9 | **approved**, ack burned |
+| 3 | `da2d278` | README section, stage-graph PNG, this document | `review-644896eee9645784` | low / 280 | **approved**, ack burned |
+
+The table is in review-causality order (each fix next to the link that asked for it). Git
+history is a different order, because a committed-only candidate cannot carry its own
+correction: `4b74cbe → d68a500 → da2d278 → 66b1ccd → 171a571`. The two fix commits therefore
+sit after the docs commit they have no business following, which `66b1ccd`'s own message
+states rather than hides.
+
+**Link 1's finding was right and is now a test.** `R4-nan-timestamp-aborts-export`
+(review-resilience, CRITICAL, `causal_disposition: introduced`): `interval_ms` and
+`add_annotation` run after `build_eaf`'s per-tier try/except, so one NaN timestamp in a
+readable Parquet aborted the whole export instead of costing its own row. Fixed at
+`seconds_to_ms`, where all twelve tiers pass, by raising a named `NonFiniteTimestamp` —
+clamping would have been the one honest-looking lie available, since a null is *known*
+missing and lands beside its siblings while a clamped NaN claims the annotation starts at
+second zero. `build_eaf` now drops the rows that raise, keeps the tier's other annotations,
+and logs `dropped N of M`, so "this clip has few words" and "the words table is full of NaN"
+stay two different readings. Five tests, all five die when the guard is removed (mutation
+run, restored). The half-fix that was considered and refused: NaN filters inside
+`median_positive_step` and the pose grid — no table in this corpus has a non-finite
+timestamp (all seven export 12/12 tiers with zero drops), so that would change medians
+without evidence while the conversion edge already covers every tier.
+
+**Link 2's finding was measurably wrong, and the ambiguity that produced it was real.**
+`R3-corpus-count-not-updated` (review-reliability, CRITICAL, `evidence_class: deterministic`)
+predicted that moving the committed-corpus count 42 → 43 without touching a manifest would
+leave the corpus guard failing. Measured against the candidate: all 7 manifests under
+`data/processed/` declare 43 artifacts each (read with `json.load`), `pytest
+tests/unit/test_readme_claims.py` returns 37 passed / 0 failed against that disk and 34
+passed / 3 skipped with the corpus removed. Nothing fails; the lens could not see the
+manifests because `data/processed/` is gitignored. `git ls-files data/` returns 3 files, all
+videos, and 0 manifest paths anywhere in the tree. The number was **not** reverted — disk
+says 43 — but the README was accused of asserting a figure with no reachable evidence, and
+on that the lens is correct: a diff cannot carry evidence that lives outside git, and the
+reasonable inference from the patch alone is exactly the one it drew. `171a571` therefore
+says where to check the count (nowhere in git), what actually guards it (the two halves of
+`test_readme_claims.py`, described from its own docstring at lines 497-536 rather than from
+memory), and which half runs on a fresh clone and in CI (verified: `.github/workflows/unit.yml`
+lines 67 and 88 run `tests/unit` and that file, corpusless). 9 added lines, no number and no
+assertion changed; both regex anchors the guard parses sit above the insertion and still match.
+
+**Both corrections closed `corrected_candidate_unavailable`, which is the shape of a
+committed-only candidate, not a failure.** The plan was accepted both times (115 and 9
+declared lines against a 200 budget) and the store then had no corrected candidate to apply
+it to. Same as T15: the fix ships as its own commit on its own lineage rather than as a
+rebase that would silently rewrite a reviewed link.
+
+**Link 2 also produced a `managed_assets_outdated` stop before the plan was even offered.**
+The provider rendered two different binaries for the same continuation in two STATUS calls
+(`~/.local/bin/gentle-ai`, then the `.gentle-ai/v3.6.1/` mirror); both were run exactly as
+returned, both answered "no managed sync actions needed", and the next STATUS moved on to
+`collect / correction_plan_required`. Nothing was synced by hand and no asset was edited.
+
+**Tier low means no lenses, so link 3's prose was re-read by the parent, not by a
+reviewer.** Every number in the new section was re-measured against disk with pympi: 12
+tiers per dataset and annotation totals KABC 49 / CNN 36 / La-1 86 / `person_demo` 94 /
+`pipeline_demo` 59 / `pipeline_demo_ntsc` 59 / `pipeline_silent` 1 — matching the table. The
+per-file row's specific claims hold too: `words` 23, `asd_speaking` 1 block reading
+`no face` (0–9960 ms), `pose_presence` and `person_tracks` 0, total 59; KABC's single
+`pose_presence` block really spans 0→4204 ms; `person_demo`'s empty transcript tiers really
+trace to `speech/words.parquet` having 0 rows. One measurement method died on the way: pympi
+indexes `Eaf.annotations` by annotation id, not by tier, so counting `len(annotations[tier])`
+reports 0 for every tier and a 585 "total" for a 59-annotation file. `get_annotation_data_for_tier`
+is the accessor; the first pass produced a table of zeros that looked like a broken export
+rather than a wrong method call.
+
+**Suite on the final HEAD (`171a571`):** unit `1548 passed, 8 skipped` (collected 1556),
+e2e `42 passed` in 284 s, pyflakes clean over `src workers tests scripts`, `validate` ok.
+The two README corpus guards that were red at the base `bd9ea5a` against the post-run corpus
+(42 vs 43) are green from link 2 onward, which is where the prose moved.
+
 

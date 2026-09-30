@@ -155,7 +155,15 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       `c5f0a5a..f20d98d` plus the advisory closures `f29efe6`, `65f7b49`, `8e5cd6c`, `cf57d5b`, six
       review lineages burned. The checkbox stayed open through all of it; §26 of
       `multimodal-video-pipeline.md` has carried "built" since the chain landed.
-      Off by default: no dataset under `data/processed` has its tables — see §32.
+      Off by default in code; the operator's corpus has since been run with it enabled — see
+      §32 for the original absence and §40 for the run that removed it.
+- [x] **T22** ELAN export: a last `elan` stage that reads the tables every other stage
+      already wrote and writes one `.eaf` per dataset (12 flat tiers, per-frame signals
+      collapsed into blocks, video linked by absolute *and* relative URL). Own document
+      `odd/tasks/elan-export.md`; chain `4b74cbe..171a571`, five native lineages (two links
+      returned CRITICAL findings, both fixed as their own commits — a committed-only
+      candidate cannot carry a correction). **On by default**, unlike the GPU stages: it is
+      pure Python over files already on disk. Corpus: 7/7 `.eaf`, 12 tiers each.
 - [ ] **T16** §20.3 `stories`: prototype the prompt against the live endpoint, read the
       output, then decide the schema and build the stage.
 - [x] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
