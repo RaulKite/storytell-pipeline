@@ -219,6 +219,9 @@ corpus guards and `test_artifacts.py` pin `STAGE_ORDER`/`MANIFEST_ARTIFACTS` by 
 | 2 | `d68a500` | the stage, the registration, the manifest deadlock | `review-90e22e4a4413e917` | high / 920 | correction required |
 | 2b | `171a571` | the fix link 2 asked for | `review-38cbfd5097017b85` | low / 9 | **approved**, ack burned |
 | 3 | `da2d278` | README section, stage-graph PNG, this document | `review-644896eee9645784` | low / 280 | **approved**, ack burned |
+| 4 | `81f860f` | the relative media URL's base directory — six files | `review-4f69e538f12f6bbd` | high / 165 | **approved**, ack burned, 2 SUGGESTION (both closed) |
+| 5 | `fabdccf` | closing those two: a dead validator branch, a rewritten docstring | `review-0436a4d018037bb6` | high / 124 | **approved**, ack burned, 1 WARNING (closed) |
+| 6 | `7ed827e` | the name check: every URL, decoded, last segment | `review-a9e5d77808e65346` | high / 55 | **approved**, ack burned, 2 WARNING (both recorded below, neither chased) |
 
 The table is in review-causality order (each fix next to the link that asked for it). Git
 history is a different order, because a committed-only candidate cannot carry its own
@@ -375,3 +378,30 @@ The extra import came out and the comment now says which side carries which form
 
 Suite after both closures: 1560 collected, `1552 passed, 8 skipped` measured with the whole unit
 suite, pyflakes clean over `src workers tests scripts`, README ratchet 1558 → 1560.
+
+## The advisories that remain, and why the chain stops here
+
+Three links of review (`81f860f`, `fabdccf`, `7ed827e`) approved and burned, together
+returning five informational advisories — two, one, two — and after the first two links they
+all concern the same lines: the media check in `stages/elan.py`. Three of the five became
+commits (a docstring that said nothing, a validator branch no test could reach, then a false
+negative inside that branch's replacement). The remaining two are recorded here rather than
+chased, and this paragraph is the stopping rule instead of a fourth commit after them:
+
+- **`R2-001`, line 309 (readability, WARNING).** The comment block above the check enumerates
+  three wrong implementations, because that is the order they were discovered in and each has
+  the test that kills it named beside it. It is long. Making it shorter would drop the
+  per-mutation attribution that is the whole point of the block.
+- **`R3-percent-decoding`, reported at line 314 (reliability, WARNING); the `unquote` it describes measures at 311, and 314 is a comment about stale exports.** The finding is about the code, so it was read against the code. `unquote` decodes a name that
+  already contains a percent escape: a video literally named `clip%20one.mp4` would be
+  decoded to `clip one.mp4` and fail its own check. Measured before deciding: the corpus has
+  seven input videos, none with a percent sign and none with a space, so the case is real in
+  Python and unreachable on this data. Fixing it properly means *both* the raw and the decoded
+  tail are candidates, which weakens the exact check the last two advisories asked for — and
+  writing a test for it would encode a filename no dataset has ever contained.
+
+A fourth review pass on the same eight lines would most likely return more prose about the
+same eight lines. The line-level substantive claim stopped moving between the second and third
+pass: the check is now `tails != {expected}` over decoded URL tails, tested against substring,
+directory-name, and one-URL-only mutants. Recorded here so the next reader knows the decision
+was made with the findings open, not by ignoring them.
