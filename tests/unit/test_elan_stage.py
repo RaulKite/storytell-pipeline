@@ -251,6 +251,32 @@ class TestStageWiring:
         with pytest.raises(ValidationError, match="was written for another source"):
             stage.validate(ctx)
 
+    def test_validate_rejects_a_name_that_only_appears_as_a_directory(self, stage_config, dataset):
+        """Review advisory R3-001: the name must be the linked file, not a directory on the way.
+
+        A descriptor may be written for ``<dataset>/clip.mp4/other.mp4`` — a directory named like
+        this video holding some other file. The path reaches a real file, so reachability is not
+        the reason to complain, and a check that scanned every path segment found ``clip.mp4``
+        sitting in the middle and called it a match. Tightened to the last segment of each URL.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        original = dataset["video"].name
+        # <dataset>/clip.mp4/other.mp4, reached as ../clip.mp4/other.mp4 from elan/
+        decoy_dir = dataset["dir"] / original
+        decoy_dir.mkdir()
+        (decoy_dir / "other.mp4").write_bytes(b"stub")
+        path = ctx.artifact("elan_annotations")
+        text = path.read_text(encoding="utf-8")
+        good = "../../../input_videos/"
+        assert good in text, "fixture changed shape; this test would pass vacuously"
+        path.write_text(text.replace(good + original, "../" + original + "/other.mp4"),
+                        encoding="utf-8")
+        assert (decoy_dir / "other.mp4").is_file()
+        with pytest.raises(ValidationError, match="was written for another source"):
+            stage.validate(ctx)
+
     def test_validate_reports_a_census_that_lost_a_tier(self, stage_config, dataset):
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])

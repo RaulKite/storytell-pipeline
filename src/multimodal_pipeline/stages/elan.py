@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from ..elan import TIERS, build_eaf, tier_counts
 from ..exceptions import ValidationError
@@ -294,15 +295,21 @@ class ElanStage(Stage):
                           "survive the corpus moving")
         expected = Path(ctx.source.path).name
         if expected:
-            # Exact path segment, not substring containment: a descriptor for ``clip_v2.mp4``
-            # contains the name ``clip.mp4``, and a substring test called that other document
-            # this video's own — the mutant this branch now kills. Both URLs are searched because
-            # ``as_uri()`` percent-encodes (``clip one.mp4`` becomes ``clip%20one.mp4``) while
-            # ``os.path.relpath`` leaves the name raw, so the raw name arrives on the relative
-            # side and the encoded one on the absolute side.
-            url = f"{absolute}/{relative}"
-            segments = {part for part in url.split("/") if part}
-            if expected not in segments:
+            # Every non-empty URL must name the video, compared on the decoded last segment.
+            # Three shapes this rejects, each with its own test:
+            #  - a substring test accepted ``clip_v2.mp4`` as ``clip.mp4`` (killed by
+            #    test_validate_rejects_a_document_written_for_another_video);
+            #  - an any-segment test accepted ``../clip.mp4/other.mp4``, where the name is a
+            #    directory on the way to some other file (advisory R3-001, killed by
+            #    test_validate_rejects_a_name_that_only_appears_as_a_directory);
+            #  - requiring *one* URL only, which let a descriptor with a correct absolute and a
+            #    relative pointing elsewhere through — that was this line, and the decoy test is
+            #    what showed it.
+            # ``unquote`` because ``as_uri()`` percent-encodes (``clip one.mp4`` becomes
+            # ``clip%20one.mp4``) while ``os.path.relpath`` leaves the name raw; without decoding
+            # the absolute side, a video with a space in its name fails its own check.
+            tails = {unquote(url.rsplit("/", 1)[-1]) for url in (absolute, relative) if url}
+            if tails != {expected}:
                 # A stale export copied in from another dataset directory parses, links a video,
                 # and shows the wrong clip.
                 issues.append(f"media descriptor does not name this video ({expected!r}); the .eaf "
