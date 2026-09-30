@@ -35,6 +35,7 @@ from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
 from multimodal_pipeline.elan import (
     TIERS,
     UNKNOWN_MIME_TYPE,
+    NonFiniteTimestamp,
     build_eaf,
     collapse_runs,
     interval_ms,
@@ -115,6 +116,20 @@ class TestTimeConversion:
     def test_a_null_timestamp_lands_at_zero(self) -> None:
         assert seconds_to_ms(None) == 0
         assert seconds_to_ms(None, end=True) == 1
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_timestamp_raises_rather_than_landing_at_zero(
+            self, bad: float) -> None:
+        """Clamping a NaN to 0 would claim the annotation starts at second zero.
+
+        A null is *known* to be missing, so t=0 keeps it beside its siblings; a NaN is not a
+        time at all, and silently exporting one at t=0 puts a wrong interval in a file an
+        analyst will trust. Raising here is what lets `build_eaf` drop the row and count it.
+        """
+        with pytest.raises(NonFiniteTimestamp):
+            seconds_to_ms(bad)
+        with pytest.raises(NonFiniteTimestamp):
+            seconds_to_ms(bad, end=True)
 
     @pytest.mark.parametrize(
         "start,end,expected",
@@ -526,6 +541,60 @@ class TestBuildEaf:
         out = tmp_path / "clip.eaf"
         eaf.to_file(str(out))
         ET.parse(out)
+
+    def test_one_nan_timestamp_costs_its_row_and_not_the_tier(self,
+                                                              tmp_path: Path) -> None:
+        """Review finding R4-nan-timestamp-aborts-export, reproduced before it was fixed.
+
+        `interval_ms` and `add_annotation` run *after* the per-tier try/except, so before this
+        test existed a single non-finite timestamp raised out of `build_eaf` and lost the
+        whole export — every other tier included. A NaN in a timestamp column is producible
+        upstream (a division nobody checked), so "impossible" is not an answer; the tier's
+        other rows were measured and belong in the file, dropped ones are counted in the log.
+        """
+        root = tmp_path / "processed" / "clip"
+        video = tmp_path / "input_videos" / "clip.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"stub")
+        good = _word("hello", 0.0, 0.4)
+        bad = _word("nan-word", float("nan"), 1.0)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [good, bad])
+        _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [{
+            "schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
+            "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+            "diarization_type": "pyannote",
+        }])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        # The other tier survived, and the good row of the poisoned tier survived with it.
+        assert annotations(eaf, "words") == [(0, 400, "hello")]
+        assert len(annotations(eaf, "turns_pyannote")) == 1
+        assert [line for line in lines if "dropped 1 of 2" in line and "words" in line], lines
+        # And the census in the file says one word, not two and not zero. Read by name:
+        # pympi puts its own `lastUsedAnnotation` property first, so an index would be a
+        # claim about pympi's internals rather than about this file's promise.
+        census = dict(eaf.properties)["pipeline-tiers"]
+        assert census == "turns_pyannote=1 words=1"
+
+    def test_a_tier_whose_rows_are_all_non_finite_is_empty_not_fatal(self,
+                                                                      tmp_path: Path) -> None:
+        """The extreme of the same rule: a tier may end with zero annotations.
+
+        An empty tier is a different claim from an absent one (absent means the producer never
+        ran, and that is logged as a skip) — so it still gets its tier element and its own
+        drop line, and the export keeps going.
+        """
+        root = tmp_path / "processed" / "clip"
+        video = tmp_path / "input_videos" / "clip.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"stub")
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("a", float("nan"), 1.0), _word("b", 2.0, float("inf"))])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert annotations(eaf, "words") == []
+        assert "words" in tiers_of(eaf)
+        assert [line for line in lines if "dropped 2 of 2" in line], lines
 
     def test_the_document_is_well_formed_xml_and_reloads(self, dataset: dict[str, Path]
                                                          ) -> None:

@@ -51,6 +51,17 @@ from .schemas import read_table
 MIN_INTERVAL_MS = 1
 
 
+class NonFiniteTimestamp(ValueError):
+    """A producer wrote NaN or infinity where ELAN needs an integer millisecond.
+
+    Named rather than caught as a bare ``ValueError`` for the reason §30 named
+    ``basis_non_finite``: "the numbers are not numbers" is a different state from "the
+    numbers are bad", and the caller has to be able to react to *this* one without also
+    swallowing every other conversion bug. It carries no payload beyond the message — the
+    tier and the count are known by the caller that catches it.
+    """
+
+
 def seconds_to_ms(value: Any, end: bool = False) -> int:
     """Convert seconds to the integer milliseconds ELAN's ``TIME_VALUE`` requires.
 
@@ -79,8 +90,20 @@ def seconds_to_ms(value: Any, end: bool = False) -> int:
     ``None`` becomes 0 for a start: a null timestamp is a missing measurement, and putting the
     annotation at t=0 keeps it visible next to its siblings instead of dropping it from a tier
     the user already sees as complete.
+
+    A NaN or infinity raises :class:`NonFiniteTimestamp` instead of being clamped to 0, which
+    is the one case clamping would be a lie: a null is *known* to be missing and lands beside
+    its siblings, while a NaN clamped to 0 would claim the annotation starts at second zero.
+    It raises rather than returns a sentinel because every caller here is placing an
+    annotation, and "this interval has no time" is only useful as something to skip.
     """
-    ms = 0 if value is None else int(math.floor(float(value) * 1000.0 + 0.5))
+    if value is None:
+        ms = 0
+    else:
+        seconds = float(value)
+        if not math.isfinite(seconds):
+            raise NonFiniteTimestamp(f"timestamp is {seconds}, not a measurable time")
+        ms = int(math.floor(seconds * 1000.0 + 0.5))
     if ms < 0:
         ms = 0
     if end and ms == 0:
@@ -96,6 +119,8 @@ def interval_ms(start: Any, end: Any) -> tuple[int, int]:
     and a span that ends 0.3 ms before its start rounds to end < start. Both are the same
     case as an honest start == end once the millisecond grid has had its way, and both must
     leave here with ``start < end``.
+
+    A non-finite endpoint propagates :class:`seconds_to_ms`'s ``NonFiniteTimestamp``.
     """
     start_ms = seconds_to_ms(start)
     end_ms = seconds_to_ms(end, end=True)
@@ -587,6 +612,13 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     own tier and not the eleven that were already built correctly, and a .eaf with eleven
     tiers and one logged line is worth more to a user than no .eaf at all.
 
+    One row with a non-finite timestamp costs **that row**, not its tier. Placing an
+    annotation needs an integer millisecond, and a NaN in a timestamp column is producible by
+    an upstream stage that wrote a division it never checked; the tier's other rows were
+    measured and belong in the file. The count is logged, so a tier that dropped half its rows
+    says so in the run output — the difference between "this clip has few words" and "the
+    words table is full of NaN" stays readable.
+
     The tier census is written as a document property, so a reader of the file alone can tell
     "this clip has no person tier because ``persons`` was off" from "the export lost it" —
     the same argument the manifest makes in JSON.
@@ -613,10 +645,18 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
                 rows = []
             if not reason:
                 eaf.add_tier(tier_id=spec.tier)
+                dropped = 0
                 for row in rows:
-                    start_ms, end_ms = interval_ms(row["start"], row["end"])
+                    try:
+                        start_ms, end_ms = interval_ms(row["start"], row["end"])
+                    except NonFiniteTimestamp:
+                        dropped += 1
+                        continue
                     eaf.add_annotation(spec.tier, start_ms, end_ms, _text(row["text"]))
-                built[spec.tier] = len(rows)
+                built[spec.tier] = len(rows) - dropped
+                if dropped:
+                    log(f"elan: tier {spec.tier} dropped {dropped} of {len(rows)} "
+                        f"annotation(s) with a non-finite timestamp")
         if reason:
             skipped[spec.tier] = reason
             log(f"elan: tier {spec.tier} skipped ({reason})")
