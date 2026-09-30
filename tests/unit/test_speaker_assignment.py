@@ -216,7 +216,6 @@ class TestSilentVideoIsValid:
             SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, write_table,
         )
         from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
-        from multimodal_pipeline.stages.base import StageContext  # noqa: F401
 
         write_table(context.artifact("speech_segments"),
                     pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA), SEGMENTS_SCHEMA)

@@ -27,7 +27,7 @@ from typing import Any, Callable, Iterable, Sequence
 from ..artifacts import ArtifactRegistry, VideoPaths
 from ..config import PipelineConfig, stable_hash
 from ..discovery import VideoSource
-from ..exceptions import StageError, ValidationError, ValidationIssue
+from ..exceptions import StageError, ValidationError
 from ..state import STATUS_COMPLETED, VideoState
 
 # Execution order for one video. Also the DAG's topological order.
@@ -516,7 +516,6 @@ class WorkerStage(Stage):
                   digest: str) -> None:
         from ..uv_worker import run_worker, worker_result_path
 
-        cfg_env = self._env_block(ctx)
         argv = self.worker_argv(ctx, raw_path, digest)
         result_path = worker_result_path(raw_path.parent, f"{self.name}_worker_result.json")
         ctx.log(f"running {self.name} worker")
@@ -539,9 +538,6 @@ class WorkerStage(Stage):
         if not raw_path.is_file():
             raise StageError(f"{self.name} worker reported success but raw artifact is missing: {raw_path}")
         stamp_raw(raw_path, request=request, digest=digest, worker=worker)
-
-    def _env_block(self, ctx: StageContext) -> dict[str, str]:
-        return {}
 
     # ---------------------------------------------------------------- validation
 

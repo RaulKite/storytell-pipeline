@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -10,11 +9,9 @@ import pytest
 
 from multimodal_pipeline.subprocess_utils import (
     CommandError,
-    CommandResult,
     probe_version,
     require_executable,
     run_command,
-    which,
 )
 
 PY = sys.executable

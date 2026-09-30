@@ -19,9 +19,9 @@ from __future__ import annotations
 import json
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Sequence
 
 import httpx
 import pyarrow as pa

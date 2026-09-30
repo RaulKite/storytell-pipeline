@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from ..artifacts import atomic_write_json
-from ..config import stable_hash
 from ..subprocess_utils import require_executable, run_command
 from ..validation import ValidationIssue
 from .base import Stage, StageContext, StageError

@@ -10,9 +10,8 @@ from __future__ import annotations
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Sequence
 
 from .artifacts import ArtifactRegistry, VideoPaths
 from .config import PipelineConfig, stable_hash
@@ -274,7 +273,7 @@ class VideoRunner:
         for stage in build_stages():
             stage_log = logger(stage.name)
             context.log = _StageLogAdapter(stage_log)
-            outcome = self._run_stage(stage, context, stage_log, selected, forced)
+            self._run_stage(stage, context, stage_log, selected, forced)
             self.registry.refresh()
             record = self.state.stage(stage.name)
             result.stage_outcomes[stage.name] = record.status

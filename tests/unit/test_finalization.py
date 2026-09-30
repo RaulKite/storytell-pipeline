@@ -7,7 +7,6 @@ checks read columns out of them — a patched reader would test the mock.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +14,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from multimodal_pipeline.artifacts import ArtifactRegistry, atomic_write_json
+from multimodal_pipeline.artifacts import atomic_write_json
 from multimodal_pipeline.exceptions import ValidationError
 from multimodal_pipeline.manifest import read_manifest
-from multimodal_pipeline.stages.base import STAGE_ORDER, StageContext
+from multimodal_pipeline.stages.base import StageContext
 from multimodal_pipeline.stages.finalization import (
     FinalizationStage,
     write_dataset_summary,
@@ -132,7 +131,7 @@ class TestValidation:
             stage.validate(dataset)
 
     def test_a_manifest_promise_that_was_broken_is_caught(self, dataset: StageContext) -> None:
-        manifest = finalize(dataset)
+        finalize(dataset)
         dataset.artifact("pose_body").unlink()
         # The manifest still promises it: that is a broken data contract.
         with pytest.raises(ValidationError, match="missing"):

@@ -365,7 +365,6 @@ class TestAgainstRealFfmpeg:
     """
 
     def test_produces_probeable_speech_fixtures(self, sandbox, tmp_path):
-        real_bin = Path(shutil.which("ffmpeg")).parent
         out = tmp_path / "real-out"
         result = subprocess.run([BASH, str(SCRIPT), "--openpose-root", str(tmp_path / "none"),
                                  str(out)], capture_output=True, text=True,

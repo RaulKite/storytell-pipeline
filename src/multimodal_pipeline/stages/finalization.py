@@ -7,11 +7,9 @@ single timeline really is single, and that the manifest describes what exists.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
-from ..artifacts import STAGE_LOG_NAMES, ArtifactRegistry, read_json
+from ..artifacts import ArtifactRegistry, read_json
 from ..exceptions import ValidationError
 from ..manifest import build_manifest, validate_manifest, write_manifest
 from ..provenance import git_commit, processing_report, tools_report, write_provenance

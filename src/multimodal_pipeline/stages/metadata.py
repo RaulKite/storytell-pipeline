@@ -17,9 +17,8 @@ from typing import Any
 import pyarrow as pa
 
 from ..artifacts import atomic_write_json
-from ..config import stable_hash
 from ..schemas import FRAME_INDEX_SCHEMA, read_table, write_table
-from ..subprocess_utils import CommandError, require_executable, run_command
+from ..subprocess_utils import require_executable, run_command
 from ..validation import ValidationIssue, validate_metadata_payload
 from .base import Stage, StageContext, StageError
 

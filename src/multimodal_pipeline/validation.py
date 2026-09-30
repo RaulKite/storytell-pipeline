@@ -8,7 +8,7 @@ duration, and that cross-table identifiers actually reference each other.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import pyarrow.parquet as pq
 

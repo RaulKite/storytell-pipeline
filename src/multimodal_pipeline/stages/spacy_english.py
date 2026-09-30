@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..exceptions import StageError
 from .base import StageContext
 from .spacy_source import SpacySourceStage
 
