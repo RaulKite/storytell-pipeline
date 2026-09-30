@@ -348,7 +348,7 @@ Output, verbatim, against the dataset committed under `data/processed/` on this 
 ```text
 pipeline_demo 9.985 s at 25/1 fps, 249 source frames
 temporal_model: {'unit': 'seconds_from_video_start', 'interval_columns': ['start_time', 'end_time'], 'instant_columns': ['timestamp'], 'frame_columns': ['frame_number']}
-artifacts: 36 | declared not generated: {}
+artifacts: 42 | declared not generated: {'pose_images_raw': 'not_generated'}
   metadata          completed rows={'frame_index': 249}
   audio             completed rows={}
   whisperx          completed rows={'speech_segments': 1, 'speech_words': 23}
@@ -360,31 +360,32 @@ artifacts: 36 | declared not generated: {}
   spacy_english     completed rows={'spacy_english_tokens': 28, 'spacy_english_sentences': 2}
   acoustic          completed rows={'acoustic_frames': 1001, 'acoustic_segments': 1}
   openpose          completed rows={'pose_body': 0, 'pose_hands': 0, 'pose_face': 0}
+  pose_normalized   completed rows={'pose_normalized': 0}
   activespeaker     completed rows={'active_speaker_frames': 249, 'active_speaker_tracks': 0}
+  persons           completed rows={'person_frames': 0, 'person_tracks': 0}
+  speaker_fusion    completed rows={'speaker_fusion_pyannote': 2, 'speaker_fusion_nemotron': 1}
   finalization      completed rows={}
 ```
 
-Two things to notice before opening a single Parquet file. `artifacts_not_generated` is
-empty because all 13 stages in `status.json` completed — an absent file is always
-*declared* there, never silently missing — and the `pose_*` zeros are a **result**, not a
-failure: the clip is a synthetic test pattern with a synthesised voice over it, so there is
-no person for OpenPose to find. `manifest.json` carries the same 36 keys in `artifacts`
-(key → dataset-relative path) and their sizes in `artifact_details`.
+Two things to notice before opening a single Parquet file. `artifacts_not_generated` holds
+exactly one entry — the skeleton renderings under `pose_images_raw`, which exist only when
+`openpose.write_images: true` and are off by default — and it is the *declaration* channel:
+an absent file is always named there, never silently missing. The `pose_*` and `person_*`
+zeros are a **result**, not a failure: the clip is a synthetic test pattern with a
+synthesised voice over it, so there is no person for OpenPose or YOLO to find, and both
+stages still wrote their schema-complete tables and their raw documents. `manifest.json`
+carries the same 42 keys in `artifacts` (key → dataset-relative path) and their sizes in
+`artifact_details`.
 
-Why 13 stages and 36 artifacts when the stage table above lists more? Because a manifest
-describes the run that produced it. This dataset was last written before `pose_normalized`,
-`speaker_fusion` and `persons` were added to the queue, so its `processing.stages` has 13 entries
-and its manifest lists 36 of the 43 artifacts the registry can now declare. The other seven
-(`pose/normalized.parquet`, `pose/raw_images`, `speaker/fusion_pyannote.parquet`,
-`speaker/fusion_nemotron.parquet`, `persons/raw/yolo_track.json`, `persons/frames.parquet`,
-`persons/tracks.parquet`) are absent from *this* dataset for that reason — but not from every
-dataset on this disk, and that is the point of reading the manifest instead of the prose. Six of
-the seven datasets here list 36 artifacts with an empty `artifacts_not_generated`; the KABC clip
-lists **38**, declaring `pose_normalized` and `speaker_fusion_pyannote`, because it was re-run
-after those stages existed, and it declares its remaining five in `artifacts_not_generated`. So an
-empty `persons/raw/` directory on disk is not a half-written stage either: `ensure_dirs` pre-creates
-that slot the way it pre-creates `pose/raw`, and the two manifest keys — `artifacts` and
-`artifacts_not_generated` — are what record whether the stage actually ran.
+Why 16 stages and 42 artifacts when the registry declares 43 keys? Because the 43rd is
+opt-in: `pose_images_raw`, the skeleton renderings, exists only with
+`openpose.write_images: true`, which is false by default, and it is the single entry this
+dataset's `artifacts_not_generated` names. A full batch run after `persons` was enabled
+rewrote all seven datasets on this disk, so all seven now list **42** artifacts and declare
+the same one absence. That uniformity is the point of reading the manifest instead of the
+prose: a week ago these same datasets listed 36, one of them listed 38, and the README
+sentence that claimed a stable per-dataset count was false against the bytes until a test
+started comparing the sentence to them.
 
 Now the files, with what those numbers mean:
 
@@ -404,6 +405,9 @@ Now the files, with what those numbers mean:
 | `acoustic/frame_features.parquet` | 1001 | 10 ms Praat frames. 634 rows are `voiced` and **exactly those 634 carry a non-null `f0_hz`**; the other 367 are null. `timestamp` runs 0.024→10.024 in steps of exactly 0.01 — note the tail: the acoustic grid is laid over `audio.wav`, which is 10.048 s, so it can run slightly past the 9.985 s video. That is inside the duration + 1 s `finalization` allows, not a defect. |
 | `acoustic/segment_features.parquet` | 1 | Per-segment F0/intensity/formant aggregates and pause statistics, keyed by `segment_id`. |
 | `pose/{body,hands,face}.parquet` | 0 / 0 / 0 | The honest empty case: schema present, about 2 KB each, no person in frame. `pose/raw/` still holds all 249 `_keypoints.json` files, so the emptiness is auditable rather than asserted. |
+| `pose/normalized.parquet` | 0 | The body-centred transform of the rows above, in its own coordinates (origin `MidHip`, axis toward `Neck`) — 15 columns, so the empty case has a schema too. It is **not** a rescaling of the `pose/body.parquet` rows above: same `frame_number`, different coordinate space, so the two are never interchangeable. |
+| `persons/{frames,tracks}.parquet` | 0 / 0 | YOLO + ByteTrack over the same frames. Empty here for the same reason OpenPose was empty, but the tables still carry their Parquet metadata (`model`, `weights_sha256`, `tracker`, `device`, `coco_classes`) and `persons/raw/yolo_track.json` records the run that produced them, so an empty count is attributable to a specific model rather than asserted. `person_id` is its own namespace — never join it to TalkNet's `track_id`. |
+| `speaker/fusion_{pyannote,nemotron}.parquet` | 2 / 1 | One row per diarization turn per engine: the turn's times plus what the face evidence said about it, as a verdict in `agreement` and the arithmetic behind it in `agreement_detail`. On this clip both engines answer `no_face_visible` — "a voice with nothing visible" — which is the correct reading of a test pattern, not a failure to decide. |
 | `speaker/active_speaker_frames.parquet` | 249 | Dense on the 25 FPS grid, and on this clip the grid *is* the source grid. Every row is `face_status='no_face'`, `frame_reason='no_face'`, `score_imputed=False`, `is_active_speaker=False`, `track_id=None`. |
 | `speaker/active_speaker_tracks.parquet` | 0 | No track, because no face was ever located. |
 | `provenance/{config,tools,processing}.json` | — | Resolved config with secrets masked, the machine inventory, and every stage's exact command, hashes and duration. |
