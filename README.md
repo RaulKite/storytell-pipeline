@@ -9,7 +9,8 @@ speaker-assigned transcript, an English translation through a LiteLLM
 OpenAI-compatible endpoint, spaCy linguistic features (source language and
 English), Praat/Parselmouth acoustic features and OpenPose BODY_25 + hands + face
 keypoints — all normalised to Parquet on a single video timeline, with raw tool
-artifacts, logs, status, provenance and a manifest.
+artifacts, logs, status, provenance, a manifest, and an ELAN `.eaf` annotation file
+per video that opens the clip with every module's output on its own tier.
 
 Every modality lands on the same clock (`seconds_from_video_start`), so a query
 like *"show me everything between 12.4 s and 15.1 s in video X"* is a filter, not
@@ -274,6 +275,8 @@ data/processed/<video_id>/
 │   ├── fusion_pyannote.parquet         ← pyannote turns × per-frame active speaker (see below)
 │   ├── fusion_nemotron.parquet         ← same fusion, Nemotron turns, if that engine is selected
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
+├── elan/
+│   └── annotations.eaf             ← ELAN export: one tier per module, video linked (see below)
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
     ├── config.json               ← resolved config, secrets masked, config hash
@@ -412,6 +415,7 @@ Now the files, with what those numbers mean:
 | `speaker/fusion_{pyannote,nemotron}.parquet` | 2 / 1 | One row per diarization turn per engine: the turn's times plus what the face evidence said about it, as a verdict in `agreement` and the arithmetic behind it in `agreement_detail`. On this clip both engines answer `no_face_visible` — "a voice with nothing visible" — which is the correct reading of a test pattern, not a failure to decide. |
 | `speaker/active_speaker_frames.parquet` | 249 | Dense on the 25 FPS grid, and on this clip the grid *is* the source grid. Every row is `face_status='no_face'`, `frame_reason='no_face'`, `score_imputed=False`, `is_active_speaker=False`, `track_id=None`. |
 | `speaker/active_speaker_tracks.parquet` | 0 | No track, because no face was ever located. |
+| `elan/annotations.eaf` | 12 tiers / 59 annotations | The ELAN export of everything above: one flat tier per module, the video linked by both an absolute and a relative URL, per-frame signals collapsed into blocks. It is XML, so the count is annotations and tiers rather than rows. Measured here: `words` 23, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
 | `provenance/{config,tools,processing}.json` | — | Resolved config with secrets masked, the machine inventory, and every stage's exact command, hashes and duration. |
 
 One row read straight out of `speech/words.parquet`, which is the row every other modality
@@ -957,6 +961,72 @@ passes `persist=False` unconditionally, and counts GMC failures into
 
 ---
 
+## ELAN export: `elan`
+
+The last stage writes one `elan/annotations.eaf` per dataset: an ELAN annotation file that
+links the source video and puts every module's output on its own flat tier, so the corpus is
+readable in the tool linguists already use instead of only through Parquet. It is a
+*derived export*, not a new measurement — it reads the tables the other stages wrote and
+changes no number anywhere — which is why it costs seconds, why it runs after
+`finalization`, and why it is **on by default** while `persons` and `diarization_nemotron`
+are off: it needs no GPU, no download, no credential.
+
+Twelve tiers, one per module, no hierarchy:
+
+| Tier | From | Annotation text |
+|---|---|---|
+| `words` | `speech/words.parquet` | the word |
+| `segments_src` | `speech/segments.parquet` | `SPEAKER_00: source text` |
+| `gloss_en` | `translation/segments_en.parquet` | the English gloss |
+| `turns_pyannote` / `turns_nemotron` | each engine's turn table | `SPEAKER_00 (pyannote, exclusive)` |
+| `fusion_pyannote` / `fusion_nemotron` | `speaker/fusion_*.parquet` | the verdict plus its arithmetic, verbatim |
+| `asd_speaking` | `speaker/active_speaker_frames.parquet` | `speaking track 0` / `not speaking` / `no face`, **collapsed into blocks** |
+| `face_tracks` | `speaker/active_speaker_tracks.parquet` | `track 0 · 75/78 act · mean 2.505` |
+| `person_tracks` | `persons/tracks.parquet` | `person 1 · 126 fr · conf 0.928` |
+| `pose_presence` | `pose/body.parquet` | `body present` blocks (any keypoint ≥ 0.3) |
+| `voiced_blocks` | `acoustic/frame_features.parquet` | `voiced (f0)` runs |
+
+Per-frame signals collapse into contiguous runs because 249 one-frame annotations per tier
+would be unusable in ELAN and true to nothing: the collapse is per label-run, and the block
+ends one median grid-step past the last frame that carried the label — stated because it is
+a choice, and a block's end is therefore a half-open reading (`start ≤ t < end + step`).
+
+Measured on the corpus, annotations per dataset (all seven export all twelve tiers):
+
+| dataset | tiers | annotations | note |
+|---|---|---|---|
+| KABC | 12 | 49 | `asd_speaking` = 3 blocks; `pose_presence` = 1 (0→4204 ms) |
+| CNN | 12 | 36 | |
+| La-1 | 12 | 86 | 7 ASD blocks, 8 person tracks |
+| `person_demo` | 12 | 94 | transcript tiers are **empty**: its words table has 0 rows |
+| `pipeline_demo` | 12 | 59 | |
+| `pipeline_demo_ntsc` | 12 | 59 | |
+| `pipeline_silent` | 12 | 1 | the silence case: one block, no transcript |
+
+Three things the export does that are worth knowing before you open one:
+
+- **The video is linked twice.** The `MEDIA_DESCRIPTOR` carries both an absolute `file://`
+  URL and a `RELATIVE_MEDIA_URL` (`../../input_videos/<name>`), because neither alone
+  works: without the absolute one ELAN can't find the media on a normal open; without the
+  relative one, copying `data/processed/` to another disk breaks every link although the
+  video is still beside it. Measured on all seven datasets: both URLs resolve from disk.
+- **An unknown container gets an empty `MIME_TYPE`, never a guess.** `.mp4`/`.mov`/`.m4v`
+  map to their real types; anything else declares nothing, because the attribute is
+  optional, ELAN plays off the extension anyway, and a wrong type is a lie in the file.
+  The rule is measured, not defensive: this corpus's `person_demo.avi` is really a
+  QuickTime container, so a catch-all `video/mp4` would have been false on disk.
+- **A missing table skips its tier with a logged reason; a missing transcript fails.** No
+  words *and* no segments is a dataset nobody asked to annotate, so the stage fails loudly
+  there; anything else (translation off, ASD off) just exports fewer tiers.
+
+Reuse works like every derived stage: its fingerprint mixes the digests of the tables it
+reads **and** the Python that builds the tiers (§31), so editing `elan.py` re-runs it and an
+untouched dataset re-uses in 0 s (`status --plan`: `valid previous result`). Times go
+seconds → integer milliseconds (ELAN's unit), a zero-width interval widens by 1 ms because
+pympi refuses a zero-length annotation, and no interval is ever negative.
+
+---
+
 ## Stage graph
 
 ```
@@ -976,6 +1046,8 @@ metadata
   metadata, audio, whisperx, diarization, speaker_assignment, translation,
   spacy_source, spacy_english, acoustic, openpose, activespeaker, speaker_fusion
                                                                         ──►  finalization
+                                                                                  │
+  the finished dataset's tables (it reads them, it runs no model)     ──►  elan
 ```
 
 `openpose` depends only on `metadata`, so a transcription failure never stops pose
