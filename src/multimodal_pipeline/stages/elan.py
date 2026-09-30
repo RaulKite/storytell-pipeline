@@ -293,11 +293,20 @@ class ElanStage(Stage):
             issues.append("media descriptor has no RELATIVE_MEDIA_URL, so the .eaf cannot "
                           "survive the corpus moving")
         expected = Path(ctx.source.path).name
-        if expected and expected not in f"{absolute}/{relative}":
-            # A stale export copied in from another dataset directory parses, links a video, and
-            # shows the wrong clip.
-            issues.append(f"media descriptor does not name this video ({expected!r}); the .eaf "
-                          "was written for another source")
+        if expected:
+            # Exact path segment, not substring containment: a descriptor for ``clip_v2.mp4``
+            # contains the name ``clip.mp4``, and a substring test called that other document
+            # this video's own — the mutant this branch now kills. Both URLs are searched because
+            # ``as_uri()`` percent-encodes (``clip one.mp4`` becomes ``clip%20one.mp4``) while
+            # ``os.path.relpath`` leaves the name raw, so the raw name arrives on the relative
+            # side and the encoded one on the absolute side.
+            url = f"{absolute}/{relative}"
+            segments = {part for part in url.split("/") if part}
+            if expected not in segments:
+                # A stale export copied in from another dataset directory parses, links a video,
+                # and shows the wrong clip.
+                issues.append(f"media descriptor does not name this video ({expected!r}); the .eaf "
+                              "was written for another source")
         if relative and not (eaf_dir / relative).resolve().exists():
             issues.append(f"linked media is not reachable from {eaf_dir.name}/: {relative}")
         return issues

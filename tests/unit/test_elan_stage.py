@@ -224,6 +224,33 @@ class TestStageWiring:
         with pytest.raises(ValidationError, match="not reachable from elan/"):
             stage.validate(ctx)
 
+    def test_validate_rejects_a_document_written_for_another_video(self, stage_config, dataset):
+        """Close the branch no test could reach until now (review advisory R2-002).
+
+        The check exists for a stale export copied between dataset directories: it parses, it
+        links a video that exists, its census is intact, and it shows the wrong clip in ELAN.
+        Nothing in this file could previously make it fire, so nothing said it still worked.
+
+        The foreign name is chosen to *contain* this video's name — `xclip.mp4` contains
+        `clip.mp4` — because that is the shape that killed the original implementation, which
+        tested the two URLs for substring containment and called the foreign document a match.
+        The foreign file is written to disk so reachability cannot be the reason this raises:
+        the wrong name has to be.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        original = dataset["video"].name
+        foreign = dataset["video"].parent / f"x{original}"
+        assert original in foreign.name, "the mutant relies on containment; keep it"
+        foreign.write_bytes(b"stub")
+        path = ctx.artifact("elan_annotations")
+        text = path.read_text(encoding="utf-8")
+        assert original in text, "fixture changed shape; this test would pass vacuously"
+        path.write_text(text.replace(original, foreign.name), encoding="utf-8")
+        with pytest.raises(ValidationError, match="was written for another source"):
+            stage.validate(ctx)
+
     def test_validate_reports_a_census_that_lost_a_tier(self, stage_config, dataset):
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
