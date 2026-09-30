@@ -964,7 +964,13 @@ class TestWiring:
         assert STAGE_ORDER.index("diarization") < STAGE_ORDER.index("speaker_fusion")
         assert STAGE_ORDER.index("diarization_nemotron") < STAGE_ORDER.index("speaker_fusion")
         assert STAGE_ORDER.index("activespeaker") < STAGE_ORDER.index("speaker_fusion")
-        assert STAGE_ORDER[-1] == "finalization"
+        # finalization stays the last PRODUCER: the export tier added later (elan) reads
+        # the finished dataset and writes no table, so the manifest's producer order still
+        # ends here. Pinned as an inequality so appending another export cannot hide a
+        # real reordering of the producers.
+        assert STAGE_ORDER[-2:] == ("finalization", "elan")
+        assert STAGE_ORDER.index("finalization") == len(
+            [n for n in STAGE_ORDER if n != "elan"]) - 1
 
     def test_dependencies_are_exactly_its_three_producers(self):
         from multimodal_pipeline.stages.base import STAGE_DEPENDENCIES

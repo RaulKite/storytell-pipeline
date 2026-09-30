@@ -67,6 +67,10 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     # the manifest already reports unproduced artifacts as `artifacts_not_generated`.
     "speaker_fusion_pyannote": "speaker/fusion_pyannote.parquet",
     "speaker_fusion_nemotron": "speaker/fusion_nemotron.parquet",
+    # The ELAN export. A derived export artifact rather than a measurement table: it is built
+    # from the files above and rewrites nothing, so it is opt-out via `elan.enabled` and a
+    # dataset without it is complete in every other sense.
+    "elan_annotations": "elan/annotations.eaf",
     # Persons (YOLO detect + track). Its own directory rather than `speaker/`: the tables
     # carry a *person* id namespace that must not be adjacent to TalkNet's face `track_id`
     # columns, and co-locating them is how a consumer ends up joining two unrelated id spaces
@@ -102,7 +106,11 @@ STAGE_LOG_NAMES = (
     # at, even though it reads the video rather than the audio or the speaker tables.
     "persons",
     "speaker_fusion",
+    # Own log like every stage. It runs no worker, but its skip reasons and its per-tier
+    # census need a file to point at, and `set(STAGE_LOG_NAMES) == set(STAGE_ORDER)` is
+    # asserted by three existing tests.
     "finalization",
+    "elan",
 )
 
 # Names used by the manifest's ``artifacts`` block (everything except bookkeeping files).
@@ -164,6 +172,10 @@ class VideoPaths:
             # pose/raw so `ensure_dirs` keeps its promise that a stage's directory exists
             # before it writes into it.
             "persons/raw",
+            # The ELAN export's directory. Declared like the others so the stage that writes
+            # `elan/annotations.eaf` never has to create its own output directory, which is
+            # the promise `ensure_dirs` makes to every stage.
+            "elan",
             "logs",
             "provenance",
         }:

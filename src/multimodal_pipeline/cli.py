@@ -193,7 +193,7 @@ def run(
     only_stage: Optional[str] = typer.Option(None, "--only-stage", help="Run only this stage plus its prerequisites (comma separated)."),
     force_stage: Optional[str] = typer.Option(None, "--force-stage", help="Recompute these stages even if valid."),
     from_stage: Optional[str] = typer.Option(None, "--from-stage", help="Start the stage range here."),
-    to_stage: str = typer.Option("finalization", "--to-stage", help="End the stage range here."),
+    to_stage: Optional[str] = typer.Option(None, "--to-stage", help="End the stage range here (default: the last stage, elan)."),
     quiet: bool = typer.Option(False, "--quiet", help="Suppress the per-stage console table."),
 ) -> None:
     """Process every discovered video, sequentially, one stage at a time."""
@@ -262,7 +262,7 @@ def process_video(
     only_stage: Optional[str] = typer.Option(None, "--only-stage"),
     force_stage: Optional[str] = typer.Option(None, "--force-stage"),
     from_stage: Optional[str] = typer.Option(None, "--from-stage"),
-    to_stage: str = typer.Option("finalization", "--to-stage"),
+    to_stage: Optional[str] = typer.Option(None, "--to-stage", help="End the stage range here (default: the last stage, elan)."),
     quiet: bool = typer.Option(False, "--quiet"),
 ) -> None:
     """Process one video file (the smoke-test entry point)."""
