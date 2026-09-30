@@ -227,6 +227,13 @@ correction: `4b74cbe → d68a500 → da2d278 → 66b1ccd → 171a571`. The two f
 sit after the docs commit they have no business following, which `66b1ccd`'s own message
 states rather than hides.
 
+Two more docs lineages were burned after this table was written — `ad8dce1` on
+`review-3834e77ae1b1cc41` and `01d658a` on `review-1f42e41be78b7a9b`, both tier low with no
+lenses, both corrections to this document. They are not rows here: a table cannot contain the
+commit that adds its own row, and pretending the list is exhaustive would be the smaller lie.
+Seven lineages were burned when this paragraph was written, and any receipt added afterwards
+is its own commit rather than a row — a count written here would rot the moment it was true.
+
 **Link 1's finding was right and is now a test.** `R4-nan-timestamp-aborts-export`
 (review-resilience, CRITICAL, `causal_disposition: introduced`): `interval_ms` and
 `add_annotation` run after `build_eaf`'s per-tier try/except, so one NaN timestamp in a
