@@ -480,17 +480,16 @@ class TestWorkedExampleMatchesTheManifest:
     """
 
     def test_the_artifact_count_it_quotes_is_the_manifest_key_count(self) -> None:
-        # 43 registered manifest candidates minus the seven produced only by stages newer
-        # than six of the seven datasets on this disk (KABC was re-run after two of them
-        # existed — the next test pins that, because "absent from every dataset" was a
-        # claim the README made and disk disproved).
+        # The registry declares 43 manifest candidates; exactly one is opt-in
+        # (`pose_images_raw`, gated on `openpose.write_images`), and the README's corpus
+        # sentence says every dataset on this disk lists the remaining 42. The old shape of
+        # this test hardcoded a `never_produced` set of seven; a full batch run turned that
+        # set into fiction, which is why the prose guard below now parses the sentence and
+        # re-checks it against every manifest instead of trusting a constant.
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
 
-        never_produced = {"pose_normalized", "pose_images_raw",
-                          "speaker_fusion_pyannote", "speaker_fusion_nemotron",
-                          "persons_raw", "person_frames", "person_tracks"}
         assert len(MANIFEST_ARTIFACTS) == 43
-        assert len(set(MANIFEST_ARTIFACTS) - never_produced) == 36
+        assert "pose_images_raw" in MANIFEST_ARTIFACTS
 
     def test_the_corpus_counts_the_prose_states_match_the_manifests_on_disk(self) -> None:
         """The README states per-dataset artifact counts for *this* machine's corpus, in two
@@ -517,83 +516,72 @@ class TestWorkedExampleMatchesTheManifest:
         # 1. What the prose says, extracted rather than restated. This half needs no disk,
         # so it runs everywhere — the corpus is gitignored, and a guard that skipped with it
         # would guard nothing on a fresh clone or CI (advisory R3-corpus-skip).
-        stated_plain = re.search(
-            r"(\w+)\s+of\s+the\s+(\w+)\s+datasets\s+here\s+list\s+(\d+)\s+artifacts\s+with\s+an\s+"
-            r"empty\s+`artifacts_not_generated`", README)
-        stated_rerun = re.search(r"the KABC clip\s+lists \*\*(\d+)\*\*", README)
-        stated_registry = re.search(r"lists (\d+) of the (\d+) artifacts the registry", README)
-        stated_other = re.search(r"The other (\w+)\n?\(`", README)
-        assert stated_plain and stated_rerun and stated_registry and stated_other, (
+        stated_corpus = re.search(
+            r"so all (\w+) now list \*\*(\d+)\*\*\s*\n?artifacts and declare\s*\n?"
+            r"the same one absence", README)
+        stated_stages = re.search(
+            r"Why (\d+) stages and (\d+) artifacts when the registry declares (\d+) keys", README)
+        assert stated_corpus and stated_stages, (
             "the corpus-count sentences the README makes about this machine changed shape; "
             "re-point this test at them instead of deleting the check")
-        words = {"six": 6, "seven": 7, "five": 5, "eight": 8, "nine": 9, "ten": 10}
-        n_plain = words.get(stated_plain.group(1).lower())
-        n_total = words.get(stated_plain.group(2).lower())
-        n_plain_count = int(stated_plain.group(3))
-        n_rerun = int(stated_rerun.group(1))
-        n_plain_stated = int(stated_registry.group(1))
-        n_registry = int(stated_registry.group(2))
-        n_other = words.get(stated_other.group(1).lower())
-        assert n_plain and n_total and n_other, (
-            f"unparsed number word in: {stated_plain.group(0)!r} / {stated_other.group(0)!r}")
+        words = {"seven": 7, "six": 6, "eight": 8}
+        n_total = words.get(stated_corpus.group(1).lower())
+        n_count = int(stated_corpus.group(2))
+        n_stages, n_stated_count, n_registry = (int(stated_stages.group(i)) for i in (1, 2, 3))
+        assert n_total and n_count, (
+            f"unparsed number in: {stated_corpus.group(0)!r}")
 
-        # The sentence has to add up on its own terms before disk or code is consulted. Every
-        # bound here comes out of the prose (36 / 43 / "the other seven" / 38), so the only
-        # comparison against the registry is the single one that says 43 is the registry's
-        # count — a re-run can only convert some of the declared-absent seven, never invent a
-        # ninth artifact (advisory R3-rerun-upper-bound).
+        # The prose has to add up on its own terms before disk or code is consulted. The
+        # count appears twice (corpus sentence and stage sentence) and must agree with
+        # itself; the registry total is the per-dataset count plus the one opt-in absence;
+        # and the stage number is STAGE_ORDER's length, not a remembered number. The only
+        # comparison against the registry constant is the one that says the declared 43 is
+        # the registry's (advisory R3-rerun-upper-bound's lesson: derive bounds from the
+        # prose, consult the constant once).
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
+        from multimodal_pipeline.stages.base import STAGE_ORDER
 
-        assert n_plain_count == n_plain_stated, (
-            f"the README states the plain count twice and disagrees with itself: "
-            f"{n_plain_stated} vs {n_plain_count}")
-        assert n_plain_count + n_other == n_registry, (
-            f"the prose says {n_plain_count} listed plus {n_other} other = "
-            f"{n_registry} declared; that does not add up")
+        assert n_count == n_stated_count, (
+            f"the README states the per-dataset count twice and disagrees with itself: "
+            f"{n_stated_count} vs {n_count}")
+        assert n_count + 1 == n_registry, (
+            f"the prose says {n_count} listed per dataset against {n_registry} registry "
+            "keys, which only adds up if exactly one artifact is the declared opt-in absence")
         assert n_registry == len(MANIFEST_ARTIFACTS), (
             f"the prose says the registry declares {n_registry}; "
             f"MANIFEST_ARTIFACTS has {len(MANIFEST_ARTIFACTS)}")
-        assert n_plain + 1 == n_total, (
-            f"the prose says {n_plain} plain datasets of {n_total}, and separately describes "
-            f"one re-run dataset; those do not add up")
-        assert 0 < n_rerun - n_plain_count <= n_other, (
-            f"the prose says the re-run dataset lists {n_rerun} against the plain datasets' "
-            f"{n_plain_count}; a re-run can only move some of the declared-absent {n_other} "
-            f"into `artifacts`, never fewer and never more")
+        assert n_stages == len(STAGE_ORDER), (
+            f"the prose says {n_stages} stages; STAGE_ORDER has {len(STAGE_ORDER)}")
         if len(manifests) < 2:
             pytest.skip("byte-level half needs the corpus under data/processed/")
 
         # 2. What the bytes say.
         docs = {p.parent.name: json.loads(p.read_text()) for p in manifests}
-        plain = {n: d for n, d in docs.items() if not d["artifacts_not_generated"]}
-        rerun = {n: d for n, d in docs.items() if d["artifacts_not_generated"]}
         assert len(docs) == n_total, (
             f"the prose says {n_total} datasets on this disk; {len(docs)} manifests found")
-        assert len(plain) == n_plain and {len(d["artifacts"]) for d in plain.values()} == {n_plain_count}, (
-            f"the prose says {n_plain} datasets list {n_plain_count} artifacts with nothing "
-            f"declared not-generated; disk says {sorted((n, len(d['artifacts'])) for n, d in plain.items())}")
-        assert len(rerun) == 1, f"the prose describes exactly one re-run dataset; disk has {sorted(rerun)}"
-        name, doc = next(iter(rerun.items()))
-        assert name.startswith("2017-12-30_0735_US_KABC"), (
-            f"the prose names KABC as the re-run dataset; disk names {name}")
-        assert len(doc["artifacts"]) == n_rerun, (
-            f"the prose says the re-run dataset lists {n_rerun}; its manifest lists "
-            f"{len(doc['artifacts'])}")
-        assert set(doc["artifacts_not_generated"]) == {
-            "pose_images_raw", "speaker_fusion_nemotron", "persons_raw",
-            "person_frames", "person_tracks"}
-        # 3. The two names the prose credits the re-run with are really in its manifest.
-        for produced in ("pose_normalized", "speaker_fusion_pyannote"):
-            assert produced in doc["artifacts"], (
-                f"the prose credits the re-run with {produced}; its manifest does not list it")
-        # 4. An empty persons/raw/ on disk is pre-created scaffolding, not a half-run stage.
-        empty_persons_dirs = [n for n, d in docs.items()
-                              if "persons_raw" in d["artifacts_not_generated"]
-                              and (root / n / "persons" / "raw").is_dir()
-                              and not any((root / n / "persons" / "raw").iterdir())]
-        assert empty_persons_dirs, (
-            "the README explains an empty persons/raw/ as ensure_dirs scaffolding; no "
-            "dataset on this disk still shows that shape, so the explanation is stale")
+        # The prose claims uniformity: every dataset lists n_count artifacts and declares
+        # exactly one absence, and that absence is the opt-in renderings.
+        for name, doc in sorted(docs.items()):
+            assert len(doc["artifacts"]) == n_count, (
+                f"the prose says all {n_total} datasets list {n_count} artifacts; "
+                f"{name} lists {len(doc['artifacts'])}")
+            assert set(doc["artifacts_not_generated"]) == {"pose_images_raw"}, (
+                f"the prose says every dataset declares the same one absence "
+                f"(pose_images_raw); {name} declares "
+                f"{sorted(doc['artifacts_not_generated'])}")
+        # 3. The opt-in gate the prose names is the config default, not a wish.
+        import inspect
+
+        from multimodal_pipeline.config import OpenPoseConfig
+
+        assert "write_images: bool = False" in inspect.getsource(OpenPoseConfig), (
+            "the README explains pose_images_raw's absence as an opt-in defaulting to "
+            "false; OpenPoseConfig no longer says that")
+        # 4. A manifest that lists persons_raw must have the file behind it.
+        for name, doc in sorted(docs.items()):
+            if "persons_raw" in doc["artifacts"]:
+                assert (root / name / "persons" / "raw" / "yolo_track.json").is_file(), (
+                    f"{name}'s manifest lists persons_raw but the file is absent")
 
     def test_the_example_never_walks_an_absent_artifact_as_a_file_that_exists(self) -> None:
         """No row of the walked table may present a never-produced artifact as present.
@@ -602,10 +590,25 @@ class TestWorkedExampleMatchesTheManifest:
         say these four are absent, which it does in prose. What it may not do is hand the
         reader a file-by-file table with a row that implies the file is in the dataset.
         """
-        absent = {"pose/normalized.parquet", "speaker/fusion_pyannote.parquet",
-                  "speaker/fusion_nemotron.parquet", "pose/raw_images",
-                  "persons/raw/yolo_track.json", "persons/frames.parquet",
-                  "persons/tracks.parquet"}
+        # Absence is measured from the corpus, not remembered from a run that aged out.
+        # The old shape of this test hardcoded the seven artifacts of the newer stages; a
+        # full batch run produced six of them everywhere and the hardcoded list walked the
+        # guard past its own point. What no dataset lists IS the absent set.
+        root = ROOT / "data" / "processed"
+        manifests = sorted(root.glob("*/manifest.json"))
+        if len(manifests) < 2:
+            pytest.skip("byte-level absence needs the corpus under data/processed/")
+        from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT, MANIFEST_ARTIFACTS
+
+        docs = {p.parent.name: json.loads(p.read_text()) for p in manifests}
+        absent = {
+            key for key in MANIFEST_ARTIFACTS
+            if all(key not in d["artifacts"] for d in docs.values())
+        }
+        assert absent == {"pose_images_raw"}, (
+            f"the guard's promise was that exactly the opt-in renderings are absent "
+            f"everywhere; disk disagrees: {sorted(absent)}")
+        absent_paths = {ARTIFACT_LAYOUT[key] for key in absent}
         section = README[README.index("### One dataset, file by file"):]
         section = section[:section.index("### How to consume it")]
         walked = []
@@ -615,7 +618,7 @@ class TestWorkedExampleMatchesTheManifest:
                 first = stripped[3:].split("`")[0]
                 walked.append(first)
         assert walked, "the worked example no longer walks any file in a table"
-        promised = sorted(set(walked) & absent)
+        promised = sorted(set(walked) & absent_paths)
         assert not promised, (
             f"the worked example walks {promised}, which no dataset under data/processed/ "
             "contains — the stage that writes it is newer than every run on this disk"
@@ -641,12 +644,15 @@ class TestWorkedExampleMatchesTheManifest:
         The worked example prints `manifest.json` + `status.json` and claims the block
         below it is verbatim. Every other claim here is checked against the tree; this one
         can only be checked by running the snippet, and a stage renamed or a row-count key
-        added makes the block wrong in a way no static assertion sees. Skips without the
-        corpus, like the other tests that read `data/processed/`.
+        added makes the block wrong in a way no static assertion sees. It skips without the
+        corpus like the other byte-level guards, and that is honest: the README scopes the
+        claim to "this machine", so the machine with the dataset is the one that has to
+        prove it — which it just did, by dying when a batch run moved the counts the block
+        printed. A fresh clone cannot check a claim that was never made about it.
         """
         dataset = ROOT / "data" / "processed" / "pipeline_demo"
         if not (dataset / "manifest.json").is_file():
-            pytest.skip("needs data/processed/pipeline_demo")
+            pytest.skip("the verbatim claim is scoped to this machine's dataset, absent here")
         section = README[README.index("### One dataset, file by file"):]
         section = section[:section.index("### How to consume it")]
         snippet = re.search(r"^```python\n(.*?)^```", section, re.DOTALL | re.MULTILINE)

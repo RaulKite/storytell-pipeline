@@ -2327,3 +2327,62 @@ refusal's own instruction. Cost of the detour: one extra STATUS and one extra ca
 grouped capture that would have thrown away two accepted lenses had it aborted the same way. This is
 now the known fallback for a lens that has failed admission once — group when nothing is known to be
 fragile, slot-by-slot as soon as something is.
+
+### §40 The operator authorized `persons` and a full corpus run; the run and the docs moved together
+
+The operator opened the previously-operator-held decisions on 2026-09-30: enable `persons`,
+and run the full pipeline over the real videos, with the three real clips (`KABC`, `CNN`,
+`La-1`) consolidated before T16. What changed and what was measured:
+
+**Config (operator file `config/config.local.yaml`, gitignored; backup `/tmp/config.local.yaml.bak2`).**
+`persons.enabled: true`, `device: cuda` explicit (matching the other GPU stages, so a silently-CPU
+torch cannot pose as the configured stage), and `weights_dir` pointed at the repo root, where
+`yolo11n.pt` (sha256 `0ebbc80d…`, gitignored `*.pt`) already sat from the T15 measurements — the
+run resolved it there and downloaded nothing, per the worker's own line:
+`loaded from persons.weights_dir`. It also gained `speaker_fusion.engines: [pyannote, nemotron]`:
+the schema default fuses pyannote only, and the T20 comparison the operator asked for needs the
+second table. That second decision was announced here rather than asked — it is reversible (delete
+the section, the next run prunes `fusion_nemotron.parquet` and re-declares it), and Nemotron turns
+were otherwise being produced for every video and consumed by nobody.
+
+**The batch (GPU idle-checked first: 2 MiB of 24 564 used, no competing process).**
+`run -c config/config.local.yaml`: 7/7 completed, 0 failed, 3 m 34 s. `persons` ran on CUDA for
+all seven (worker-reported 1.967 s for La-1, e.g. `tracked 8 person id(s) over 240 frame(s) on
+cuda`). `diarization_nemotron`, `spacy_source/english` re-ran on every video because `WorkerStage.digest_payload`
+mixes `_worker_code_sha256` and the lint commit `f38779c` deleted an unused import from those workers
+— the reuse cache did exactly what §31 says it must do when the producing code changes. Measured
+from the sidecars: stored digests match the pre-`f38779c` worker source and not the new one.
+`openpose` re-ran on the six clips whose digests were already stale from before this session
+(§27), costing 7–50 s per video. Then `speaker_fusion` alone (`--only-stage`, 5 s) and
+`finalization` alone (12 s) after the engines change; `validate --json`: 7/7 ok, no skips, no problems.
+
+**Real-data state, which was the point.** `persons` tables: 7/7 datasets (real-video ids KABC 3,
+CNN 4, La-1 8 — exactly the §24 config-comment measurements; the three synthetic demos 0 with
+their empty tables still stamped `coco_classes=[0]`, `weights_sha256`, `device=cuda` in Parquet
+metadata). `pose/normalized.parquet`: 7/7 (was 1/7 — `pipeline_demo` and friends now carry the
+empty-schema case). `speaker/fusion_nemotron.parquet`: produced everywhere with turns to fuse —
+KABC answers `face_matched` on 3 overlapping turns where pyannote's single exclusive turn answers
+`face_matched` on 1, so the two engines disagree on turn segmentation while agreeing on the face.
+
+**The README was invalidated by the run, as its own guard predicted.** All seven manifests went
+36/38 → 42 artifacts with the single declared absence `pose_images_raw` (opt-in
+`openpose.write_images`, measured default `False`). The worked example's verbatim block, the
+corpus-count prose, and the `absent =` set in `test_the_example_never_walks_an_absent_artifact...`
+were all rewritten against the new bytes, not from memory. Three guards were restructured:
+the `never_produced`/`rerun` hardcoded sets became prose-parsed + measured from every manifest;
+the absence set is now *derived* from disk (`MANIFEST_ARTIFACTS` minus every manifest's
+`artifacts`) instead of remembered — the exact shape of the stale-list defect that broke this
+time; and the verbatim guard's docstring now records that it skips off-machine honestly because
+the README scopes that claim to this machine. Mutation proofs, each a named death: prose 42→43,
+registry 43→44, stages 16→15, `all seven`→`all six` (dies on the byte half: "the prose says 6
+datasets on this disk; 7 manifests found"), reverting the absence derivation to `ARTIFACT_LAYOUT`,
+and perturbing one verbatim row. Suite: unit 1445 passed / 8 skipped, 1453 collected (ratchet
+unchanged), pyflakes clean.
+
+**A tool accident worth recording.** An `edit` call against an absolute path outside the repo
+(`/home/raulagent/.config/` — a typo of `/data/home/…`) reported failure but left a 13-byte file
+named `re-ejecuta}')` in the repo root, whose content was a fragment of a command that had been
+interpolated into a python heredoc earlier. `git status` caught it; `find -maxdepth 1 -name
+"*re-ejecuta*" -delete` removed it; `~/.config` was verified untouched (the failed edit was
+atomic). Lesson: the harness rejects an out-of-surface edit but can still materialize a partial
+file when the path typo lands inside the working tree — after any failed edit, read `git status`.
