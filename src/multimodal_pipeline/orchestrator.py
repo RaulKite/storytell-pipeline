@@ -39,6 +39,7 @@ from .stages.base import (
 from .stages.diarization import DiarizationStage
 from .stages.diarization_nemotron import DiarizationNemotronStage
 from .stages.finalization import FinalizationStage
+from .stages.elan import ElanStage
 from .stages.metadata import MetadataStage
 from .stages.activespeaker import ActiveSpeakerStage
 from .stages.openpose import OpenPoseStage
@@ -72,6 +73,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         PersonsStage,
         SpeakerFusionStage,
         FinalizationStage,
+        ElanStage,
     )
 }
 
@@ -477,6 +479,9 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         # enabled while Stage.enabled reports a skip reason (the mapping defaults to True).
         "pose_normalized": config.pose_normalized.enabled,
         "speaker_fusion": config.speaker_fusion.enabled,
+        # Enabled by default, but its flag can flip the map's True default, so it must be
+        # listed or the status table calls it enabled while Stage.enabled reports a skip.
+        "elan": config.elan.enabled,
         # `persons` is deliberately NOT listed, and the reason is a precedent rather than an
         # oversight. The map's default is True, so a stage appears in it only when its flag
         # can flip that default without lying about the pipeline's shape. `activespeaker` and

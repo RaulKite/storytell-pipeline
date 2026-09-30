@@ -361,6 +361,20 @@ speaker_fusion:
   # not a speaker, however good its ratio looks.
   min_face_frames: 2
 
+# ELAN export (T22): one `.eaf` per video, one flat tier per module, linked to the source
+# video. Pure python over Parquet that is already on disk -- no GPU, no uv environment, no
+# download -- so it is on by default where the GPU stages are off, and turning it off deletes
+# nothing. It runs last because every tier summarises some producer's tables.
+#
+# Twelve tiers with fixed names (words, segments_src, gloss_en, turns_pyannote,
+# turns_nemotron, fusion_pyannote, fusion_nemotron, asd_speaking, face_tracks, person_tracks,
+# pose_presence, voiced_blocks); a tier whose input file was never produced is skipped with one
+# logged line rather than written empty, so "nobody spoke" and "this engine never ran" stay two
+# different readings. Per-frame signals are collapsed into blocks, so the file has hundreds of
+# annotations rather than tens of thousands.
+elan:
+  enabled: true
+
 logging:
   level: INFO
   console: true

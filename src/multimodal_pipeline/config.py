@@ -868,6 +868,27 @@ class PersonsConfig(_Model):
         return value
 
 
+class ElanConfig(_Model):
+    """Export the dataset as one ELAN ``.eaf`` with one flat tier per module (T22).
+
+    A *derived export*, not a new measurement: it reads the Parquet tables every other stage
+    already wrote and writes no table of its own, so nothing here can change a number in the
+    corpus. That is also why it is the last stage — it summarises every producer's output, so
+    running it before a producer finished would export a dataset that had not.
+
+    ``enabled`` defaults **true**, which is the opposite of the other optional late stages,
+    and the difference is what they cost rather than how risky they are. ``persons`` and
+    ``diarization_nemotron`` default false because a fresh clone that left them on would sync a
+    torch environment and download a checkpoint nobody asked for, on a machine that may have no
+    GPU. This stage does neither: it is pure Python over files already on disk, using one small
+    pure-Python library in the root dependencies, and it costs seconds per video. A default of
+    false would mean the feature was off for everyone in exchange for nothing. Reversible
+    per-config, and switching it off deletes nothing.
+    """
+
+    enabled: bool = True
+
+
 class LoggingConfig(_Model):
     level: str = "INFO"
     console: bool = True
@@ -891,6 +912,7 @@ class PipelineConfig(_Model):
     speaker_fusion: SpeakerFusionConfig = Field(default_factory=SpeakerFusionConfig)
     pose_normalized: PoseNormalizedConfig = Field(default_factory=PoseNormalizedConfig)
     persons: PersonsConfig = Field(default_factory=PersonsConfig)
+    elan: ElanConfig = Field(default_factory=ElanConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     # ``--project-root`` is resolved at load time; relative uv projects/workers
@@ -914,6 +936,11 @@ class PipelineConfig(_Model):
             # Carries `uv_project`, so `provenance/tools.json` inventories it and
             # `inspect-environment` warns a fresh clone that the environment is absent.
             "persons": self.persons,
+            # No `uv_project`, so neither `tools.json`'s uv_projects walk nor the CLI's
+            # missing-environment warning sees it — both filter on that attribute. It is listed
+            # because every stage with its own config section should be reachable from the
+            # mapping the CLI and provenance walk; a section absent from it is invisible to both.
+            "elan": self.elan,
         }
 
     def resolve(self, path: Path | str) -> Path:

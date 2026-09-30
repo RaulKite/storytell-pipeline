@@ -480,16 +480,19 @@ class TestWorkedExampleMatchesTheManifest:
     """
 
     def test_the_artifact_count_it_quotes_is_the_manifest_key_count(self) -> None:
-        # The registry declares 43 manifest candidates; exactly one is opt-in
+        # The registry declares 44 manifest candidates; exactly one is opt-in
         # (`pose_images_raw`, gated on `openpose.write_images`), and the README's corpus
-        # sentence says every dataset on this disk lists the remaining 42. The old shape of
+        # sentence says every dataset on this disk lists the remaining 43. The old shape of
         # this test hardcoded a `never_produced` set of seven; a full batch run turned that
         # set into fiction, which is why the prose guard below now parses the sentence and
-        # re-checks it against every manifest instead of trusting a constant.
+        # re-checks it against every manifest instead of trusting a constant. The ELAN export
+        # moved the number 43 -> 44, and this constant moving *with* the registry is the
+        # whole design: a stage added without the prose being re-checked dies here.
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
 
-        assert len(MANIFEST_ARTIFACTS) == 43
+        assert len(MANIFEST_ARTIFACTS) == 44
         assert "pose_images_raw" in MANIFEST_ARTIFACTS
+        assert "elan_annotations" in MANIFEST_ARTIFACTS
 
     def test_the_corpus_counts_the_prose_states_match_the_manifests_on_disk(self) -> None:
         """The README states per-dataset artifact counts for *this* machine's corpus, in two

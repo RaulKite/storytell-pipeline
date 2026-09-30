@@ -56,6 +56,12 @@ STAGE_ORDER: tuple[str, ...] = (
     # turn tables *and* the ASD frames table.
     "speaker_fusion",
     "finalization",
+    # The ELAN export runs last because it summarises every producer's tables: a tier whose
+    # input had not been written yet would be a tier silently missing from the file an
+    # analyst opens. It is after `finalization` rather than before it for the reason recorded
+    # in STAGE_DEPENDENCIES — the manifest has to be able to declare this stage, so this
+    # stage cannot be upstream of the stage that writes the manifest.
+    "elan",
 )
 
 STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
@@ -98,7 +104,30 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # it never reads. Either diarizer can be off: the stage fuses what exists and skips the
     # engine whose table is absent (see SpeakerFusionStage.enabled).
     "speaker_fusion": ("diarization", "diarization_nemotron", "activespeaker"),
-    "finalization": tuple(name for name in STAGE_ORDER if name != "finalization"),
+    # Depends on every stage that precedes it, and — explicitly — on none that follow.
+    #
+    # `elan` is excluded from that comprehension, and the reason is a cycle rather than a
+    # preference. `finalization` writes manifest.json, whose `processing.stages` block is
+    # built from STAGE_ORDER, so the manifest of a dataset can only name `elan` as a stage if
+    # `elan` can run. Make `finalization` depend on `elan` and `elan`'s only sensible
+    # dependency is `finalization` (it wants the corpus finished), which is a deadlock the DAG
+    # cannot resolve: `dependency_chain` would never terminate. Excluding it means the first
+    # run's manifest describes a dataset without an .eaf and the closing rewrite in
+    # `VideoRunner._refresh_summary` — which runs after the stage loop, so after `elan` —
+    # rewrites the manifest to include it. The file on disk therefore ends up correct; only a
+    # manifest read mid-run is one stage behind, which is already true of `finalization` itself.
+    #
+    # Written as a name set rather than `STAGE_ORDER[:-1]`: slicing a tuple that this same
+    # literal is extending is how the exclusion silently comes back when a stage is appended.
+    "finalization": tuple(name for name in STAGE_ORDER
+                          if name not in ("finalization", "elan")),
+    # `finalization` alone, and that is the whole of what it needs: by the time the manifest
+    # and provenance have been written every table this export reads exists, and depending on
+    # the producers individually would let a diarizer failure cost the .eaf of a video whose
+    # transcript is fine. The stage reads what is present and skips a tier whose file is
+    # absent, so the dependency is an ordering guarantee about *completeness*, not a data
+    # dependency on any one table.
+    "elan": ("finalization",),
 }
 
 

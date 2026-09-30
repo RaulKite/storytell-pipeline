@@ -184,7 +184,7 @@ the file as its positional argument instead of a flag:
 ```
 --only-stage   acoustic              this stage plus whatever it needs
 --from-stage   whisperx              start here
---to-stage     acoustic              stop here            (default: finalization)
+--to-stage     acoustic              stop here       (default: the last stage, elan)
 --force-stage  whisperx,acoustic     recompute even if valid
 --video        clip.mp4               one file (run only); a bare name resolves
                                      against input.directory
@@ -195,19 +195,19 @@ the file as its positional argument instead of a flag:
 so `| jq` and CI capture work without scraping. (`inspect-environment --json` is not a
 thing — it exits 2 with typer's "No such option", measured.)
 
-`status` numbers its stage columns by position instead of naming them, because fifteen
-stage names (or even fifteen abbreviations) do not fit the 80 columns `rich` assumes
+`status` numbers its stage columns by position instead of naming them, because seventeen
+stage names (or even seventeen abbreviations) do not fit the 80 columns `rich` assumes
 when its output is not a tty. The legend under the table gives both mappings — the letter
 and the stage behind each index — and each video's id is printed whole on its own line
 when it is too long to share one:
 
 ```
-        1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 ov
-alpha   c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c
+        1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 ov
+alpha   c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c
 2017-12-30_1930_US_CNN_Global_Warning_Arctic_Melt_1237_273_1241_393_hear
-        c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c
+        c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c  c
   c=completed  F=failed  P=partial  .=pending  r=running  s=skipped
-  stages: 1=metadata 2=audio … 15=finalization  ov=overall
+  stages: 1=metadata 2=audio … 16=finalization 17=elan  ov=overall
 ```
 
 That shape is not cosmetic. The previous `rich` table measured 143 columns against those
@@ -348,7 +348,7 @@ Output, verbatim, against the dataset committed under `data/processed/` on this 
 ```text
 pipeline_demo 9.985 s at 25/1 fps, 249 source frames
 temporal_model: {'unit': 'seconds_from_video_start', 'interval_columns': ['start_time', 'end_time'], 'instant_columns': ['timestamp'], 'frame_columns': ['frame_number']}
-artifacts: 42 | declared not generated: {'pose_images_raw': 'not_generated'}
+artifacts: 43 | declared not generated: {'pose_images_raw': 'not_generated'}
   metadata          completed rows={'frame_index': 249}
   audio             completed rows={}
   whisperx          completed rows={'speech_segments': 1, 'speech_words': 23}
@@ -365,6 +365,7 @@ artifacts: 42 | declared not generated: {'pose_images_raw': 'not_generated'}
   persons           completed rows={'person_frames': 0, 'person_tracks': 0}
   speaker_fusion    completed rows={'speaker_fusion_pyannote': 2, 'speaker_fusion_nemotron': 1}
   finalization      completed rows={}
+  elan              completed rows={}
 ```
 
 Two things to notice before opening a single Parquet file. `artifacts_not_generated` holds
@@ -374,16 +375,17 @@ an absent file is always named there, never silently missing. The `pose_*` and `
 zeros are a **result**, not a failure: the clip is a synthetic test pattern with a
 synthesised voice over it, so there is no person for OpenPose or YOLO to find, and both
 stages still wrote their schema-complete tables and their raw documents. `manifest.json`
-carries the same 42 keys in `artifacts` (key → dataset-relative path) and their sizes in
+carries the same 43 keys in `artifacts` (key → dataset-relative path) and their sizes in
 `artifact_details`.
 
-Why 16 stages and 42 artifacts when the registry declares 43 keys? Because the 43rd is
+Why 17 stages and 43 artifacts when the registry declares 44 keys? Because the 44th is
 opt-in: `pose_images_raw`, the skeleton renderings, exists only with
 `openpose.write_images: true`, which is false by default, and it is the single entry this
 dataset's `artifacts_not_generated` names. A full batch run after `persons` was enabled
-rewrote all seven datasets on this disk, so all seven now list **42** artifacts and declare
-the same one absence. That uniformity is the point of reading the manifest instead of the
-prose: a week ago these same datasets listed 36, one of them listed 38, and the README
+rewrote all seven datasets on this disk, and adding the ELAN export then rewrote the
+manifests again, so all seven now list **43** artifacts and declare the same one absence.
+That uniformity is the point of reading the manifest instead of the
+prose: a month ago these same datasets listed 36, one of them listed 38, and the README
 sentence that claimed a stable per-dataset count was false against the bytes until a test
 started comparing the sentence to them.
 
@@ -1071,6 +1073,7 @@ track's score count survives into the table, so nothing downstream could recover
 | `persons` | uv env worker (Ultralytics YOLO) | `environments/persons` + weights (auto-download unless `weights_dir`) |
 | `speaker_fusion` | in-process Parquet arithmetic | diarization turns **and** `activespeaker` output |
 | `finalization` | in-process | everything above |
+| `elan` | in-process XML (pympi) | every producer's tables + the source video path — runs **after** `finalization` |
 
 What happens to a stage whose prerequisites are absent depends on **which kind of
 prerequisite is missing**, and the distinction is deliberate — measured, not styled:
@@ -1483,7 +1486,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1516 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1551 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1540,7 +1543,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1516 tests
+tests/unit/                1551 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
