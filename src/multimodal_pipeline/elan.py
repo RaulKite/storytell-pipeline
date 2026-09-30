@@ -560,6 +560,18 @@ def mimetype_for(video_path: Path) -> str:
     return MIME_TYPES.get(Path(video_path).suffix.lower(), UNKNOWN_MIME_TYPE)
 
 
+def eaf_directory() -> str:
+    """The dataset-relative directory the .eaf is written into, read from the registry.
+
+    The media descriptor's relative URL is resolved by ELAN against *this* directory, not
+    against the dataset directory, so it cannot be hardcoded: an artifact that moves and a
+    relpath computed from a remembered parent would put a broken link in every file.
+    """
+    from .artifacts import ARTIFACT_LAYOUT
+
+    return Path(ARTIFACT_LAYOUT["elan_annotations"]).parent.as_posix()
+
+
 def add_media_descriptor(eaf: Any, *, dataset_dir: Path, video_path: Path) -> dict[str, str]:
     """Link the source video so ELAN opens it in place *and* the .eaf survives a move.
 
@@ -568,10 +580,20 @@ def add_media_descriptor(eaf: Any, *, dataset_dir: Path, video_path: Path) -> di
 
     * ``MEDIA_URL`` — an absolute ``file://`` URL. Without it ELAN cannot find the media on a
       fresh open where the .eaf sits in place, which is the case that matters on this machine.
-    * ``RELATIVE_MEDIA_URL`` — the path from the dataset directory to the video, with forward
-      slashes (ELAN's convention on every platform). Without it the .eaf is welded to one
-      absolute location: copy ``data/processed/`` to another disk, or move one dataset next to
-      its videos, and every link breaks although the two files are still beside each other.
+    * ``RELATIVE_MEDIA_URL`` — the path from **the directory the .eaf itself sits in** to the
+      video, with forward slashes (ELAN's convention on every platform). Without it the .eaf is
+      welded to one absolute location: copy ``data/processed/`` to another disk, or move one
+      dataset next to its videos, and every link breaks although the two files are beside each
+      other.
+
+    The base is the .eaf's own directory (``eaf_directory()``, i.e. ``<dataset>/elan``) and not
+    the dataset directory, because that is what ELAN documents and does: the manual has it
+    search "the same directory the .eaf file is in", and the format's own examples carry
+    ``RELATIVE_MEDIA_URL="../../audio.wav"`` for a file two levels up from the annotation file.
+    A path from ``<dataset>`` instead of ``<dataset>/elan`` is short one ``../``: it parses, it
+    round-trips, and it resolves to a sibling of the dataset directory that has never existed —
+    the first version of this function did exactly that, and the stage's own reachability check
+    agreed with it because it resolved the same wrong way from the same wrong base.
 
     ``os.path.relpath`` and not ``Path.relative_to``, because the video normally lives
     *outside* the dataset directory (``data/input_videos/`` beside ``data/processed/``) and
@@ -584,9 +606,10 @@ def add_media_descriptor(eaf: Any, *, dataset_dir: Path, video_path: Path) -> di
     """
     video_path = Path(video_path)
     absolute = video_path.resolve().as_uri()
+    eaf_dir = Path(dataset_dir).resolve() / eaf_directory()
     try:
         relpath = Path(os.path.relpath(str(video_path.resolve()),
-                                       str(Path(dataset_dir).resolve()))).as_posix()
+                                       str(eaf_dir))).as_posix()
     except ValueError:  # pragma: no cover - different drive on Windows
         relpath = ""
     mimetype = mimetype_for(video_path)

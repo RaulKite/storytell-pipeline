@@ -199,7 +199,29 @@ class TestStageWiring:
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
         stage.run(ctx)
         dataset["video"].unlink()
-        with pytest.raises(ValidationError, match="not reachable from the dataset directory"):
+        with pytest.raises(ValidationError, match="not reachable from elan/"):
+            stage.validate(ctx)
+
+    def test_validate_rejects_a_relative_url_based_on_the_dataset_directory(
+            self, stage_config, dataset):
+        """A link that only resolves from ``<dataset>`` is broken, and must be reported.
+
+        This is the exact document the first version of the writer produced: the relative URL was
+        one ``../`` short, so it pointed at ``<dataset>/../input_videos`` instead of the real
+        ``<dataset>/../../input_videos``. The old check resolved it from the dataset directory,
+        agreed with the writer, and passed. The video is untouched here — the file on disk is
+        fine and the link in the document is not, which is what a validation step exists to catch.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        path = ctx.artifact("elan_annotations")
+        text = path.read_text(encoding="utf-8")
+        good = "../../../input_videos/"
+        assert good in text, "fixture changed shape; this test would pass vacuously"
+        path.write_text(text.replace(good, "../../input_videos/"), encoding="utf-8")
+        assert dataset["video"].is_file()
+        with pytest.raises(ValidationError, match="not reachable from elan/"):
             stage.validate(ctx)
 
     def test_validate_reports_a_census_that_lost_a_tier(self, stage_config, dataset):

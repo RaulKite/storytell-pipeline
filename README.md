@@ -1015,10 +1015,15 @@ Measured on the corpus, annotations per dataset (all seven export all twelve tie
 Three things the export does that are worth knowing before you open one:
 
 - **The video is linked twice.** The `MEDIA_DESCRIPTOR` carries both an absolute `file://`
-  URL and a `RELATIVE_MEDIA_URL` (`../../input_videos/<name>`), because neither alone
+  URL and a `RELATIVE_MEDIA_URL` (`../../../input_videos/<name>` — relative to the `.eaf`
+  itself in `elan/`, which is the base ELAN resolves against), because neither alone
   works: without the absolute one ELAN can't find the media on a normal open; without the
   relative one, copying `data/processed/` to another disk breaks every link although the
   video is still beside it. Measured on all seven datasets: both URLs resolve from disk.
+  (The first version computed the relative path from the dataset directory instead of the
+  `.eaf` directory — one `../` short, so all seven relative links were dead and the stage's
+  own validation agreed with the writer. `test_validate_rejects_a_relative_url_based_on_the_dataset_directory`
+  is the mutant-kill that keeps it from coming back.)
 - **An unknown container gets an empty `MIME_TYPE`, never a guess.** `.mp4`/`.mov`/`.m4v`
   map to their real types; anything else declares nothing, because the attribute is
   optional, ELAN plays off the extension anyway, and a wrong type is a lie in the file.
@@ -1567,7 +1572,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1556 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1558 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1624,7 +1629,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1556 tests
+tests/unit/                1558 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

@@ -164,8 +164,7 @@ delegation surfaces:
 
 **E4, measured on the corpus (operator-authorized writes to `data/processed/`).** All seven
 `elan/annotations.eaf` written; every one parses as XML, round-trips through pympi, exports
-**12/12 tiers**, and both media URLs resolve from disk (absolute `file://` and
-`../../input_videos/<name>`). `validate --json`: `ok: true`, 7/7, zero problems, all
+**12/12 tiers**. `validate --json`: `ok: true`, 7/7, zero problems, all
 manifests declare 43 artifacts. A third consecutive `--only-stage elan` run re-used (0–1 s)
 and `status --plan` reports `valid previous result` for all seven — the 0 s of run two was
 the `elan.py` source edit between runs invalidating by design (§31), and the fingerprint
@@ -308,3 +307,36 @@ The two README corpus guards that were red at the base `bd9ea5a` against the pos
 (42 vs 43) are green from link 2 onward, which is where the prose moved.
 
 
+
+## The dead relative link: what no lens caught, caught by re-running the claim
+
+The claim "both URLs resolve from disk" was wrong in all seven datasets, and it was not on
+any lens list — the parent found it while re-verifying the README line for this section.**
+`RELATIVE_MEDIA_URL` is resolved by ELAN against the directory the `.eaf` sits in (the ELAN
+manual: it searches "the same directory the .eaf file is in"; the format's own examples carry
+`RELATIVE_MEDIA_URL="../../audio.wav"` for a file two levels above the annotation file). The
+writer computed it from the dataset directory, and the `.eaf` lives one level deeper, in
+`elan/`. Every shipped relative URL was one `../` short — `../../input_videos/<name>` where
+the file needs `../../../input_videos/<name>`. Resolved from the `.eaf`'s directory, all
+seven pointed at a sibling that has never existed. Four artifacts had to move: the writer
+(`add_media_descriptor`, now based on `eaf_directory()`, derived from the registry so moving
+the artifact moves the base), the stage's reachability check, the unit test that pinned the
+broken string, and the README. The corpus was re-exported and all seven now resolve
+(`resolves=True` for each, checked through pympi on the reopened files).
+
+Why four review passes missed it, when the defect was in the first commit: the check and the
+writer made the same base error, so the stage's `validate` agreed with the export instead of
+interrogating it — the third copy of the assumption (test → writer → validator) all agree, and
+the README repeated them. The in-memory unit test resolved the URL against the dataset
+directory too, so nothing ever put the `.eaf` on disk at its registered path and asked whether
+ELAN could find its media. Two tests now close that: `test_elan.py`'s media-descriptor test
+resolves from `eaf_directory()` and asserts the dataset-directory base does *not* reach the
+video, and `test_elan_stage.py` rewrites the URL in a real on-disk `.eaf` to the old broken
+shape and requires `validate` to reject it. Both were mutation-killed: restoring the
+dataset-directory base in the writer fails 14 tests; moving the validator's base back fails
+11. The suite grows to 1558 collected (`1550 passed, 8 skipped` measured after the fix),
+pyflakes clean over `src workers tests scripts`.
+
+The lesson, written where it will be read: a validator that resolves a claim the same way the
+writer produced it is not a validator. The base directory of a relative URL is part of the
+claim.

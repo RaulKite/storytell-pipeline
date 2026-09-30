@@ -38,6 +38,7 @@ from multimodal_pipeline.elan import (
     NonFiniteTimestamp,
     build_eaf,
     collapse_runs,
+    eaf_directory,
     interval_ms,
     median_positive_step,
     seconds_to_ms,
@@ -492,8 +493,11 @@ class TestBuildEaf:
         """Absolute *and* relative, because ELAN needs both and neither alone is enough.
 
         The relative form is the one that survives a move, so it is asserted by resolving it
-        back to the video rather than by comparing strings — a ``./clip.mp4`` would match a
-        literal but be wrong from any dataset directory that is not the video's own.
+        from the directory the .eaf is written into — the base ELAN uses — rather than by
+        comparing strings. Resolving it from the dataset directory instead is the mistake that
+        shipped first: the .eaf lives in ``<dataset>/elan``, so a path computed from
+        ``<dataset>`` is short one ``../``, resolves to a sibling that has never existed, and
+        still round-trips through pympi without a word of complaint.
         """
         eaf = eaf_of(dataset)
         descriptor = eaf.media_descriptors[0]
@@ -501,8 +505,13 @@ class TestBuildEaf:
         root = dataset["dir"].resolve()
         assert descriptor["MEDIA_URL"] == video.as_uri()
         relative = descriptor["RELATIVE_MEDIA_URL"]
-        assert relative == "../../input_videos/clip.mp4"
-        assert (root / relative).resolve() == video
+        assert relative == "../../../input_videos/clip.mp4"
+        # Where ELAN actually resolves it: the .eaf's own directory, from the registry.
+        eaf_dir = root / eaf_directory()
+        assert (eaf_dir / relative).resolve() == video
+        # ... and the wrong base now resolves to something that is not the video, so this test
+        # dies if the base ever moves back to the dataset directory.
+        assert (root / relative).resolve() != video
         assert descriptor["MIME_TYPE"] == "video/mp4"
         assert int(descriptor["TIME_ORIGIN"]) == 0
 
@@ -541,6 +550,32 @@ class TestBuildEaf:
         out = tmp_path / "clip.eaf"
         eaf.to_file(str(out))
         ET.parse(out)
+
+    def test_the_relative_url_resolves_when_the_eaf_sits_at_its_registered_path(
+            self, tmp_path: Path) -> None:
+        """End to end, at the path the registry actually writes to.
+
+        The unit test above resolves a string built in memory; this one writes the file where
+        the pipeline writes it (``<dataset>/elan/annotations.eaf``) and opens it again, which is
+        the only shape that can catch a base-directory mistake: the off-by-one version passed
+        every in-memory check because nothing between `build_eaf` and the assertion ever put the
+        .eaf on disk where it belongs.
+        """
+        from pympi.Elan import Eaf
+
+        from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
+
+        dataset = make_dataset(tmp_path)
+        root, video = dataset["dir"], dataset["video"]
+        out = root / ARTIFACT_LAYOUT["elan_annotations"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        build_eaf(root, video, log=lambda *a, **k: None).to_file(str(out))
+
+        reopened = Eaf(str(out))
+        descriptor = reopened.media_descriptors[0]
+        from_xml = (out.parent / descriptor["RELATIVE_MEDIA_URL"]).resolve()
+        assert from_xml == video.resolve()
+        assert from_xml.is_file()
 
     def test_one_nan_timestamp_costs_its_row_and_not_the_tier(self,
                                                               tmp_path: Path) -> None:
@@ -727,7 +762,7 @@ class TestAgainstTheCorpus:
         assert len(counts) >= 8, counts
         assert counts.get("words", 0) > 0
         descriptor = eaf.media_descriptors[0]
-        path = self.CORPUS / descriptor["RELATIVE_MEDIA_URL"]
+        path = self.CORPUS / eaf_directory() / descriptor["RELATIVE_MEDIA_URL"]
         assert path.resolve() == self.VIDEO.resolve()
         out = tmp_path / "corpus-check.eaf"
         eaf.to_file(str(out))
