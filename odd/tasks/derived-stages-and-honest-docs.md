@@ -2386,3 +2386,21 @@ interpolated into a python heredoc earlier. `git status` caught it; `find -maxde
 "*re-ejecuta*" -delete` removed it; `~/.config` was verified untouched (the failed edit was
 atomic). Lesson: the harness rejects an out-of-surface edit but can still materialize a partial
 file when the path typo lands inside the working tree — after any failed edit, read `git status`.
+
+**Review receipt for the two commits.** `gentle_review` range `1cf3895..f3ebc30` (both the lint
+commit and this documentation commit) via lineage `review-a931868b2efbbd32`: tier high, 32 paths,
+347 changed lines, budget 174, all four lenses (`review-risk`, `review-resilience`,
+`review-readability`, `review-reliability`) admitted through one grouped capture, closed
+`approved` on the last admitted event, store revision
+`sha256:c771efe35408338ba12e26a02e61266a82eea78d1acf2871fe6a0a3cc8aac653`, acknowledgement
+burned. The grouped envelope did not enumerate per-finding advisories, so nothing is claimed
+here about findings it may have carried informationally; what is known is that it never took a
+correction transition.
+
+Two process facts from this cycle, both first-time: `inspect` first returned a terminal
+`managed_assets_outdated` stop (the gentle-ai binary moved to 3.7.0 while the mirrored assets
+stayed at `v3.6.1`). The stop's own continuation — the bundled `gentle-ai sync --agent pi` —
+printed "no managed sync actions needed", and the immediately following fresh `inspect` was
+`ready`. The stop resolved without any asset file changing; the start remained the sole offered
+route. The candidate-view cleanup again reported `deferred` / `candidate-view-git-failure` after
+a fully committed acknowledgement; the views are deleted out of band (see the cleanup task).
