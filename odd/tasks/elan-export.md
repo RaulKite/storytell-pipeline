@@ -273,6 +273,15 @@ The provider rendered two different binaries for the same continuation in two ST
 returned, both answered "no managed sync actions needed", and the next STATUS moved on to
 `collect / correction_plan_required`. Nothing was synced by hand and no asset was edited.
 
+**Tier low means no lenses, so links 3 and the two docs commits after it had no reviewer
+at all — the parent re-read them.** That is a real gap in coverage, not a free pass, and it
+caught two of its own errors: the receipt first cited `test_readme_claims.py` "lines 497-536"
+as a docstring (the docstring closes at 515), then "corrected" it to "497-551", which lands
+inside a multi-line assert message. `ad8dce1` states the three anchors that were actually read
+(def 497, docstring closes 515, last statement 587, next `def` 589) and says plainly that two
+wrong citations came out of one writing session. Neither commit was pushed when it was fixed,
+so the second fix is an amend rather than a third commit on top.
+
 **Tier low means no lenses, so link 3's prose was re-read by the parent, not by a
 reviewer.** Every number in the new section was re-measured against disk with pympi: 12
 tiers per dataset and annotation totals KABC 49 / CNN 36 / La-1 86 / `person_demo` 94 /
