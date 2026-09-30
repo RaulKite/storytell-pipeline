@@ -13,6 +13,12 @@ dependencies = [
     "pyarrow>=16",
     "openai>=1.40",
     "httpx>=0.27",
+    # ELAN .eaf writer for the `elan` export stage. Root dependency and not a new uv
+    # environment on purpose: the orchestrator builds the .eaf itself, in this process, from
+    # Parquet tables it can already read. pympi-ling is pure Python with no compiled or
+    # version-sensitive dependency, so it cannot reproduce the class of conflict the pinned
+    # `environments/*` projects exist to prevent (see the torch note in activespeaker).
+    "pympi-ling>=1.7,<2",
 ]
 
 [project.scripts]
