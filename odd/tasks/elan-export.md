@@ -340,3 +340,38 @@ pyflakes clean over `src workers tests scripts`.
 The lesson, written where it will be read: a validator that resolves a claim the same way the
 writer produced it is not a validator. The base directory of a relative URL is part of the
 claim.
+
+## The two informational findings from the relative-URL review, and the dead branch one of them found
+
+`review-4f69e538f12f6bbd` (link: `81f860f`, tier high, 4 lenses, 165 lines) approved with no
+blocking finding and two SUGGESTIONs. Both were closed in the commit that adds this
+paragraph rather than parked, because R2-002 turned out to be pointing at something real — the
+commit's own hash is the one thing this page cannot print.
+
+- **R2-001 (`elan.py`, `eaf_directory` docstring).** The docstring tried to say the base cannot
+  be hardcoded and produced a sentence whose subject was "an artifact that moves and a relpath
+  computed from a remembered parent" — a compound that says nothing on first reading. Rewritten
+  to state the base, who resolves against it, and the drift it prevents. The rewrite's claim —
+  that base and destination move together — was then *tested* rather than asserted:
+  `test_the_relative_url_follows_the_artifact_when_the_registry_moves_it` repoints
+  `ARTIFACT_LAYOUT` to `nested/deeper/annotations.eaf` and requires the URL to grow to
+  `../../../../input_videos/clip.mp4` and still resolve. Hardcoding `return "elan"` kills exactly
+  that test.
+- **R2-002 (`stages/elan.py`, the media-name check).** The suggestion was a nit about message
+  wording; writing a test to cover the branch it pointed at found a false negative. The check
+  was `expected not in f"{absolute}/{relative}"` — substring containment — and no test in either
+  file had ever reached it. The first draft of the test (foreign name `a_different_clip.mp4`)
+  failed to raise: `clip.mp4` is a substring of it, so the guard called another video's document
+  this video's own. The check now compares whole path segments, and
+  `test_validate_rejects_a_document_written_for_another_video` uses a foreign name that *contains*
+  the real one (`xclip.mp4`) precisely because that is the mutant. Reverting to substring
+  containment kills exactly that one test.
+
+One claim was written, tested, and deleted in the same sitting. `unquote()` went into the segment
+comparison on the theory that a percent-encoded `MEDIA_URL` would hide a name with a space;
+driving the real stage over a video renamed `clip one.mp4` showed the un-encoded
+`RELATIVE_MEDIA_URL` carrying the raw name in the same string, so decoding changed no outcome.
+The extra import came out and the comment now says which side carries which form.
+
+Suite after both closures: 1560 collected, `1552 passed, 8 skipped` measured with the whole unit
+suite, pyflakes clean over `src workers tests scripts`, README ratchet 1558 → 1560.

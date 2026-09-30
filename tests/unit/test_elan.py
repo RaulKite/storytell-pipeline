@@ -577,6 +577,35 @@ class TestBuildEaf:
         assert from_xml == video.resolve()
         assert from_xml.is_file()
 
+    def test_the_relative_url_follows_the_artifact_when_the_registry_moves_it(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The base is derived from the registry, so base and destination cannot drift.
+
+        Moving the artifact and leaving the base behind is the same off-by-N directory error in a
+        different costume: every file already written would link a path that no longer resolves.
+        Repointing ``ARTIFACT_LAYOUT`` is how a future refactor would move the .eaf, so the
+        relative URL has to follow it. Measured: with the artifact at ``nested/deeper``, the URL
+        becomes ``../../../../input_videos/clip.mp4`` and still resolves.
+        """
+        from pympi.Elan import Eaf
+
+        from multimodal_pipeline import artifacts
+        from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
+
+        dataset = make_dataset(tmp_path)
+        root, video = dataset["dir"], dataset["video"]
+        monkeypatch.setitem(ARTIFACT_LAYOUT, "elan_annotations", "nested/deeper/annotations.eaf")
+        assert eaf_directory() == "nested/deeper"
+
+        out = root / ARTIFACT_LAYOUT["elan_annotations"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        build_eaf(root, video, log=lambda *a, **k: None).to_file(str(out))
+        rel = Eaf(str(out)).media_descriptors[0]["RELATIVE_MEDIA_URL"]
+        assert rel == "../../../../input_videos/clip.mp4"
+        assert (out.parent / rel).resolve() == video.resolve()
+        monkeypatch.undo()
+        assert artifacts.ARTIFACT_LAYOUT["elan_annotations"] == "elan/annotations.eaf"
+
     def test_one_nan_timestamp_costs_its_row_and_not_the_tier(self,
                                                               tmp_path: Path) -> None:
         """Review finding R4-nan-timestamp-aborts-export, reproduced before it was fixed.

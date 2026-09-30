@@ -563,9 +563,13 @@ def mimetype_for(video_path: Path) -> str:
 def eaf_directory() -> str:
     """The dataset-relative directory the .eaf is written into, read from the registry.
 
-    The media descriptor's relative URL is resolved by ELAN against *this* directory, not
-    against the dataset directory, so it cannot be hardcoded: an artifact that moves and a
-    relpath computed from a remembered parent would put a broken link in every file.
+    One line, and it is the base the media descriptor's relative URL is measured from — ELAN
+    resolves that URL against the directory holding the .eaf, so the writer cannot assume the
+    dataset directory is the starting point.
+
+    It is derived from ``ARTIFACT_LAYOUT`` rather than written as ``"elan"`` so the base and the
+    destination move together: a hardcoded base plus a moved artifact leaves every existing file
+    with a link that no longer resolves, which is the bug this function was extracted to fix.
     """
     from .artifacts import ARTIFACT_LAYOUT
 
