@@ -10,7 +10,10 @@ OpenAI-compatible endpoint, spaCy linguistic features (source language and
 English), Praat/Parselmouth acoustic features and OpenPose BODY_25 + hands + face
 keypoints — all normalised to Parquet on a single video timeline, with raw tool
 artifacts, logs, status, provenance, a manifest, and an ELAN `.eaf` annotation file
-per video that opens the clip with every module's output on its own tier.
+per video: twelve fixed tiers that summarise what each stage measured, with the clip
+linked, so the corpus opens in ELAN. The `.eaf` is a summary, not a copy — it carries
+the label runs an analyst reads, not every number in the tables (see
+[ELAN export](#elan-export-elan)).
 
 Every modality lands on the same clock (`seconds_from_video_start`), so a query
 like *"show me everything between 12.4 s and 15.1 s in video X"* is a filter, not
@@ -276,7 +279,7 @@ data/processed/<video_id>/
 │   ├── fusion_nemotron.parquet         ← same fusion, Nemotron turns, if that engine is selected
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── elan/
-│   └── annotations.eaf             ← ELAN export: one tier per module, video linked (see below)
+│   └── annotations.eaf             ← ELAN export: 12 fixed summary tiers, video linked (see below)
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
     ├── config.json               ← resolved config, secrets masked, config hash
@@ -424,7 +427,7 @@ Now the files, with what those numbers mean:
 | `speaker/fusion_{pyannote,nemotron}.parquet` | 2 / 1 | One row per diarization turn per engine: the turn's times plus what the face evidence said about it, as a verdict in `agreement` and the arithmetic behind it in `agreement_detail`. On this clip both engines answer `no_face_visible` — "a voice with nothing visible" — which is the correct reading of a test pattern, not a failure to decide. |
 | `speaker/active_speaker_frames.parquet` | 249 | Dense on the 25 FPS grid, and on this clip the grid *is* the source grid. Every row is `face_status='no_face'`, `frame_reason='no_face'`, `score_imputed=False`, `is_active_speaker=False`, `track_id=None`. |
 | `speaker/active_speaker_tracks.parquet` | 0 | No track, because no face was ever located. |
-| `elan/annotations.eaf` | 12 tiers / 59 annotations | The ELAN export of everything above: one flat tier per module, the video linked by both an absolute and a relative URL, per-frame signals collapsed into blocks. It is XML, so the count is annotations and tiers rather than rows. Measured here: `words` 23, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
+| `elan/annotations.eaf` | 12 tiers / 59 annotations | The ELAN export of the tiers above: twelve fixed flat tiers, the video linked by both an absolute and a relative URL, per-frame signals collapsed into runs. It is XML, so the count is annotations and tiers rather than rows, and it is a **summary** — label text and run boundaries are derived, so this is not a row-for-row copy of the tables. Measured here: `words` 23, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
 | `provenance/{config,tools,processing}.json` | — | Resolved config with secrets masked, the machine inventory, and every stage's exact command, hashes and duration. |
 
 One row read straight out of `speech/words.parquet`, which is the row every other modality
@@ -808,8 +811,10 @@ Two engines, **one implementation**: the core takes *which* turn table to read a
 parameter, so Nemotron is a second call of the same code, not a second fusion.
 `speaker_fusion.engines` selects the calls, and each engine's table is written to its own
 file, because `SPEAKER_00` and `speaker_0` remain unrelated namespaces — do not join the two
-fused tables on `speaker_id` any more than you join the two turn tables. `face_track_id` is a
-third id space again (a TalkNet track), never a speaker id. `overlap_s` is carried from the
+fused tables on `speaker_id` any more than you join the two turn tables. `face_track_id` is *not*
+a fourth namespace: it is `active_speaker_frames.track_id` copied through from the winning frame,
+so it joins the ASD tables and the ELAN `face_tracks` tier — it is only never a **speaker** id.
+`overlap_s` is carried from the
 turn table and stays `null` on pyannote rows, because a `0.0` there would read as "measured:
 no overlap".
 
@@ -973,34 +978,89 @@ passes `persist=False` unconditionally, and counts GMC failures into
 ## ELAN export: `elan`
 
 The last stage writes one `elan/annotations.eaf` per dataset: an ELAN annotation file that
-links the source video and puts every module's output on its own flat tier, so the corpus is
+links the source video and puts a fixed set of twelve flat tiers over it, so the corpus is
 readable in the tool linguists already use instead of only through Parquet. It is a
-*derived export*, not a new measurement — it reads the tables the other stages wrote and
-changes no number anywhere — which is why it costs seconds, why it runs after
-`finalization`, and why it is **on by default** while `persons` and `diarization_nemotron`
-are off: it needs no GPU, no download, no credential.
+*derived summary*, not a new measurement and not a copy: it reads the tables the other stages
+wrote, changes no number in them, and writes down the label runs an analyst reads — which means
+it deliberately leaves things out (see the coverage note below). That is why it costs seconds,
+why it runs after `finalization`, and why it is **on by default** while `persons` and
+`diarization_nemotron` are off: it needs no GPU, no download, no credential.
 
-Twelve tiers, one per module, no hierarchy:
+Twelve tiers, fixed names, no hierarchy — and **not** one tier per module. Those twelve read
+twelve of the twenty-two normalised tables the pipeline publishes; the spaCy token and sentence
+tables, the per-segment acoustic aggregates, `pose/hands`, `pose/face`, `pose/normalized`, the
+person *frames* table and the source frame index are not exported, and a tier is never silently
+renamed to cover them (`manifest.artifacts_not_generated` is where absence is declared). Two
+diarizers and two fusions are why twelve tiers is more tiers than producers: an absent engine is
+an absent tier, not a shared one.
 
 | Tier | From | Annotation text |
 |---|---|---|
-| `words` | `speech/words.parquet` | the word |
-| `segments_src` | `speech/segments.parquet` | `SPEAKER_00: source text` |
-| `gloss_en` | `translation/segments_en.parquet` | the English gloss |
-| `turns_pyannote` / `turns_nemotron` | each engine's turn table | `SPEAKER_00 (pyannote, exclusive)` |
-| `fusion_pyannote` / `fusion_nemotron` | `speaker/fusion_*.parquet` | the verdict plus its arithmetic, verbatim |
-| `asd_speaking` | `speaker/active_speaker_frames.parquet` | `speaking track 0` / `not speaking` / `no face`, **collapsed into blocks** |
-| `face_tracks` | `speaker/active_speaker_tracks.parquet` | `track 0 · 75/78 act · mean 2.505` |
+| `words` | `speech/words.parquet` | `Hello · SPEAKER_00 · seg000001-w00000 · [seg000001]` |
+| `segments_src` | `speech/segments.parquet` | `SPEAKER_00: source text · [seg000001]` |
+| `gloss_en` | `translation/segments_en.parquet` | `SPEAKER_00: English text · [seg000001]` — **segment-level translation, not a word gloss** |
+| `turns_pyannote` / `turns_nemotron` | each engine's turn table | `speaker SPEAKER_00 (pyannote, exclusive) · turn000001` |
+| `fusion_pyannote` / `fusion_nemotron` | `speaker/fusion_*.parquet` | `face_matched: turn turn000001 · turn speaker SPEAKER_00 (pyannote)` then `\| face track 0 \|` and the verdict's arithmetic, verbatim |
+| `asd_speaking` | `speaker/active_speaker_frames.parquet` | `speaking track 0` / `not speaking` / `not evaluated` / `no face`, **collapsed into runs** — a score carried forward adds `(imputed tail score)` on either activity state |
+| `face_tracks` | `speaker/active_speaker_tracks.parquet` | `track 0 · 75/78 act · mean 2.505` — `mean` is a TalkNet logit-like score, unbounded, **not a probability** |
 | `person_tracks` | `persons/tracks.parquet` | `person 1 · 126 fr · conf 0.928` |
-| `pose_presence` | `pose/body.parquet` | `body present` blocks (any keypoint ≥ 0.3) |
+| `pose_presence` | `pose/body.parquet` | `body present` runs (any keypoint ≥ 0.3) |
 | `voiced_blocks` | `acoustic/frame_features.parquet` | `voiced (f0)` runs |
 
-Per-frame signals collapse into contiguous runs because 249 one-frame annotations per tier
-would be unusable in ELAN and true to nothing: the collapse is per label-run, and the block
-ends one median grid-step past the last frame that carried the label — stated because it is
-a choice, and a block's end is therefore a half-open reading (`start ≤ t < end + step`).
+Three rules the labels obey, because a tier value is the part of an `.eaf` that leaves the file
+— into a screenshot, an issue, a talk — without this README next to it. They are also written
+into the document itself as the `pipeline-tier-semantics` property, so the file explains its own
+notation:
 
-Measured on the corpus, annotations per dataset (all seven export all twelve tiers):
+- **Ids are printed, and each says where it came from.** `words` carries its own `word_id` and the
+  `segment_id` it belongs to; `segments_src` and `gloss_en` carry the `segment_id` they are keyed
+  by, so the three text tiers link without eyeballing timestamps. `turn_id` appears on both the
+  turn tier and the fusion tier built from it. What is *not* a link: pyannote's `SPEAKER_00`,
+  Nemotron's arrival-ordered `speaker_0` and YOLO's `person_id` are three separate id spaces whose
+  matching digits mean nothing (§20.2), so every label says which space its id came from — and the
+  fusion tier prints the row's own `engine` column, because a quoted verdict otherwise arrives with
+  no tier header to say which diarizer clustered its speaker. What *is* a link, and was described
+  wrongly here until it was measured: the fusion row's `face_track_id` **is** the ASD tables'
+  `track_id` — `fuse_turn_table` copies the winning frame's id through — so `fusion_*` and
+  `face_tracks` join on it. Measured on this corpus, every non-null `face_track_id` is a member of
+  the same dataset's `active_speaker_tracks.track_id` (KABC `{0}` and `{0, 1}` ⊆ `[0, 1]`; La-1
+  `{0, 4}` ⊆ `[0, 1, 2, 4]`). It is not a *speaker* id, which is the distinction the schema is
+  actually making.
+- **A missing value says `unknown`.** A null, NaN or infinite score prints `unknown`, never
+  `0.000`, because `mean 0.000` is a measurement and an analyst cannot tell the two apart; a real
+  zero still prints `0.000`. Ids obey the same rule, including the nullable `speaker_id` at the
+  head of `segments_src` and `gloss_en`, so an unassigned segment says `unknown:` rather than
+  printing the word `None` in the part of the label an analyst quotes.
+- **`not evaluated` is not `not speaking`, and neither is a claim about the audio.** A frame where
+  a face was located but TalkNet never scored it (`face_status='tracked_unscored'`, or one of the
+  five reasons that carry no measurement) reads `not evaluated`, and it outranks a stale
+  `is_active_speaker` flag on the same row. Turning missing evidence into evidence of silence is
+  the collapse the ASD schema grew `face_status` to prevent. `not speaking` *is* a measurement,
+  but it is TalkNet's verdict on the **one track selected for that frame**: an off-screen narrator
+  or a second person in shot can still be talking in the same second (the fusion table's
+  `no_face_visible` verdict names that case), so the tier's own semantics property says the
+  verdict is about that face's mouth and not about the audio. A score carried forward from the
+  previous frame (`frame_reason='imputed_tail'`) says `(imputed tail score)` on **either**
+  activity state — the provenance belongs to the number, not to the verdict, and this corpus has
+  seven imputed rows across four datasets: five active and two **not** (La-1 frame 60 at 2.40 s,
+  carried score −1.4667; `person_demo` frame 96 at 3.84 s). Before this correction both printed a
+  plain `not speaking`.
+
+Per-frame signals collapse into contiguous runs because 249 one-frame annotations per tier
+would be unusable in ELAN and true to nothing: the collapse is per label-run, and the block's end
+is already one median grid-step past the last frame that carried the label — stated because it is
+a choice. A block then covers `start ≤ t < end` in ELAN's integer milliseconds, where `end` is
+that extended value (not a further step on top of it), so the last sampled frame is inside the
+block rather than on its edge.
+
+Measured on the corpus, annotations per dataset. **The numbers below are read straight out of the
+`.eaf` files on this disk**, and they are stale in one specific way: the ASD label split gives every
+imputed-tail frame its own run (active or not), so a rebuild moves KABC 49 → 50, CNN 36 → 37, La-1
+86 → 90 and `person_demo` 94 → 95 — La-1's `asd_speaking` tier goes 7 → 11 blocks (three active
+imputed frames plus the inactive one at 2.40 s). Measured in memory against these files; nothing
+was written, because the export is regenerated by a pipeline run and the corpus files are the
+operator's to regenerate. The other three datasets are unchanged, and no measurement in any Parquet
+table moved:
 
 | dataset | tiers | annotations | note |
 |---|---|---|---|
@@ -1012,7 +1072,7 @@ Measured on the corpus, annotations per dataset (all seven export all twelve tie
 | `pipeline_demo_ntsc` | 12 | 59 | |
 | `pipeline_silent` | 12 | 1 | the silence case: one block, no transcript |
 
-Three things the export does that are worth knowing before you open one:
+Three more things the export does that are worth knowing before you open one:
 
 - **The video is linked twice.** The `MEDIA_DESCRIPTOR` carries both an absolute `file://`
   URL and a `RELATIVE_MEDIA_URL` (`../../../input_videos/<name>` — relative to the `.eaf`
@@ -1572,7 +1632,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1561 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1613 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1629,7 +1689,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1561 tests
+tests/unit/                1613 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

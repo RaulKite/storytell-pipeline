@@ -1,5 +1,19 @@
 # ODD Feature: multimodal-video-pipeline
 
+## ELAN basics follow-up (authorized after T22 audit)
+
+Work is tracked in `odd/tasks/elan-basics.md` on `feat/elan-basics`, from checkpoint
+`ca6e161`. The operator authorized the obvious corrections and missing linguistic/acoustic
+summaries, not a new gesture-analysis pipeline. Preserve existing tier names and source
+measurements; add explicit states/IDs, honest person sighting runs, four SpaCy tiers and
+acoustic segment statistics. Detailed pose representation is deferred. English token
+placement is segment context when independent timing is absent; tracker IDs are not human
+identities. Missing sampling-grid evidence must not become claimed continuous presence.
+Choose reversible feature-branch work units; no push/merge in this follow-up. Native review
+status currently reads on(default), despite AGENTS saying disabled; do not change it.
+Evidence, outcomes and remaining checks are maintained in the linked feature document.
+
+
 - Workflow: Gentle-AI ODD (Organic Driven Development)
 - Feature branch: `master` (fresh repo, no upstream) → feature work committed as reviewable work units
 - Status: **IN PROGRESS — Task Group 2 (Foundation)**

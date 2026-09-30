@@ -4,13 +4,17 @@ Pure functions over files on disk: no stage imports, no config, no subprocess �
 whole mapping from Parquet to EAF can be driven against a synthetic dataset directory in a
 test, and ``stages/elan.py`` stays the reader, the writer and the reuse guarantee around it.
 
-Why one flat tier per module instead of a hierarchy. ELAN's tier structure is a
-parent/child relation between annotation tiers, and deriving it from the data (one tier per
-speaker, one per detected face) would make the file's *shape* depend on what happened in a
-clip: two datasets could then not be compared column-for-column, and a tier rename would
-look like a new tier. Twelve tiers with fixed names are the contract every other stage
-follows — the schema is known before the file is opened, and an absent producer is an
-absent tier rather than a renamed one.
+Why twelve fixed flat tiers instead of a hierarchy, and why twelve is not "one per module".
+ELAN's tier structure is a parent/child relation between annotation tiers, and deriving it from
+the data (one tier per speaker, one per detected face) would make the file's *shape* depend on
+what happened in a clip: two datasets could then not be compared column-for-column, and a tier
+rename would look like a new tier. Twelve tiers with fixed names are the contract every other
+stage follows — the schema is known before the file is opened, and an absent producer is an
+absent tier rather than a renamed one. What they are *not* is a module list: those twelve tiers
+read twelve of the twenty-two normalised tables, because two diarizers and two fusions account
+for four of them and the token, sentence, per-segment-acoustic, hand, face and normalised-pose
+tables are simply not exported yet. A tier is a decision, so adding one is a change to this
+list rather than a name being reused for something else.
 
 Absence is a named state here, exactly as ``face_status`` makes it in the ASD table. Each
 tier reads exactly one producer's file; when that file is not there the tier is skipped and
@@ -18,7 +22,8 @@ one line is logged naming what was missing. An empty tier would be ambiguous bet
 spoke", "no face was on screen" and "this engine never ran", which is the collapse the
 pipeline has refused everywhere else (§17's ``face_status``, §20.2's person counts).
 
-Three things are not obvious from reading the code:
+Four things are not obvious from reading the code — three about the format, one about what a
+tier is *for*:
 
 * **Time slots are integer milliseconds and ``start < end`` is a hard requirement.** See
   :func:`seconds_to_ms` and :func:`interval_ms`.
@@ -27,7 +32,14 @@ Three things are not obvious from reading the code:
   source video's own PTS list, a 10 ms Praat step. One annotation per frame would put tens
   of thousands of rows in a tier ELAN cannot render, and contiguous equal-label runs are
   what an analyst reads anyway. Because the three grids differ, each block's end is extended
-  by *that table's own* median step (`median_positive_step`), never by a shared constant.
+  by *that table's own* median step (`median_positive_step`), never by a shared constant. The
+  block ELAN then stores is half-open — `start ≤ t < end`, with `end` already carrying that
+  extension — so the last sampled frame is inside the block rather than on its edge.
+* **A label is the only place a tier's meaning lives.** Every value printed here is a summary
+  of a producer's row, and the parts of it that could be misread — which id space an id came
+  from, whether a number was measured, whether a segment-level translation is a word gloss —
+  are stated in the label and repeated in the document's `pipeline-tier-semantics` property,
+  because a tier value gets quoted out of the file and the README does not travel with it.
 * **The pose tier groups by PTS seconds, not by ``frame_number``.** See
   :func:`pose_presence_rows` — the ASD and pose grids number the same instant differently,
   and §20.2 already documents what happens when two unrelated integer id spaces are treated
@@ -262,42 +274,175 @@ def _text(value: Any) -> str:
     invisible sliver that reads as a rendering bug.
     """
     collapsed = " ".join(("" if value is None else str(value)).split())
-    return collapsed if collapsed else "(empty)"
+    return collapsed if collapsed else EMPTY_TEXT_MARKER
 
 
 def _num(value: Any, places: int) -> str:
-    """A display number, rounded, and never the string ``None``.
+    """A display number, rounded, and ``unknown`` when there is no number to display.
 
     Rounding is for the reader: the tables carry six-decimal PTS values and ``conf
     0.928214`` in a tier label says nothing more than ``conf 0.928``. ``places`` is per call
     because the quantities differ in useful precision — a confidence lives in [0,1], a
     TalkNet score is an unbounded logit.
+
+    A null or non-finite value becomes the word ``unknown``, **not** ``0.000``. The first
+    version of this function formatted ``None`` as a zero, which put a measurement in the file
+    that was never taken: ``mean 0.000`` reads as "measured, and it came out zero", while the
+    row's own column says no score exists. §17 built ``face_status`` and §20.2 built the person
+    counts to refuse exactly that collapse, and this display helper was the last place still
+    making it. A real finite zero still prints as ``0.000`` — the distinction is the whole
+    point, so it has its own test.
     """
     if value is None:
-        return f"{0.0:.{places}f}"
-    return f"{float(value):.{places}f}"
+        return UNKNOWN_DISPLAY
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return UNKNOWN_DISPLAY
+    if not math.isfinite(number):
+        return UNKNOWN_DISPLAY
+    return f"{number:.{places}f}"
+
+
+def _id(value: Any) -> str:
+    """An identifier inside a label: flattened, never ``None``, never blank.
+
+    Same argument as :func:`_num`. A producer that wrote no id used to make the tier print the
+    string ``None``, which reads as a rendering bug rather than a missing value. The ids
+    themselves come straight from the tables (`word_id`, `segment_id`, `face_track_id`) — this
+    formats one, it never invents, renumbers or cross-walks one.
+    """
+    if value is None:
+        return UNKNOWN_DISPLAY
+    text = _text(value)
+    return text if text != EMPTY_TEXT_MARKER else UNKNOWN_DISPLAY
+
+
+# ------------------------------------------------------------------ display vocabulary
+
+#: What "there is no value here" looks like inside a tier label.
+#:
+# It is a word and not a number for the reason the schemas give for every nullable column:
+# ``0.000`` is a measurement, and an analyst cannot tell it apart from the missing one. Used
+# by :func:`_num`, :func:`_id` and the ASD state below, and named in :data:`TIER_SEMANTICS`
+# so the file explains the word it prints.
+UNKNOWN_DISPLAY = "unknown"
+
+#: An annotation value cannot be empty in ELAN (see :func:`_text`), so emptiness gets a marker.
+EMPTY_TEXT_MARKER = "(empty)"
+
+#: Column names, quoted in :data:`TIER_SEMANTICS` and in labels, so a reader can find the
+#: column a label fragment came from. They are names of *columns*, not keys to be joined: the
+#: point of naming them is that they belong to different producers' id spaces.
+WORD_NS = "word_id"
+SPEAKER_NS = "speaker_id"
+SEGMENT_NS = "segment_id"
+FACE_TRACK_NS = "face_track_id"
+#: `SPEAKER_FUSION_SCHEMA.engine` — which diarizer wrote the row, and therefore which
+#: `speaker_id` namespace that row's ids came from. Printed on the fusion label so a quoted
+#: verdict says its own namespace; the tier name carries the same fact but does not travel.
+ENGINE_NS = "engine"
+
+#: What the tiers summarise and what they leave out, written into every document.
+#:
+# A tier label is the part of this file that travels — into a screenshot, an issue, a paper —
+# without the README next to it, and three readings of it are wrong in ways that cost someone
+# an afternoon: `gloss_en` is a *segment-level* translation although its name says "gloss"
+# (which means a word-by-word gloss to anyone who has read a linguistics interlinear); the
+# score on `face_tracks` is a TalkNet logit-like number and not a probability; and the id spaces
+# that really are unrelated — each diarizer's `speaker_id` and YOLO's `person_id` — can print
+# equal digits for different things (§20.2). The opposite error costs the same afternoon: the
+# fusion row's `face_track_id` is *not* a fourth space, it is the same TalkNet `track_id` the
+# `face_tracks` tier is built from (`fuse_turn_table` copies the winning frame's id through), so
+# calling it unrelated would hide the one link that tier has. The clause therefore names the
+# spaces that are separate and the one that is shared. Putting this in the document rather than
+# only in the README is what makes the claim travel with the file. It is one property, kept to a
+# few clauses, and it describes only tiers this module actually writes.
+TIER_SEMANTICS: str = (
+    "gloss_en = segment-level English translation of a whole segment, not word gloss. "
+    f"Text tiers print the producer's own identity after the text: {WORD_NS} and {SEGMENT_NS} "
+    "on words, " + SEGMENT_NS + " on segments_src and gloss_en, turn_id on turns_* and "
+    "fusion_*, so rows link across tiers by those ids and by nothing else; fusion_* also print "
+    f"their own {ENGINE_NS} column in parentheses, so a detached verdict says which diarizer "
+    "namespace its turn speaker came from. "
+    f"Namespaces: {SPEAKER_NS} (pyannote 'SPEAKER_00'), {SPEAKER_NS} (nemotron 'speaker_0') and "
+    "YOLO 'person_id' are separate id spaces — equal digits name different things, never join "
+    f"them. {FACE_TRACK_NS} on fusion_* is the same TalkNet 'track_id' as the face_tracks tier, "
+    "so those two tiers link. "
+    "Numbers: face_tracks 'mean' is a TalkNet logit-like score (unbounded), not a probability; "
+    f"a missing or non-finite value prints '{UNKNOWN_DISPLAY}', never a measured 0.000. "
+    "ASD states: 'no face' means nothing was located, 'not evaluated' means a face was located "
+    "but never scored, 'not speaking' means the face track selected for that frame was measured "
+    "and came out inactive — evidence about that track's mouth, not about the audio, so another "
+    "or an off-screen speaker may still be talking in the same second. A score carried from the "
+    "previous frame says 'imputed tail score' on either activity state. "
+    "Blocks are half-open in milliseconds: a block covers [start, end), and the last sampled "
+    "frame is inside it. "
+    "Coverage: this document is a summary of the dataset's tables, not every number in them "
+    "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement."
+)
 
 
 # ------------------------------------------------------------------ tier builders
 
 def words_rows(item: TierInput) -> list[dict[str, Any]]:
-    rows = item.sorted_rows(("start_time", "end_time", "word"), "start_time", "end_time")
-    return [{"start": row["start_time"], "end": row["end_time"], "text": _text(row["word"])}
+    """One annotation per aligned word: the word first, then the ids that place it.
+
+    The word leads because this is the tier an analyst actually reads, and a row that opened
+    with `seg000001-w00000` would make every other word in the file a page-turn away. The ids
+    trail for a reason that is not decoration: `WORDS_SCHEMA` carries `word_id` and
+    `segment_id`, and without them printed there is nothing in the .eaf that says which segment
+    a word belongs to, so linking `words` to `segments_src` or `gloss_en` means eyeballing
+    timestamps. The row is *not* rendered as a JSON dump of the record — the whole tier has to
+    stay scannable, and only these two columns earn a place.
+    """
+    rows = item.sorted_rows(("start_time", "end_time", "word", "word_id", "segment_id",
+                             "speaker_id"), "start_time", "end_time")
+    return [{"start": row["start_time"], "end": row["end_time"],
+             "text": _text(f"{row['word']} · {_id(row['speaker_id'])} · "
+                           f"{_id(row['word_id'])} · [{_id(row['segment_id'])}]")}
             for row in rows]
 
 
 def segments_rows(item: TierInput) -> list[dict[str, Any]]:
-    rows = item.sorted_rows(("start_time", "end_time", "speaker_id", "text"),
+    """Source segments: speaker, text, and the `segment_id` the other tiers point at.
+
+    The speaker goes through :func:`_id` rather than straight into the text, because
+    `SEGMENTS_SCHEMA.speaker_id` is nullable (no diarizer ran, or the segment was never
+    assigned) and a literal `None:` at the head of the label — the part an analyst quotes —
+    reads as a rendering bug. It is the same missing-measurement state as a null `segment_id`
+    on the same row, so it prints the same word.
+    """
+    rows = item.sorted_rows(("start_time", "end_time", "speaker_id", "text", "segment_id"),
                             "start_time", "end_time")
     return [{"start": row["start_time"], "end": row["end_time"],
-             "text": _text(f"{row['speaker_id']}: {row['text']}")} for row in rows]
+             "text": _text(f"{_id(row['speaker_id'])}: {row['text']} · "
+                           f"[{_id(row['segment_id'])}]")} for row in rows]
 
 
 def translation_rows(item: TierInput) -> list[dict[str, Any]]:
-    rows = item.sorted_rows(("start_time", "end_time", "english_text"),
-                            "start_time", "end_time")
+    """The English side, labelled for what it is: a segment-level translation.
+
+    The tier is called `gloss_en` and its artifact is `translation_segments`, whose schema is
+    keyed by `segment_id` with one `english_text` per segment. "Gloss" in an ELAN file means a
+    word-by-word gloss to most readers, and the name cannot be changed without breaking the
+    tier contract every other stage follows (§20.4's argument against silent renames), so the
+    semantics are carried instead: the label names the segment it translates and the speaker it
+    belongs to, and :data:`TIER_SEMANTICS` says in the document that this is segment-level and
+    not a word gloss.
+
+    `translation_model` is deliberately *not* in every label: it is one value for the whole
+    file (the stage writes the same model per run), so repeating it on every row would cost
+    readability and buy nothing. It is in the table, and so is `translation_prompt_version`.
+
+    The speaker is the same nullable column as on `segments_src` and prints the same way, so one
+    unassigned segment does not read `unknown: …` on one tier and `None: …` on the other.
+    """
+    rows = item.sorted_rows(("start_time", "end_time", "english_text", "speaker_id",
+                             "segment_id"), "start_time", "end_time")
     return [{"start": row["start_time"], "end": row["end_time"],
-             "text": _text(row["english_text"])} for row in rows]
+             "text": _text(f"{_id(row['speaker_id'])}: {row['english_text']} · "
+                           f"[{_id(row['segment_id'])}]")} for row in rows]
 
 
 def turn_rows_factory(engine: str) -> Callable[[TierInput], list[dict[str, Any]]]:
@@ -307,45 +452,149 @@ def turn_rows_factory(engine: str) -> Callable[[TierInput], list[dict[str, Any]]
     produced by two stages and the tier name is the thing that says which is which; a
     builder that sniffed ``path.name`` would silently label Nemotron turns "pyannote" the
     week one of the two files was renamed.
+
+    The label says ``speaker <id>`` rather than printing a bare id because pyannote's
+    ``SPEAKER_00`` and Nemotron's arrival-ordered ``speaker_0`` are unrelated clusters over
+    unrelated channels, and a tier label is the one part of the file that leaves it — into a
+    screenshot or a quote — without the tier header that names the engine. The word is the
+    namespace marker; the id itself is copied through untouched.
     """
 
     def build(item: TierInput) -> list[dict[str, Any]]:
-        rows = item.sorted_rows(("start_time", "end_time", "speaker_id", "diarization_type"),
-                                "start_time", "end_time")
+        rows = item.sorted_rows(("start_time", "end_time", "speaker_id", "diarization_type",
+                                 "turn_id"), "start_time", "end_time")
         return [{"start": row["start_time"], "end": row["end_time"],
-                 "text": _text(f"{row['speaker_id']} ({engine}, {row['diarization_type']})")}
+                 "text": _text(f"speaker {_id(row['speaker_id'])} ({engine}, "
+                               f"{_id(row['diarization_type'])}) · "
+                               f"{_id(row['turn_id'])}")}
                 for row in rows]
 
     return build
 
 
 def fusion_rows(item: TierInput) -> list[dict[str, Any]]:
-    rows = item.sorted_rows(("start_time", "end_time", "agreement", "agreement_detail"),
+    """The A/V verdict, its turn's speaker and engine, the winning face track, the arithmetic.
+
+    Five parts, because the row answers one question with numbers from two id spaces:
+
+    * ``agreement`` — the verdict, unchanged (`fusion.AGREEMENT_STATES`);
+    * ``turn <turn_id>`` — which diarizer turn the verdict is about, i.e. the one legitimate
+      link between this tier and the `turns_*` tier built from the same table;
+    * ``turn speaker <id> (<engine>)`` — the diarizer's label and the column that says which
+      engine's namespace it came from;
+    * ``face track <id>`` — the TalkNet track with the strongest claim on the turn, which is the
+      *same* id space as `ACTIVE_SPEAKER_FRAMES_SCHEMA.track_id` and the `face_tracks` tier
+      (`fuse_turn_table` copies the winning frame's `track_id`), so the two tiers link on it;
+    * ``agreement_detail`` — the measured numbers in words, kept verbatim.
+
+    The engine comes from the row's own `engine` column rather than from the tier name or the
+    shape of the id, for the reason `turn_rows_factory` gives for its own parameter: a label is
+    quoted out of the file without the tier header, and pyannote's ``SPEAKER_00`` and Nemotron's
+    ``speaker_0`` are unrelated clusters. `speaker_fusion`'s validator already rejects a file
+    whose rows name another engine, so on a well-formed table this prints what the tier name
+    says; on a row that predates that check, or a null engine, the label prints the row's own
+    value (`unknown` for a null) instead of asserting something the row does not claim.
+
+    The speaker and face-track ids sit next to each other on purpose, *labelled*: they are
+    different spaces — one diarizer cluster, one TalkNet track — and a label that printed only
+    one of them would leave a reader to guess which the verdict was about. `agreement_detail`
+    was the only part of the row a tier used to show, so the verdict could not be traced to
+    either the voice or the face it compared.
+    """
+    rows = item.sorted_rows(("start_time", "end_time", "agreement", "agreement_detail",
+                             "speaker_id", "face_track_id", "turn_id", "engine"),
                             "start_time", "end_time")
     return [{"start": row["start_time"], "end": row["end_time"],
-             "text": _text(f"{row['agreement']}: {row['agreement_detail']}")} for row in rows]
+             "text": _text(f"{row['agreement']}: turn {_id(row['turn_id'])} · turn speaker "
+                           f"{_id(row['speaker_id'])} ({_id(row['engine'])}) | face track "
+                           f"{_id(row['face_track_id'])} | {row['agreement_detail']}")}
+            for row in rows]
 
 
-#: The three readings the ASD frames table supports, in the order they are decided.
+#: The readings the ASD frames table supports, in the order they are decided.
 ASD_NO_FACE = "no face"
 ASD_NOT_SPEAKING = "not speaking"
+#: A face was located and TalkNet never produced a score for it. Deliberately not
+#: ``ASD_NOT_SPEAKING``: see :func:`asd_label`.
+ASD_NOT_EVALUATED = "not evaluated"
+#: Suffix for a score carried from the last real one rather than measured on this frame
+#: (`frame_reason='imputed_tail'`, `score_imputed=True`). Appended to **either** activity state:
+#: it is a statement about where the number came from, and the row is just as much an
+#: extrapolation when the carried score landed below the threshold. See :func:`asd_label`.
+ASD_IMPUTED_SUFFIX = " (imputed tail score)"
+
+#: The two ``face_status`` values this module branches on, named rather than inlined because
+#: ``tracked`` and ``tracked_unscored`` differ by a suffix and a typo is silent.
+ASD_NO_FACE_STATUS = "no_face"
+ASD_TRACKED_UNSCORED = "tracked_unscored"
+
+#: `stages.activespeaker.UNSCORED_FRAME_REASONS`, restated here rather than imported.
+#:
+# `elan` is a leaf by design (its module docstring: no stage imports, no config, no
+# subprocess) so the tier algebra stays drivable against a directory of Parquet files. The
+# stage's validator is the authority on this set and its own test names the members; this one
+# asserts the two copies agree.
+UNSCORED_FRAME_REASONS: frozenset[str] = frozenset({
+    "score_not_finite",      # the score itself was NaN/inf
+    "track_has_no_scores",   # the track never produced a score at all
+    "past_scored_tail",      # beyond the two frames TalkNet is allowed to carry a score for
+    "tail_score_not_finite", # a carried tail score that was not a number
+    "unknown",               # a row the producer could not diagnose
+})
 
 
 def asd_label(row: dict[str, Any]) -> str:
-    """One frame's reading, decided in the order that keeps the strongest claim.
+    """One frame's reading, decided in the order that keeps the strongest *honest* claim.
 
-    "no face" is checked first, whatever ``is_active_speaker`` says: a frame where no face
-    was located has no track to be active, and the flag on such a row is a leftover. The
-    frames table names the cause in two columns (``face_status`` for "was a face located",
-    ``frame_reason`` for "why is there no score"); either of them saying no-face is enough,
-    because they answer different questions and an old dataset carries only one of them.
+    Three states, and the third one is the reason this function has an order at all:
+
+    1. **no face.** Checked first, whatever ``is_active_speaker`` says: a frame where no face
+       was located has no track to be active, and the flag on such a row is a leftover. The
+       frames table names the cause in two columns (``face_status`` for "was a face located",
+       ``frame_reason`` for "why is there no score"); either of them saying no-face is enough,
+       because they answer different questions and an old dataset carries only one of them.
+    2. **not evaluated.** A face was located and never scored — ``face_status``
+       ``tracked_unscored``, or one of the :data:`UNSCORED_FRAME_REASONS`. Calling that "not
+       speaking" is the collapse §17 built ``face_status`` to prevent: it turns missing
+       evidence into evidence of silence, and an off-screen or unfocusable face then reads as a
+       person who said nothing. This state outranks a true ``is_active_speaker`` on purpose:
+       `ActiveSpeakerStage.validate` rejects a ``tracked_unscored`` row that is imputed or
+       marked active, so a row carrying both is a producer defect whose flag is stale — the
+       verdict outlived the measurement it was derived from, and the measurement state wins.
+    3. **speaking / not speaking.** The two readings of a row that *was* scored, straight off
+       ``is_active_speaker``. An ``imputed_tail`` score is still a real verdict from the stage
+       (it is the last measured score carried forward, which is why the stage allows two such
+       frames), so the state is kept — but the label says where the number came from on **both**
+       activity states, so nobody reads an extrapolation as a frame-level measurement. The
+       suffix is about the score, not the verdict, and the corpus proves the case is not
+       hypothetical: seven rows are imputed across four datasets, five active and **two** not
+       (La-1 frame 60 at 2.40 s, carried score −1.4667, and ``person_demo`` frame 96 at 3.84 s).
+       Dropping the provenance from those two reported a measured "no" where the producer wrote
+       "carried over".
+
+    Neither state is a claim about the *audio*: `is_active_speaker` is TalkNet's verdict on the
+    one track this frame selected, so "not speaking" means that face's mouth was measured
+    inactive while an off-screen or out-of-frame speaker may still be talking (the fusion
+    table's `no_face_visible` verdict names that case). :data:`TIER_SEMANTICS` says so in the
+    file.
+
+    A missing ``frame_reason`` is tolerated the way the stage's own compat shim tolerates it:
+    an old dataset carries ``face_status`` without a usable reason, and reading only the reason
+    would call those rows "not speaking".
     """
-    if row.get("frame_reason") == "no_face" or row.get("face_status") == ASD_NO_FACE:
+    reason = row.get("frame_reason")
+    status = row.get("face_status")
+    if reason == "no_face" or status == ASD_NO_FACE_STATUS:
         return ASD_NO_FACE
+    if status == ASD_TRACKED_UNSCORED or reason in UNSCORED_FRAME_REASONS:
+        return ASD_NOT_EVALUATED
+    imputed = bool(row.get("score_imputed")) or reason == "imputed_tail"
     if _flag(row, "is_active_speaker"):
         track = row.get("track_id")
-        return f"speaking track {track}" if track is not None else "speaking"
-    return ASD_NOT_SPEAKING
+        base = f"speaking track {track}" if track is not None else "speaking"
+        return base + ASD_IMPUTED_SUFFIX if imputed else base
+    return ASD_NOT_SPEAKING + ASD_IMPUTED_SUFFIX if imputed else ASD_NOT_SPEAKING
+
 
 
 def asd_step_from(frames_path: Path) -> float:
@@ -366,9 +615,13 @@ def asd_step_from(frames_path: Path) -> float:
 
 
 def asd_speaking_rows(item: TierInput) -> list[dict[str, Any]]:
-    """Per-frame ASD labels collapsed into blocks over the 25 FPS working timeline."""
+    """Per-frame ASD labels collapsed into blocks over the 25 FPS working timeline.
+
+    `score_imputed` is read as well as the two state columns, because the imputed-tail state
+    cannot be named without it (see :func:`asd_label`).
+    """
     rows = item.sorted_rows(("timestamp", "is_active_speaker", "face_status",
-                             "frame_reason", "track_id"), "timestamp")
+                             "frame_reason", "track_id", "score_imputed"), "timestamp")
     if not rows:
         return []
     step = median_positive_step([row["timestamp"] for row in rows])
@@ -691,6 +944,11 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     media = add_media_descriptor(eaf, dataset_dir=dataset_dir, video_path=video_path)
     census = " ".join(f"{name}={count}" for name, count in sorted(built.items()))
     eaf.add_property("pipeline-tiers", census or "none")
+    # How to *read* the tiers, in the file itself. The census says what is in the document; this
+    # says what the labels mean, because a tier value is the part of an .eaf that leaves it
+    # (see :data:`TIER_SEMANTICS`). One property, fixed text, no per-dataset content — so it
+    # costs nothing and cannot drift from a clip.
+    eaf.add_property("pipeline-tier-semantics", TIER_SEMANTICS)
     eaf.add_property("pipeline-media", f"{media['media_url']} | {media['relative_media_url']}")
     log(f"elan: {len(built)} tier(s), {sum(built.values())} annotation(s) for "
         f"{Path(video_path).name}; skipped {len(skipped)} "
