@@ -387,6 +387,15 @@ opt-in: `pose_images_raw`, the skeleton renderings, exists only with
 dataset's `artifacts_not_generated` names. A full batch run after `persons` was enabled
 rewrote all seven datasets on this disk, and adding the ELAN export then rewrote the
 manifests again, so all seven now list **43** artifacts and declare the same one absence.
+
+Where a reviewer should look to check that number: nowhere in git. `data/processed/` is
+gitignored, so no commit in this repository contains a manifest, and a diff that moves this
+count cannot carry the evidence for it. The evidence is the guard
+`tests/unit/test_readme_claims.py`, which parses the two sentences above and re-reads every
+manifest under `data/processed/` when one exists — so a re-run that changes the count breaks
+the prose, and editing the prose breaks it against disk — and falls back to checking the
+sentence's own arithmetic against the registry constant when the corpus is absent, which is
+the half that runs on a fresh clone and in CI.
 That uniformity is the point of reading the manifest instead of the
 prose: a month ago these same datasets listed 36, one of them listed 38, and the README
 sentence that claimed a stable per-dataset count was false against the bytes until a test
