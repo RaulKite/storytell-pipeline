@@ -119,7 +119,6 @@ class WhisperXStage(WorkerStage):
     # ------------------------------------------------------------ normalisation
 
     def normalize(self, ctx: StageContext) -> dict[str, Any]:
-        raw_path = ctx.artifact(self.raw_artifact)
         payload = self.validate_raw(ctx)
         segments = whisperx_segment_rows(payload, ctx.video_id)
         words = whisperx_word_rows(payload, ctx.video_id)
@@ -167,7 +166,6 @@ class WhisperXStage(WorkerStage):
 
         segments = read_table(ctx.artifact("speech_segments")).to_pylist()
         words = read_table(ctx.artifact("speech_words")).to_pylist()
-        check = ctx.tools.get("check_intervals")
         from ..validation import check_intervals
 
         check_intervals([row["start_time"] for row in segments], [row["end_time"] for row in segments],

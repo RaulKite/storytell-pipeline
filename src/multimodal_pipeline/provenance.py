@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import socket
 import sys
 from datetime import datetime, timezone

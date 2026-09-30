@@ -13,7 +13,7 @@ from typing import Any
 import pyarrow as pa
 
 from ..exceptions import StageError
-from ..schemas import SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, read_table, write_table
+from ..schemas import SEGMENTS_SCHEMA, WORDS_SCHEMA, read_table, write_table
 from ..speaker_assignment import assign_speaker, coverage_report, normalise_turns
 from ..state import STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED  # noqa: F401
 from ..validation import check_reference_values

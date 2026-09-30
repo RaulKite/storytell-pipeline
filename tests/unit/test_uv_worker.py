@@ -295,7 +295,6 @@ class TestDiarizationRawOutputsAlwaysExist:
         from pathlib import Path
 
         worker = Path(__file__).resolve().parents[2] / "workers" / "diarization_worker.py"
-        rttm = tmp_path / "d.rttm"
         # --help proves the flag exists without needing torch; the write path itself is
         # covered by the stage test below, which runs the real code with a stubbed model.
         result = subprocess.run([sys.executable, str(worker), "--help"],

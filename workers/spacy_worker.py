@@ -260,10 +260,6 @@ def _reasons_text(grade: dict[str, Any] | None) -> str:
 def installed_models() -> set[str]:
     """Names of spaCy models actually importable in this environment."""
     try:
-        from spacy.cli.info import info  # noqa: F401  (ensures the CLI machinery is importable)
-    except Exception:  # noqa: BLE001 - irrelevant for listing
-        pass
-    try:
         from spacy.util import get_installed_models
 
         return set(get_installed_models())

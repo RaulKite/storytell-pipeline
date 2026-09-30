@@ -6,7 +6,6 @@ WAV headers are exactly the things a mock would hide.
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import wave
@@ -193,7 +192,7 @@ class TestAudioStage:
         from multimodal_pipeline.discovery import VideoSource
 
         context.source = VideoSource(path=ntsc_video, relative_path=Path(ntsc_video.name), video_id="ntsc")
-        metadata = MetadataStage().execute(context)
+        MetadataStage().execute(context)
         AudioStage().execute(context)
         with wave.open(str(context.artifact("audio")), "rb") as handle:
             wav_duration = handle.getnframes() / handle.getframerate()

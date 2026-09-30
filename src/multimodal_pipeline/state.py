@@ -9,7 +9,6 @@ at the same dependency hash. That is what makes ``--force-stage`` and
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path

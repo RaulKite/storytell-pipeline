@@ -15,8 +15,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Iterator
 
-import pyarrow as pa
-
 from ..acoustics import aggregate_segment, detect_silences, normalise_frame_row
 from ..artifacts import read_json
 from ..exceptions import StageError, ValidationError
@@ -136,7 +134,7 @@ class AcousticStage(WorkerStage):
             silence_inputs.append({"timestamp": normalised["timestamp"],
                                    "voiced": normalised["voiced"],
                                    "intensity_db": normalised["intensity_db"]})
-        frame_rows = writer.close()
+        writer.close()
 
         cfg = ctx.config.acoustic
         silences = detect_silences(silence_inputs, minimum_duration=cfg.minimum_pause_duration,

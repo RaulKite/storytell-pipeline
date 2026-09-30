@@ -7,13 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from multimodal_pipeline.artifacts import VideoPaths, atomic_write_json, read_json
+from multimodal_pipeline.artifacts import VideoPaths
 from multimodal_pipeline.state import (
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_PENDING,
     STATUS_RUNNING,
-    STATUS_SKIPPED,
     VideoState,
 )
 

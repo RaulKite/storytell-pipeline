@@ -12,10 +12,9 @@ from typing import Any
 
 import pytest
 
-from multimodal_pipeline.artifacts import ArtifactRegistry, VideoPaths
 from multimodal_pipeline.orchestrator import VideoRunner
 from multimodal_pipeline.state import STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED
-from multimodal_pipeline.stages.base import STAGE_ORDER, Stage, StageContext, StageError
+from multimodal_pipeline.stages.base import Stage, StageContext, StageError
 
 
 class FakeStage(Stage):
