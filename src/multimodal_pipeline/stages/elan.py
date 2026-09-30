@@ -266,7 +266,7 @@ class ElanStage(Stage):
         if not descriptors:
             issues.append(f"{path.name} links no media file")
         else:
-            issues.extend(self._check_media(ctx, descriptors[0]))
+            issues.extend(self._check_media(ctx, descriptors[0], eaf_dir=path.parent))
         issues.extend(self._check_census(root, tiers))
         if issues:
             raise ValidationError(self.name, issues)
@@ -274,13 +274,15 @@ class ElanStage(Stage):
                 "bytes": path.stat().st_size}
 
     @staticmethod
-    def _check_media(ctx: StageContext, descriptor: Any) -> list[str]:
-        """The linked media must still be findable *from the dataset directory*.
+    def _check_media(ctx: StageContext, descriptor: Any, *, eaf_dir: Path) -> list[str]:
+        """The linked media must still be findable *from the directory the .eaf sits in*.
 
         Both URLs are checked because ELAN uses both and each breaks differently: an absolute URL
         dies when the corpus moves, a relative one when the video is renamed. The relative form is
-        resolved against the dataset directory and not the process cwd, which is the difference
-        between validating the file and validating wherever the CLI happened to be started.
+        resolved against ``eaf_dir`` — the .eaf's own directory — and not the process cwd, because
+        that is the base ELAN resolves it against. Resolving it against the dataset directory is
+        the mistake this check used to make: it agreed with the writer's off-by-one-directory bug
+        and pronounced seven unreachable links reachable.
         """
         issues: list[str] = []
         absolute = descriptor.attrib.get("MEDIA_URL") or ""
@@ -296,8 +298,8 @@ class ElanStage(Stage):
             # shows the wrong clip.
             issues.append(f"media descriptor does not name this video ({expected!r}); the .eaf "
                           "was written for another source")
-        if relative and not (ctx.paths.dataset_dir / relative).exists():
-            issues.append(f"linked media is not reachable from the dataset directory: {relative}")
+        if relative and not (eaf_dir / relative).resolve().exists():
+            issues.append(f"linked media is not reachable from {eaf_dir.name}/: {relative}")
         return issues
 
     @staticmethod
