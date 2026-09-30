@@ -255,9 +255,10 @@ says 43 — but the README was accused of asserting a figure with no reachable e
 on that the lens is correct: a diff cannot carry evidence that lives outside git, and the
 reasonable inference from the patch alone is exactly the one it drew. `171a571` therefore
 says where to check the count (nowhere in git), what actually guards it (the two halves of
-`test_readme_claims.py`, described from its own docstring at lines 497-536 rather than from
-memory), and which half runs on a fresh clone and in CI (verified: `.github/workflows/unit.yml`
-lines 67 and 88 run `tests/unit` and that file, corpusless). 9 added lines, no number and no
+`test_readme_claims.py`, described from its own docstring (497-515) and body (through
+587) rather than from memory), and which half runs on a fresh clone and in CI (verified:
+`.github/workflows/unit.yml` lines 67 and 88 run `tests/unit` and that file, corpusless).
+9 added lines, no number and no
 assertion changed; both regex anchors the guard parses sit above the insertion and still match.
 
 **Both corrections closed `corrected_candidate_unavailable`, which is the shape of a
