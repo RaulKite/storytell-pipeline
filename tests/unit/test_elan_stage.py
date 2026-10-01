@@ -28,6 +28,7 @@ from multimodal_pipeline.artifacts import (
     VideoPaths,
 )
 from multimodal_pipeline.config import PipelineConfig
+from multimodal_pipeline.elan import TIERS
 from multimodal_pipeline.exceptions import ValidationError
 from multimodal_pipeline.schemas import SEGMENTS_SCHEMA, WORDS_SCHEMA
 from multimodal_pipeline.stages.elan import ElanStage
@@ -306,14 +307,103 @@ class TestStageWiring:
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
         before = stage.config_fingerprint(ctx)
-        assert before["words_digest"] is not None
+        # Keyed by artifact, not by tier, because the set of hashed inputs is now wider than the
+        # set of tiers: every key names a file, and a reader comparing the payload against
+        # `stage.inputs` finds the same names on both sides.
+        assert before["speech_words_digest"] is not None
         assert before["person_tracks_digest"] is None, "absent inputs hash as None, not absent"
         ctx.scratch.clear()
         _write(WORDS_SCHEMA, dataset["dir"] / "speech" / "words.parquet",
                [_word("changed", 0.0, 0.4)])
         after = stage.config_fingerprint(ctx)
-        assert after["words_digest"] != before["words_digest"]
+        assert after["speech_words_digest"] != before["speech_words_digest"]
         assert after["tiers"] == before["tiers"]
+
+    def test_the_secondary_inputs_are_declared_next_to_the_primary_ones(self) -> None:
+        """`person_frames` and `frame_index` are inputs, not side reads.
+
+        ``stage.inputs`` is what `status --plan` and the state record print as the stage's
+        dependencies, and a table that a tier reads without being declared is the reuse hole
+        §31 describes from the other side: the export changes when that file changes, so it has
+        to be in the list. One exported list (`elan.SECONDARY_INPUTS`) feeds the tier reader,
+        this declaration and the fingerprint, so the three cannot drift.
+        """
+        from multimodal_pipeline.elan import SECONDARY_INPUTS
+
+        stage = ElanStage()
+        assert set(SECONDARY_INPUTS["person_tracks"]) == {"person_frames", "frame_index"}
+        assert stage.inputs == tuple(spec.artifact for spec in TIERS) + tuple(
+            name for _tier, names in SECONDARY_INPUTS.items() for name in names)
+        assert "person_frames" in stage.inputs and "frame_index" in stage.inputs
+        assert set(stage.inputs) <= set(ARTIFACT_LAYOUT)
+
+    def test_the_fingerprint_records_the_secondary_dependency_itself(
+            self, stage_config, dataset):
+        """Adding a dependency is a change to what the export can claim, so it hashes.
+
+        A tier that starts reading one more table can produce a different .eaf from byte-identical
+        inputs and an unchanged tier list. The dependency map is in the payload for that reason:
+        the fingerprint moves when the *contract* moves, not only when a file does.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        payload = stage.config_fingerprint(ctx)
+        assert payload["secondary_inputs"] == {"person_tracks": ["person_frames",
+                                                                "frame_index"]}
+
+    def test_the_fingerprint_carries_a_key_per_secondary_input(self, stage_config, dataset):
+        """An absent secondary input is a `None` key, exactly like an absent primary one.
+
+        The synthetic clip has neither file, so both keys are present and null. Dropping the key
+        when the file is missing would make "file absent" and "this version of the stage never
+        considered the file" hash alike.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        fingerprint = stage.config_fingerprint(ctx)
+        assert fingerprint["person_frames_digest"] is None
+        assert fingerprint["frame_index_digest"] is None
+
+    @pytest.mark.parametrize("artifact,relative", [
+        ("person_frames", "persons/frames.parquet"),
+        ("frame_index", "source/frame_index.parquet"),
+    ])
+    def test_the_fingerprint_notices_a_secondary_input_appearing_or_changing(
+            self, stage_config, dataset, artifact: str, relative: str) -> None:
+        """The three states a dependency passes through must all move the hash.
+
+        Absent → present is the one that a `None`-or-missing-key mix-up hides; present →
+        edited is the one every table gets; deleting it again has to come back to the first
+        hash, which is what shows the key is keyed on the file and not on the attempt.
+        """
+        from multimodal_pipeline.schemas import FRAME_INDEX_SCHEMA, PERSON_FRAMES_SCHEMA
+
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        key = f"{artifact}_digest"
+        before = stage.config_fingerprint(ctx)
+        assert before[key] is None
+        path = dataset["dir"] / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        schema = PERSON_FRAMES_SCHEMA if artifact == "person_frames" else FRAME_INDEX_SCHEMA
+        rows = ([{"schema_version": "1.0", "video_id": "clip", "frame_number": 0,
+                  "timestamp": 0.0, "person_id": 1, "x1": 1.0, "y1": 1.0, "x2": 2.0,
+                  "y2": 2.0, "confidence": 0.5, "track_confidence": None,
+                  "confidence_reason": "no_track_confidence", "bbox_area": 1.0,
+                  "persons_in_frame": 1}] if artifact == "person_frames"
+                else [{"schema_version": "1.0", "video_id": "clip", "frame_number": 0,
+                       "pts_seconds": 0.0}])
+        _write(schema, path, rows)
+        ctx.scratch.clear()
+        added = stage.config_fingerprint(ctx)
+        assert added[key] is not None
+        _write(schema, path, rows + rows)
+        ctx.scratch.clear()
+        edited = stage.config_fingerprint(ctx)
+        assert edited[key] != added[key]
+        path.unlink()
+        ctx.scratch.clear()
+        assert stage.config_fingerprint(ctx)[key] is None
 
     def test_the_fingerprint_carries_the_python_source_digest(self, stage_config, dataset):
         """The hole §31 closed for pose_normalized, which has no worker either.
