@@ -980,6 +980,98 @@ class TestValidateChecksCoverageAgainstTheDocument:
         stage.run(ctx)
         assert stage.validate(ctx)["tiers"] == 5
 
+    def test_validate_returns_the_coverage_states_because_it_is_the_persisted_channel(
+            self, stage_config, dataset) -> None:
+        """`validate`'s return value is the only stage output that survives into `status.json`.
+
+        `execute` returns a rich provenance block (tier counts, skipped tiers, coverage, drop
+        counters), but the orchestrator persists only `tool_version`, `model_version`, `command`,
+        `executable`, `exit_code` and whatever `validate` returned — measured on this corpus, no
+        `status.json` on disk has ever contained `tier_counts`, `coverage` or `projected_tiers`, for
+        any stage. So a claim that "is this signal missing because of the video or because of the
+        export" is answerable without opening the XML has to be delivered by this function, or it
+        has to stop being made.
+
+        Returning the state counts (not the whole 22-entry inventory) keeps the record small and
+        keeps the detail in the file it describes.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        summary = record_of(stage, ctx)
+        result = stage.validate(ctx)
+        states = {name: entry["state"] for name, entry in summary["coverage"].items()}
+        counts: dict[str, int] = {}
+        for state in states.values():
+            counts[state] = counts.get(state, 0) + 1
+        assert result["coverage_states"] == counts, result
+        assert result["coverage_not_exported"] == sorted(
+            name for name, state in states.items() if state == "present, not exported"), result
+
+    def test_validate_returns_the_projection_counts_read_from_the_document(
+            self, stage_config, dataset) -> None:
+        """"More bars than rows" has to be answerable from the record, and this is the channel.
+
+        Two segment rows sharing an instant are re-cut into three bars. The run record says so, but
+        the run record is not persisted; the validated document is, and this reads the same property
+        back out of the XML rather than reusing anything the builder remembered. A tier that was not
+        projected is absent rather than listed as equal counts, so an empty map is a real answer.
+        """
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        from tests.unit.test_elan import _segment_row
+
+        _write(SEGMENTS_SCHEMA, dataset["dir"] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 1.0, 3.0, "inner"),
+        ])
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        summary = record_of(stage, ctx)
+        assert summary["projected_tiers"]["segments_src"] == {"logical_rows": 2, "emitted": 3}
+        result = stage.validate(ctx)
+        assert result["projected_tiers"] == {"segments_src": {"logical_rows": 2, "emitted": 3}}, result
+
+    def test_the_persisted_projection_counts_follow_the_file_not_the_run(
+            self, stage_config, dataset) -> None:
+        """The value must come from the document, so a stale record cannot contradict the file.
+
+        The projection property is rewritten to name counts the bars do not support, and `validate`
+        reports what the document says. This is the cheap half of the promise: the record is only
+        worth reading if it is a reading of the file rather than a memory of the run that wrote it.
+        (The bars themselves are still checked against the `TIME_SLOT` values, not against this
+        property — a metadata block cannot make an overlapping pair legal.)
+        """
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        from tests.unit.test_elan import _segment_row
+
+        _write(SEGMENTS_SCHEMA, dataset["dir"] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 1.0, 3.0, "inner"),
+        ])
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        summary = record_of(stage, ctx)
+        path = ctx.artifact("elan_annotations")
+        import json as _json
+        import re
+
+        text = path.read_text(encoding="utf-8")
+        match = re.search(r'(<PROPERTY NAME="pipeline-overlap-projection">)(.*?)(</PROPERTY>)',
+                          text, flags=re.DOTALL)
+        assert match, "the projected fixture stopped writing a projection property"
+        document = _json.loads(match.group(2))
+        document["tiers"]["segments_src"]["final_annotation_count"] = 99
+        payload = (_json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+                   .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+        path.write_text(text[:match.start()] + match.group(1) + payload + match.group(3)
+                        + text[match.end():], encoding="utf-8")
+        result = stage.validate(ctx)
+        assert result["projected_tiers"]["segments_src"]["emitted"] == 99, result
+        # ...and the bars are still the bars: they are checked against the TIME_SLOT values, not
+        # against this property, so the tier count is the one the run itself reported.
+        assert result["tiers"] == summary["tiers"], result
+
     def test_validate_accepts_a_tier_skipped_because_its_table_was_unreadable(
             self, stage_config, dataset) -> None:
         """An export that lost one tier to a corrupt table is still a consistent document.
