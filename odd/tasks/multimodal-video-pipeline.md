@@ -12,6 +12,11 @@ identities. Missing sampling-grid evidence must not become claimed continuous pr
 Choose reversible feature-branch work units; no push/merge in this follow-up. Native review
 status currently reads on(default), despite AGENTS saying disabled; do not change it.
 Evidence, outcomes and remaining checks are maintained in the linked feature document.
+The official MPI ELAN manual says independent-tier annotations cannot overlap (tier-type
+stereotype None). XML/pympi round-trip did not enforce this. Preserve flat tiers by partitioning
+simultaneous intervals and carrying all active labels/IDs, not dropping or staggering events.
+This adds B2a to the linked work queue before the new linguistic tiers; GUI playback is still
+unverified. Source: https://www.mpi.nl/tools/elan/docs/manual/Sec_Basic_Information_Annotations_tiers_and_linguistic_types.html.
 
 
 - Workflow: Gentle-AI ODD (Organic Driven Development)

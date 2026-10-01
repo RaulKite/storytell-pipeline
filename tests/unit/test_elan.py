@@ -35,17 +35,24 @@ import pytest
 from multimodal_pipeline import elan as elan_core
 from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
 from multimodal_pipeline.elan import (
+    ADJACENCY_NO_INDEX,
+    ADJACENCY_SPLIT,
+    ADJACENCY_UNVERIFIED,
+    ADJACENCY_VERIFIED,
     ASD_IMPUTED_SUFFIX,
     ASD_NOT_EVALUATED,
     ASD_NOT_SPEAKING,
     ENGINE_NS,
     FACE_TRACK_NS,
+    PTS_TOLERANCE_SECONDS,
+    SECONDARY_INPUTS,
     SEGMENT_NS,
     SPEAKER_NS,
     TIERS,
     TIER_SEMANTICS,
     UNKNOWN_MIME_TYPE,
     WORD_NS,
+    MissingTimestamp,
     NonFiniteTimestamp,
     asd_label,
     build_eaf,
@@ -61,6 +68,8 @@ from multimodal_pipeline.schemas import (
     ACTIVE_SPEAKER_FRAMES_SCHEMA,
     ACTIVE_SPEAKER_TRACKS_SCHEMA,
     BODY_SCHEMA,
+    FRAME_INDEX_SCHEMA,
+    PERSON_FRAMES_SCHEMA,
     PERSON_TRACKS_SCHEMA,
     SEGMENTS_SCHEMA,
     SPEAKER_FUSION_SCHEMA,
@@ -68,6 +77,7 @@ from multimodal_pipeline.schemas import (
     SPEAKER_TURNS_SCHEMA,
     TRANSLATION_SCHEMA,
     WORDS_SCHEMA,
+    read_table,
     write_table,
 )
 
@@ -129,9 +139,33 @@ class TestTimeConversion:
         # The widening is +1 ms only for a *zero* end; a nonzero end is the measurement.
         assert seconds_to_ms(0.0) == 0
 
-    def test_a_null_timestamp_lands_at_zero(self) -> None:
+    def test_a_null_timestamp_lands_at_zero_in_the_helper_alone(self) -> None:
+        """The helper still answers ``None`` with 0; the **export** no longer calls it that way.
+
+        Kept as a documented helper behaviour (:func:`seconds_to_ms` is a converter, not a
+        policy), while :func:`interval_ms` — the only time path `build_eaf` uses — refuses a
+        missing endpoint. The distinction matters because the helper's 0 is indistinguishable
+        from a real t=0 once it reaches the file, and an .eaf cannot tell the reader which one
+        it got.
+        """
         assert seconds_to_ms(None) == 0
         assert seconds_to_ms(None, end=True) == 1
+
+    @pytest.mark.parametrize("start,end", [
+        (None, None),
+        (None, 1.0),
+        (1.0, None),
+    ])
+    def test_an_interval_refuses_a_missing_endpoint_rather_than_inventing_one(self, start: Any,
+                                                                            end: Any) -> None:
+        """A missing start or end is not a time, and ELAN has no way to say "unknown".
+
+        ``(0, 1)`` looked like a sighting at second zero: a person with no timestamp was
+        exported as being on screen at the very start of the clip, in a file an analyst will
+        trust. The export drops the row and counts it instead.
+        """
+        with pytest.raises(MissingTimestamp):
+            interval_ms(start, end)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_a_non_finite_timestamp_raises_rather_than_landing_at_zero(
@@ -159,7 +193,6 @@ class TestTimeConversion:
             (0.0006, 0.0009, (1, 2)),
             (0.0, 0.04, (0, 40)),
             (-0.5, 0.5, (0, 500)),
-            (None, None, (0, 1)),
         ],
     )
     def test_an_interval_always_satisfies_start_less_than_end(self, start: Any, end: Any,
@@ -309,12 +342,15 @@ def _word(word: str, start: float, end: float, *, segment_id: str = "seg-0",
     `segment_id` and `word_id` are parameters rather than constants because the identity the
     tier now prints is the thing under test: a fixture in which every word shares one id could
     not tell a linked label from a hardcoded prefix. `_DEFAULT` (rather than `None`) means
-    "caller did not say", so a test can ask for a row whose id really is null.
+    "caller did not say", so a test can ask for a row whose id really is null. `duration` is
+    left null when either endpoint is, because a row with no time has no duration to report and
+    the fixture must not invent one the producer could not have written.
     """
+    duration = (end - start) if (start is not None and end is not None) else None
     return {"schema_version": "1.0", "video_id": "clip", "segment_id": segment_id,
             "word_id": f"w-{start}" if word_id is _DEFAULT else word_id,
             "start_time": start, "end_time": end,
-            "duration": end - start, "speaker_id": "SPEAKER_00", "word": word,
+            "duration": duration, "speaker_id": "SPEAKER_00", "word": word,
             "confidence": 0.95, "alignment_status": "aligned", **extra}
 
 
@@ -764,6 +800,69 @@ class TestBuildEaf:
         assert "words" in tiers_of(eaf)
         assert [line for line in lines if "dropped 2 of 2" in line], lines
 
+    def test_a_word_with_no_time_is_dropped_rather_than_placed_at_zero(self,
+                                                                       tmp_path: Path
+                                                                       ) -> None:
+        """Word timing cannot invent t0 either — the guard lives in `build_eaf`, not in one tier.
+
+        The independent verifier's finding, generalised: a null `end_time` used to serialise as
+        an annotation over ``[0, 1)`` ms, i.e. the word was reported as spoken at the very start
+        of the clip. A null *start* landed at 0 the same way. Both are dropped, the good sibling
+        row is kept, and the count is logged separately from the non-finite one, so "the producer
+        wrote no time" and "the producer wrote a NaN" stay two states in the run output exactly
+        as they are two states in the table.
+        """
+        root = tmp_path / "processed" / "clip"
+        video = tmp_path / "input_videos" / "clip.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"stub")
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("hello", 0.0, 0.4),
+            _word("no-end", 2.0, None),
+            _word("no-start", None, 3.0),
+        ])
+        _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [{
+            "schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
+            "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+            "diarization_type": "exclusive",
+        }])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [(start, end) for start, end, _t in annotations(eaf, "words")] == [(0, 400)]
+        # A sibling tier is untouched, and the census counts only the row really placed.
+        assert len(annotations(eaf, "turns_pyannote")) == 1
+        assert dict(eaf.properties)["pipeline-tiers"] == "turns_pyannote=1 words=1"
+        missing = [line for line in lines if "missing timestamp" in line]
+        assert [line for line in missing if "words" in line and "2 of 3" in line], lines
+        # The two states are not merged into one line.
+        assert not [line for line in lines if "non-finite" in line], lines
+
+    def test_a_missing_and_a_non_finite_timestamp_are_counted_apart(self,
+                                                                    tmp_path: Path
+                                                                    ) -> None:
+        """Both drop a row; only one of them is "the producer never wrote a time".
+
+        Collapsing them into one line would make a table with null times read like a table full
+        of NaNs — the same state collapse B1 refused for scores.
+        """
+        root = tmp_path / "processed" / "clip"
+        video = tmp_path / "input_videos" / "clip.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"stub")
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("good", 0.0, 0.4),
+            _word("null-end", 1.0, None),
+            _word("nan-start", float("nan"), 4.0),
+        ])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [start for start, _e, text in annotations(eaf, "words")
+                if text.startswith("good")] == [0]
+        assert [line for line in lines if "words" in line and "1 of 3" in line
+                and "missing timestamp" in line], lines
+        assert [line for line in lines if "words" in line and "1 of 3" in line
+                and "non-finite" in line], lines
+
     def test_the_document_is_well_formed_xml_and_reloads(self, dataset: dict[str, Path]
                                                          ) -> None:
         """ELAN reads bytes, not this object: write, parse, and read it back."""
@@ -1111,19 +1210,19 @@ class TestUnknownIsNotZero:
     def test_a_person_track_with_no_confidence_is_unknown_not_zero(self,
                                                                   tmp_path: Path
                                                                   ) -> None:
-        root = tmp_path / "processed" / "clip"
-        video = tmp_path / "input_videos" / "clip.mp4"
-        video.parent.mkdir(parents=True)
-        video.write_bytes(b"stub")
-        _write(PERSON_TRACKS_SCHEMA, root / "persons" / "tracks.parquet", [
-            {"schema_version": "1.0", "video_id": "clip", "person_id": 2,
-             "first_timestamp": 0.0, "last_timestamp": 1.0, "duration_seconds": 1.0,
-             "frame_count": 5, "frame_coverage": 0.1, "longest_gap_seconds": 0.2,
-             "mean_confidence": None, "max_confidence": None, "mean_bbox_area": 8.0,
-             "max_bbox_area": 9.0, "appearance_order": 0}])
+        """The track table's nullable `mean_confidence`, on the tier that now reads it.
+
+        Rewritten with the frames and index tables B2 needs: the assertion is the same one B1
+        added (a null confidence is `unknown`, never `0.000`), only the fixture grew.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 2)],
+                 [_person_track(2, 0.0, 1.0, 5, mean_confidence=None)])
+        _frame_index(root, [_frame_row(0, 0.0)])
         eaf = build_eaf(root, video, log=lambda *a, **k: None)
-        assert annotations(eaf, "person_tracks") == [
-            (0, 1000, "person 2 · 5 fr · conf unknown")]
+        _start, _end, text = annotations(eaf, "person_tracks")[0]
+        assert "conf unknown" in text
+        assert "conf 0.000" not in text
 
 
 class TestAsdStates:
@@ -1387,6 +1486,55 @@ class TestTierSemanticsProperty:
         for token in re.findall(r"([a-z_]+)\s*=", text):
             assert token in declared, f"semantics describes an unknown tier: {token}"
 
+    def test_the_block_clause_is_scoped_to_the_grid_based_tiers(self,
+                                                               dataset: dict[str, Path]
+                                                               ) -> None:
+        """"the last sampled frame is inside the block" is true of three tiers and false of one.
+
+        The clause used to be global. It is correct for `asd_speaking`, `pose_presence` and
+        `voiced_blocks`, whose ends are extended by their own median grid step; it is false for
+        `person_tracks`, whose runs deliberately end **at** the last sighting's measured PTS with
+        no step added (see :func:`person_track_rows`). A reader who applied the global sentence to
+        a person run would believe the file asserted the person was still on screen one grid step
+        after the last frame that placed them. So the sentence names the tiers it describes, and
+        the person clause says the opposite about its own intervals.
+        """
+        text = self.semantics(eaf_of(dataset))
+        clause = text[text.index("Blocks are half-open"):text.index("Persons:")]
+        for tier in ("asd_speaking", "pose_presence", "voiced_blocks"):
+            assert tier in clause, f"{tier} is not named by the block clause"
+        assert "person_tracks" in clause
+        assert "no grid step" in clause
+        person = text[text.index("Persons:"):text.index("Coverage:")]
+        assert "ends at" in person and "last sighting" in person
+
+    def test_the_person_clause_calls_the_mark_width_a_display_minimum(self,
+                                                                     dataset: dict[str, Path]
+                                                                     ) -> None:
+        """1 ms is what ELAN can store, not what the sighting lasted.
+
+        Kept as its own test because the wording is the claim: "minimum representable interval"
+        says the width is a property of the format, and the clause says the interval spans the
+        sightings' own endpoints rather than a duration.
+        """
+        person = self.semantics(eaf_of(dataset))
+        person = person[person.index("Persons:"):person.index("Coverage:")]
+        assert "minimum representable" in person
+        assert "not a measured duration" in person
+        assert "1 ms" in person
+
+    def test_the_gap_clause_names_the_column_it_prints(self, dataset: dict[str, Path]
+                                                       ) -> None:
+        """The person gap is the producer's reported column, and the property says so by name.
+
+        A label fragment that paraphrases a column ("max gap elapsed") invites a later reader to
+        recompute it; naming `longest_gap_seconds` makes the source checkable in the table and
+        makes an invented value visible as one.
+        """
+        text = self.semantics(eaf_of(dataset))
+        assert "longest_gap_seconds" in text
+        assert "as reported" in text
+
     def test_the_census_property_is_still_the_census(self, dataset: dict[str, Path]) -> None:
         """Adding a property must not disturb the one the stage validates against itself."""
         assert "pipeline-tiers" in dict(eaf_of(dataset).properties)
@@ -1446,9 +1594,16 @@ class TestTierRegistration:
         assert not unregistered, f"tiers read artifacts that do not exist: {unregistered}"
 
     def test_no_two_tiers_read_the_same_table(self) -> None:
-        """One producer per tier, so a tier's absence names exactly one producer."""
+        """One producer per tier, so a tier's absence names exactly one producer.
+
+        Secondary inputs are excluded from the comparison on purpose: `person_tracks` reads its
+        own table *and* two more, and those two are read by no other tier, so the primary set is
+        still one-per-tier.
+        """
         artifacts = [spec.artifact for spec in TIERS]
         assert len(artifacts) == len(set(artifacts))
+        secondary = {name for _tier, names in SECONDARY_INPUTS.items() for name in names}
+        assert not secondary & set(artifacts), "a secondary input is also some tier's primary"
 
     def test_the_columns_every_builder_reads_exist_in_their_schemas(self) -> None:
         """The failure this closes is silent: a projected read of a renamed column raises
@@ -1472,6 +1627,13 @@ class TestTierRegistration:
             "person_tracks": (PERSON_TRACKS_SCHEMA,
                               ("person_id", "first_timestamp", "last_timestamp",
                                "frame_count", "mean_confidence")),
+            # The two secondary inputs the person tier reads. They are checked here as well as
+            # in `test_the_secondary_inputs_are_registered_and_read_from_their_schemas` because
+            # the failure mode is the same silent one: a projected read of a renamed column
+            # makes the tier fall back to "adjacency unverified" and nothing complains.
+            "person_frames": (PERSON_FRAMES_SCHEMA,
+                              ("frame_number", "timestamp", "person_id")),
+            "frame_index": (FRAME_INDEX_SCHEMA, ("frame_number", "pts_seconds")),
             "pose_body": (BODY_SCHEMA, ("timestamp", "confidence")),
             "acoustic_frames": (ACOUSTIC_FRAMES_SCHEMA, ("timestamp", "f0_hz")),
         }
@@ -1518,3 +1680,573 @@ class TestAgainstTheCorpus:
         # silently vanished from the corpus would be named rather than skipped.
         manifest = json.loads((self.CORPUS / "manifest.json").read_text(encoding="utf-8"))
         assert "speech_words" in manifest["artifacts"]
+
+    @pytest.mark.parametrize("name,expected_runs,expected_marks", [
+        # The four clips on this disk with a persons stage. Expected runs and marks are
+        # **re-derived here** from source/frame_index.parquet and persons/frames.parquet — they
+        # are not copied out of a built .eaf — so the assertion fails when the tier and the
+        # tables disagree rather than restating a measurement someone wrote down.
+        ("2017-12-30_0735_US_KABC_Jimmy_Kimmel_Live_1120_696_1124_896_hear", 8, 3),
+        ("2017-12-30_1930_US_CNN_Global_Warning_Arctic_Melt_1237_273_1241_393_hear", 4, 0),
+        ("2019-06-29_2000_ES_La-1_Telediario_1_542-550", 9, 0),
+        ("person_demo", 110, 28),
+    ])
+    def test_the_corpus_person_runs_match_a_grouping_derived_from_its_own_tables(
+            self, tmp_path: Path, name: str, expected_runs: int, expected_marks: int) -> None:
+        """The real tables, so the source-adjacency rule is measured and not asserted.
+
+        The counts below are not a forecast: La-1's eight trajectories become nine runs because
+        id 10 breaks once (source frames 114 → 144, 29 source frames with no row for that id in
+        between), and `person_demo`'s 75 ids become 110 runs plus 28 single-frame marks. The .eaf
+        is written to ``tmp_path``, never beside the corpus.
+        """
+        root = PROCESSED / name
+        if not (root / "manifest.json").is_file():
+            pytest.skip(f"corpus dataset not present under {PROCESSED}")
+        if not (root / ARTIFACT_LAYOUT["person_tracks"]).is_file():
+            pytest.skip(f"{name} has no person tracks table")
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        video = Path(manifest["source"]["path"])
+        if not video.is_file():
+            pytest.skip(f"source video {video} is not on this disk")
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        labels = [text for _s, _e, text in annotations(eaf, "person_tracks")]
+        runs = [text for text in labels if "sighting run " in text]
+        marks = [text for text in labels if "sighting mark " in text]
+        # The grouping the tier claims to have used, re-derived here from the source tables.
+        frames = read_table(root / ARTIFACT_LAYOUT["person_frames"],
+                            columns=["frame_number", "timestamp", "person_id"]).to_pylist()
+        index = {row["frame_number"]: row["pts_seconds"] for row in read_table(
+            root / ARTIFACT_LAYOUT["frame_index"],
+            columns=["frame_number", "pts_seconds"]).to_pylist()}
+        grouped: dict[int, dict[int, Any]] = {}
+        for row in frames:
+            if row["person_id"] is None or row["frame_number"] is None:
+                continue
+            frame = int(row["frame_number"])
+            grouped.setdefault(int(row["person_id"]), {})[frame] = row["timestamp"]
+        # Walk each id's de-duplicated, ordered frames exactly as the tier documents it: a run
+        # continues only across consecutive source frames the index places at the time the row
+        # claims. Re-derived with the same tolerance, deliberately without calling the tier.
+        def placed(frame: int, stamp: Any) -> bool:
+            return (frame in index and stamp is not None
+                    and abs(index[frame] - float(stamp)) <= PTS_TOLERANCE_SECONDS)
+
+        runs_derived = marks_derived = 0
+        for seen in grouped.values():
+            ordered = sorted(seen)
+            run = 0
+            for position, frame in enumerate(ordered):
+                adjacent = (position > 0 and frame == ordered[position - 1] + 1
+                            and placed(frame, seen[frame])
+                            and placed(ordered[position - 1], seen[ordered[position - 1]]))
+                if not adjacent:
+                    if run == 1:
+                        marks_derived += 1
+                    elif run > 1:
+                        runs_derived += 1
+                    run = 1
+                else:
+                    run += 1
+            if run == 1:
+                marks_derived += 1
+            elif run > 1:
+                runs_derived += 1
+        assert (runs_derived, marks_derived) == (expected_runs, expected_marks)
+        assert (len(runs), len(marks)) == (runs_derived, marks_derived)
+        # Nothing in the corpus's own tables moved: this is a re-expression, and the raw bytes
+        # are still what the persons stage wrote.
+        out = tmp_path / f"person-check-{name[:12]}.eaf"
+        eaf.to_file(str(out))
+        assert out.is_file()
+
+
+# ------------------------------------------------------------------ person sightings
+
+
+def _person_frame(index: int | None, person_id: int, *,
+                  timestamp: Any = _DEFAULT, confidence: float = 0.8,
+                  **extra: Any) -> dict[str, Any]:
+    """One row of ``persons/frames.parquet``.
+
+    Only the three columns the sighting tier reads are interesting: which source frame, which
+    id, and when. ``timestamp`` defaults to the 25 FPS grid of the synthetic clip, and passing
+    ``None`` builds the row the schema allows — a sighting with no time.
+    """
+    stamp = (round(index * STEP, 6) if timestamp is _DEFAULT else timestamp
+             if index is not None or timestamp is not _DEFAULT else None)
+    return {"schema_version": "1.0", "video_id": "clip",
+            "frame_number": index,
+            "timestamp": stamp,
+            "person_id": person_id, "x1": 1.0, "y1": 2.0, "x2": 3.0, "y2": 4.0,
+            "confidence": confidence, "track_confidence": None,
+            "confidence_reason": "no_track_confidence", "bbox_area": 100.0,
+            "persons_in_frame": 1, **extra}
+
+
+def _frame_row(index: int, pts: float) -> dict[str, Any]:
+    return {"schema_version": "1.0", "video_id": "clip", "frame_number": index,
+            "pts_seconds": pts}
+
+
+def _person_track(person_id: int, first: float | None, last: float | None,
+                  frame_count: int, *, longest_gap: float = 0.04,
+                  mean_confidence: float | None = 0.8) -> dict[str, Any]:
+    """The track row the persons stage writes for the frames below.
+
+    The tier reads ``frame_count`` and ``mean_confidence`` from it, so a test that writes
+    frames without the matching track row would be testing a dataset the producer cannot make.
+    """
+    return {"schema_version": "1.0", "video_id": "clip", "person_id": person_id,
+            "first_timestamp": first, "last_timestamp": last,
+            "duration_seconds": None if first is None or last is None else last - first,
+            "frame_count": frame_count, "frame_coverage": 0.5,
+            "longest_gap_seconds": longest_gap, "mean_confidence": mean_confidence,
+            "max_confidence": mean_confidence, "mean_bbox_area": 100.0,
+            "max_bbox_area": 100.0, "appearance_order": person_id}
+
+
+def _persons(root: Path, frames: list[dict[str, Any]],
+             tracks: list[dict[str, Any]]) -> None:
+    """Write both persons tables — the tier needs the frames to exist to group anything."""
+    _write(PERSON_FRAMES_SCHEMA, root / "persons" / "frames.parquet", frames)
+    _write(PERSON_TRACKS_SCHEMA, root / "persons" / "tracks.parquet", tracks)
+
+
+def _frame_index(root: Path, rows: list[dict[str, Any]]) -> None:
+    _write(FRAME_INDEX_SCHEMA, root / "source" / "frame_index.parquet", rows)
+
+
+def _reported_gap(text: str) -> str:
+    match = re.search(r"max gap reported ([0-9.]+) s|max gap reported (unknown)", text)
+    assert match, f"no reported gap in {text!r}"
+    return match.group(1) or match.group(2)
+
+
+class TestPersonSightings:
+    """The person tier reports sighting runs over **verified source frames**.
+
+    The track table's two endpoints are a span, and a span says nothing about the frames in
+    between: on La-1 the id that disappears for a whole second and the one that is present in
+    every sampled frame both produce one annotation each. This class is the reason B2 exists.
+    """
+
+    def test_consecutive_source_frames_become_one_run(self, tmp_path: Path) -> None:
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(i, 1) for i in (0, 1, 2)],
+                 [_person_track(1, 0.0, 0.08, 3)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in (0, 1, 2)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 1
+        start, end, text = labels[0]
+        assert "sighting run 3 frames" in text
+        # The run ends at the last sighting's own time. No grid step is added — the next frame
+        # may never have been sampled — and nothing is subtracted either.
+        assert (start, end) == (0, 80)
+        assert "max gap reported 0.040 s" in text
+        assert "of 3" in text and "track coverage" in text
+
+    def test_a_source_frame_that_exists_but_holds_no_detection_splits_the_run(
+            self, tmp_path: Path) -> None:
+        """The La-1 case, in three frames.
+
+        Source frames 0, 1, 2 all exist in the clip's frame list and the id has rows in 0 and 2
+        only, so the pair is not adjacent and the run breaks. What this fixture does **not**
+        establish is *why* frame 1 has no row for the id: `persons/frames.parquet` records
+        detections and never which frames were examined, so the tier reports a break and nothing
+        about whether that frame was sampled, looked at, or rejected.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1), _person_frame(2, 1)],
+                 [_person_track(1, 0.0, 0.08, 2, longest_gap=0.08)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in (0, 1, 2)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 2
+        assert [start for start, _e, _t in labels] == [0, 80]
+        assert all("sighting mark 1 frame" in text for _s, _e, text in labels)
+        # The reported gap survives the split because it is a property of the id, not of the run:
+        # the producer's own column says 80 ms, and that is the number worth quoting even though
+        # each sighting now stands alone.
+        assert all("max gap reported 0.080 s" in text for _s, _e, text in labels)
+        assert all("sighting mark 1 frame of 2" in text for _s, _e, text in labels)
+
+    def test_a_gap_in_the_source_index_does_not_join_across_it(self, tmp_path: Path) -> None:
+        """Frames 0 and 2 exist, frame 1 was never decoded.
+
+        ``frame_number + 1`` is not adjacency when the index skipped a frame: the two instants
+        are 80 ms apart and nothing was measured between them, so the pair is not one sighting.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1), _person_frame(2, 1)],
+                 [_person_track(1, 0.0, 0.08, 2, longest_gap=0.08)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(2, 0.08)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 2
+        assert all("sighting mark" in text for _s, _e, text in labels)
+
+    def test_a_sparse_stride_never_becomes_one_run(self, tmp_path: Path) -> None:
+        """Every third source frame sampled, one id seen in all of them.
+
+        The frames table is detections, not a sampling grid: nothing in it says the stride was
+        3. Merging the three sightings into one run because the id appears "every measured
+        frame" would claim the person was on screen during the two frames never looked at —
+        exactly the inference B2 forbids.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(i, 1) for i in (0, 3, 6)],
+                 [_person_track(1, 0.0, 0.24, 3, longest_gap=0.12)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in (0, 3, 6)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 3
+        assert all("sighting mark 1 frame" in text for _s, _e, text in labels)
+        assert [start for start, _e, _t in labels] == [0, 120, 240]
+
+    def test_without_the_frames_table_the_tier_is_skipped_rather_than_spanned(
+            self, tmp_path: Path) -> None:
+        """The pre-B2 shape: one annotation per id, drawn from two timestamps.
+
+        A track span is evidence that something was seen at both ends and nothing in between is
+        known, so it must not be re-labelled as sightings. The tier is skipped with the missing
+        dependency named, and every other tier still builds.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1)], [_person_track(1, 0.0, 1.0, 5)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        (root / "persons" / "frames.parquet").unlink()
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        assert "person_tracks" not in tier_counts(eaf)
+        assert any("person_tracks skipped" in line and "persons/frames.parquet" in line
+                   for line in lines), lines
+        assert "words" in tier_counts(eaf), "one missing dependency must not lose the export"
+
+    def test_an_unreadable_frames_table_skips_the_tier_with_the_exception_named(
+            self, tmp_path: Path) -> None:
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1)], [_person_track(1, 0.0, 0.0, 1)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        (root / "persons" / "frames.parquet").write_bytes(b"not parquet at all")
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        assert "person_tracks" not in tier_counts(eaf)
+        assert any("person_tracks skipped" in line and "unreadable" in line
+                   for line in lines), lines
+        assert "words" in tier_counts(eaf)
+
+    def test_a_missing_frame_index_cannot_verify_adjacency(self, tmp_path: Path) -> None:
+        """Consecutive frame numbers are not verified adjacency without the source index.
+
+        Same frames as the run case; without ``source/frame_index.parquet`` there is nothing to
+        check them against, so each sighting stands alone and says so. The alternative — trusting
+        the persons table's own integers — is §20.2's mistake with the evidence removed.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(i, 1) for i in (0, 1, 2)],
+                 [_person_track(1, 0.0, 0.08, 3)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        labels = annotations(eaf, "person_tracks")
+        assert len(labels) == 3
+        assert all("sighting mark 1 frame" in text for _s, _e, text in labels)
+        assert all(ADJACENCY_NO_INDEX in text for _s, _e, text in labels)
+        # The cause is in the marker: without the clip's frame list, coverage is unknown too,
+        # and a reader must not mistake "nobody could check" for "checked, and alone".
+        assert all("coverage unknown" in text for _s, _e, text in labels)
+        assert not any(ADJACENCY_SPLIT in text for _s, _e, text in labels)
+        assert not any("person_tracks skipped" in line for line in lines)
+
+    def test_a_corrupt_frame_index_is_the_same_state_as_an_absent_one(self,
+                                                                     tmp_path: Path) -> None:
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(i, 1) for i in (0, 1, 2)],
+                 [_person_track(1, 0.0, 0.08, 3)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        (root / "source" / "frame_index.parquet").write_bytes(b"corrupt")
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 3
+        assert all(ADJACENCY_NO_INDEX in text for _s, _e, text in labels)
+
+    def test_a_frame_number_absent_from_the_index_cannot_verify_either_side(
+            self, tmp_path: Path) -> None:
+        """The index exists and is readable, but names no such frame.
+
+        Producers are not repaired here; the tier simply cannot claim adjacency through a frame
+        it cannot place, so the run breaks at that point rather than at the number.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(i, 1) for i in (0, 1, 2)],
+                 [_person_track(1, 0.0, 0.08, 3)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 0.04)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert ["sighting run" in text for _s, _e, text in labels] == [True, False]
+        assert ADJACENCY_UNVERIFIED in labels[1][2]
+        assert ADJACENCY_SPLIT in labels[0][2]
+
+    def test_a_sighting_whose_frame_the_index_does_not_name_is_never_verified(
+            self, tmp_path: Path) -> None:
+        """One lone sighting at a frame the clip's own index does not list.
+
+        There is no neighbour to compare it with, so no boundary can report anything, and the
+        only remaining question is whether this sighting itself is placed. It is not: the index
+        has no such frame, so `source adjacency verified` would be a claim built on nothing.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(7, 1)], [_person_track(1, 0.28, 0.28, 1)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in range(5)])
+        text = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")[0][2]
+        assert ADJACENCY_UNVERIFIED in text
+        assert ADJACENCY_VERIFIED not in text
+
+    def test_a_frame_time_that_disagrees_with_the_index_is_not_verified(
+            self, tmp_path: Path) -> None:
+        """Frame numbers line up, the clock does not.
+
+        The corpus's four clips have ``persons.frames.timestamp == frame_index.pts_seconds``
+        exactly; a dataset where they differ is a mismatched pair of tables, and the one thing
+        to do with a mismatch is stop calling the frames adjacent rather than pick a clock.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1, timestamp=0.0),
+                        _person_frame(1, 1, timestamp=5.0)],
+                 [_person_track(1, 0.0, 5.0, 2, longest_gap=5.0)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 0.04)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 2
+        assert all(ADJACENCY_UNVERIFIED in text for _s, _e, text in labels)
+        # The sighting keeps the time the persons table measured, not the index's.
+        assert [start for start, _e, _t in labels] == [0, 5000]
+
+    def test_the_representational_millisecond_is_visible_on_a_single_sighting(
+            self, tmp_path: Path) -> None:
+        """A sighting measured at one instant has no duration, and the file must not pretend.
+
+        ELAN cannot store (t, t), so the annotation is 1 ms wide. The label says the frame it
+        covers, so a reader who measures the bar gets the format's minimum and not a claim.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(1, 1)], [_person_track(1, 0.04, 0.04, 1)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 0.04)])
+        start, end, text = annotations(eaf_of({"dir": root, "video": video}),
+                                       "person_tracks")[0]
+        assert (start, end) == (40, 41)
+        assert "covers src frame 1" in text
+        assert "sighting mark" in text
+    def test_duplicate_rows_for_the_same_person_and_frame_count_once(self,
+                                                                    tmp_path: Path) -> None:
+        """A sighting is a (person, source frame) pair, however many rows carry it.
+
+        Counting rows would let a table with the same detection written twice report two frames
+        of a person, which is the direction that inflates.
+        """
+        root, video = person_clip(tmp_path)
+        # The third row is the same sighting written twice; the fourth is the same (id, frame)
+        # pair carrying a *different* timestamp, and the fifth the same pair with a disagreeing
+        # `persons_in_frame`. Either way it is one sighting of one frame, not two or three:
+        # grouping is on the (id, source frame) pair, and every other column of a duplicated row
+        # is a redundant copy of it. The first row's time wins.
+        _persons(root, [_person_frame(0, 1), _person_frame(0, 1),
+                        _person_frame(0, 1, timestamp=0.041),
+                        _person_frame(0, 1, persons_in_frame=7), _person_frame(1, 1)],
+                 [_person_track(1, 0.0, 0.04, 2)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 0.04)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 1
+        assert "sighting run 2 frames of 2" in labels[0][2]
+        assert labels[0][:2] == (0, 40)
+
+    def test_two_people_in_one_frame_do_not_inflate_either_sighting(self,
+                                                                    tmp_path: Path) -> None:
+        """``persons_in_frame`` is a property of the frame; a sighting is a property of an id."""
+        root, video = person_clip(tmp_path)
+        rows = [_person_frame(0, 1, persons_in_frame=2), _person_frame(0, 2, persons_in_frame=2),
+                _person_frame(1, 1, persons_in_frame=2)]
+        _persons(root, rows, [_person_track(1, 0.0, 0.04, 2), _person_track(2, 0.0, 0.0, 1)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 0.04)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert [chunk for _s, _e, text in labels
+                for chunk in text.split(" · ")[1:2]] == [
+            "sighting run 2 frames of 2", "sighting mark 1 frame of 1"]
+        assert "track coverage 0.500" in labels[0][2]
+
+    def test_the_run_carries_source_coverage_and_the_producers_reported_gap(
+            self, tmp_path: Path) -> None:
+        """The two numbers that make a run honest, both read straight out of the tables.
+
+        `of M` is this id's own total sightings, so a reader can see that the run in front of
+        them is not the whole story. The gap is the track table's own
+        ``longest_gap_seconds`` column, printed as reported and **never recomputed here** — which
+        is why the fixture deliberately reports a number the frames cannot reproduce: if the tier
+        derived the gap from sightings again, this assertion would print the derived value and
+        pass. The source is the column, and the label names the source.
+        """
+        root, video = person_clip(tmp_path)
+        # id 1 seen at 0,1 and 4,5; source frames 0..5 all exist. The frames imply a widest
+        # separation of 0.120 s; the producer's column says 999.000 s. Only one of those two can
+        # appear in the label, and it is the column.
+        _persons(root, [_person_frame(i, 1) for i in (0, 1, 4, 5)],
+                 [_person_track(1, 0.0, 0.20, 4, longest_gap=999.0)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in range(6)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 2
+        derived_from_frames = 0.120
+        for _start, _end, text in labels:
+            assert "of 4" in text
+            assert _reported_gap(text) == "999.000"
+            assert f"{derived_from_frames:.3f}" not in text
+
+    def test_a_reported_gap_of_zero_is_the_columns_zero_not_a_recomputed_one(
+            self, tmp_path: Path) -> None:
+        """A real 0.000 in the column prints, so the word `unknown` keeps meaning "no value".
+
+        The same fixture with a null column prints `unknown`, so the two states stay distinguishable
+        in the file rather than both landing on a number.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(i, 1) for i in (0, 1)],
+                 [_person_track(1, 0.0, 0.04, 2, longest_gap=0.0)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in (0, 1)])
+        text = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")[0][2]
+        assert _reported_gap(text) == "0.000"
+
+        _persons(root, [_person_frame(i, 1) for i in (0, 1)],
+                 [_person_track(1, 0.0, 0.04, 2, longest_gap=None)])
+        text = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")[0][2]
+        assert _reported_gap(text) == "unknown"
+
+    def test_an_unmeasurable_gap_says_unknown_rather_than_zero(self, tmp_path: Path) -> None:
+        """One sighting has no pair to separate, so the label refuses the column's placeholder.
+
+        The producer writes 0.0 for an id seen in a single frame (`PersonsStage.person_track_rows`
+        has no gap to take a maximum of), and 0.000 in a tier reads as "never lost sight of them".
+        The tier prints the column as reported whenever there is a pair, and `unknown` where the
+        reported 0.0 is only a placeholder for "no pair exists".
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1)], [_person_track(1, 0.0, 0.0, 1,
+                                                             longest_gap=0.0)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        text = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")[0][2]
+        assert _reported_gap(text) == "unknown"
+        # The unit travels with the number, so a missing value never borrows one: `unknown s`
+        # would put a quantity on a non-number, which is the same small lie as 0.000 there.
+        assert "unknown s" not in text
+
+    def test_a_sighting_with_no_timestamp_is_dropped_rather_than_placed_at_zero(
+            self, tmp_path: Path) -> None:
+        """Regression: a null sighting time used to export as ``[0, 1)`` ms.
+
+        The pre-fix behaviour put the sighting at second zero of the clip — a person reported on
+        screen at the start of a video where the frames table says nothing about when they were
+        seen. ELAN has no "time unknown" annotation, so the honest export drops the row, keeps
+        its timed siblings where they were measured, and counts the drop separately from a
+        non-finite one.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(2, 1, timestamp=None), _person_frame(1, 1)],
+                 [_person_track(1, 0.04, 0.04, 2)])
+        _frame_index(root, [_frame_row(1, 0.04), _frame_row(2, 0.08)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        labels = annotations(eaf, "person_tracks")
+        # The timed sighting is still there, at the time its own table measured.
+        assert [(start, end) for start, end, _t in labels] == [(40, 41)]
+        assert "covers src frame 1" in labels[0][2]
+        # The untimed sighting is not in the file at all, at t=0 or anywhere else.
+        assert not [1 for start, _e, text in labels if start == 0], labels
+        assert not [1 for _s, _e, text in labels if "covers src frame 2" in text], labels
+        assert [line for line in lines if "person_tracks" in line
+                and "1 of 2" in line and "missing timestamp" in line], lines
+        # The other tiers still build.
+        assert "words" in tier_counts(eaf)
+
+    def test_rows_the_schema_allows_but_nobody_wants_are_neither_fatal_nor_inflating(
+            self, tmp_path: Path) -> None:
+        """A null `person_id` names no one, and a null `frame_number` places nothing.
+
+        Both columns are nullable in ``PERSON_FRAMES_SCHEMA``, and the schema's own comment says
+        why a null there is a missing measurement rather than a zero. Neither may crash the tier
+        (that would lose all twelve sibling tiers through the per-tier guard's log line), neither
+        may be counted as a sighting of somebody, and the row that has a time but no frame still
+        belongs in the file as a mark that cannot be placed.
+        """
+        root, video = person_clip(tmp_path)
+        unnamed = dict(_person_frame(2, 1))
+        unnamed["person_id"] = None
+        unplaced = _person_frame(None, 1, timestamp=9.0)
+        _persons(root, [_person_frame(0, 1), _person_frame(1, 1), unnamed, unplaced],
+                 [_person_track(1, 0.0, 9.0, 4)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in (0, 1, 2)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 2, labels
+        assert "sighting run 2 frames of 3" in labels[0][2], "the id-less row must not be a sighting"
+        assert "covers src frame unknown" in labels[1][2]
+        assert ADJACENCY_UNVERIFIED in labels[1][2] and ADJACENCY_VERIFIED not in labels[1][2]
+        # The mark keeps the time the frames table measured, at ELAN's minimum width.
+        assert labels[1][:2] == (9000, 9001)
+
+    def test_the_two_id_tables_agree_on_who_gets_an_annotation(self, tmp_path: Path) -> None:
+        """A sighting needs an observation; a track row alone is not one.
+
+        An id present only in `persons/tracks.parquet` produces nothing (there is no frame to
+        place), and an id present only in `persons/frames.parquet` still produces its sightings —
+        with `unknown` for the two numbers only the track table carries, rather than a zero.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 4)], [_person_track(9, 0.0, 0.0, 1)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert len(labels) == 1
+        _start, _end, text = labels[0]
+        assert "person 4 ·" in text and "person 9" not in text
+        assert "conf unknown" in text and "track coverage unknown" in text
+
+    @pytest.mark.parametrize("confidence,expected", [
+        (0.9282, "conf 0.928"),
+        (None, "conf unknown"),
+        (float("nan"), "conf unknown"),
+    ])
+    def test_confidence_is_the_track_mean_and_a_missing_one_is_not_zero(
+            self, tmp_path: Path, confidence: float | None, expected: str) -> None:
+        """Per-frame confidence varies as a person turns; the track table's mean is the one
+        number worth quoting, and B1's unknown rule keeps applying to it."""
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1)],
+                 [_person_track(1, 0.0, 0.0, 1, mean_confidence=confidence)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        text = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")[0][2]
+        assert expected in text
+
+    def test_person_ids_are_tracker_trajectories_and_the_semantics_say_so(
+            self, dataset: dict[str, Path]) -> None:
+        """"person 7" in a tier is not seven humans.
+
+        ByteTracker recycles ids and loses them; on this disk `person_demo` reports 75 ids over
+        205 sampled frames. The property is what travels with a quoted label.
+        """
+        text = dict(eaf_of(dataset).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Persons:"):text.index("Coverage:")]
+        assert "trajectory" in clause and "not a human" in clause
+        # Run count against this id's total, and the elapsed-gap wording.
+        assert "N de-duplicated sightings" in clause and "M sightings in total" in clause
+        assert "elapsed" in clause and "sampling interval" in clause
+        # The one claim that must not be missing: verified grouping is not coverage.
+        assert "Sampling coverage is not established" in clause
+        assert "not evidence that nobody was there" in clause
+        # The 1 ms is the format's minimum, not a duration.
+        assert "minimum representable interval" in clause
+
+
+def person_clip(tmp_path: Path) -> tuple[Path, Path]:
+    """The synthetic clip's transcript plus empty persons dirs, ready for the frames tables.
+
+    Returns ``(dataset_dir, video)``. The transcript is there because ``build_eaf`` reports a
+    tier census that a reader compares against the rest of the file, and it keeps the other
+    tiers alive in the tests that assert one tier was skipped.
+    """
+    root = tmp_path / "processed" / "clip"
+    video_dir = tmp_path / "input_videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    video = video_dir / "clip.mp4"
+    video.write_bytes(b"stub")
+    _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+    return root, video

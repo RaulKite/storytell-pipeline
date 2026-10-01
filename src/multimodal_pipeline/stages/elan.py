@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from ..elan import TIERS, build_eaf, tier_counts
+from ..elan import ALL_INPUTS, SECONDARY_INPUTS, TIERS, build_eaf, tier_counts
 from ..exceptions import ValidationError
 from .base import Stage, StageContext
 
@@ -46,14 +46,19 @@ class ElanStage(Stage):
     """Write one ELAN ``.eaf`` per video from the tables every other stage produced."""
 
     name = "elan"
-    # Every table the export reads, in the order `elan.TIERS` declares them — verified to exist
-    # by importing the registry, never invented (test_declared_inputs_are_registered_artifacts).
-    # Declared for the same reason every stage declares inputs: the state file and
-    # ``status --plan`` should show what a stage consumes. They are read *softly*:
-    # ``ctx.input()`` raises on a missing artifact, and an optional producer that never ran is a
-    # supported state here rather than an error. ``build_eaf`` therefore resolves its own paths
-    # from the dataset directory and skips a tier whose file is absent.
-    inputs = tuple(spec.artifact for spec in TIERS)
+    # Every table the export reads, in the order `elan.TIERS` declares them and then the tiers'
+    # secondary inputs — verified to exist by importing the registry, never invented
+    # (test_declared_inputs_are_registered_artifacts). Declared for the same reason every stage
+    # declares inputs: the state file and ``status --plan`` should show what a stage consumes.
+    # They are read *softly*: ``ctx.input()`` raises on a missing artifact, and an optional
+    # producer that never ran is a supported state here rather than an error. ``build_eaf``
+    # therefore resolves its own paths from the dataset directory and skips a tier whose file is
+    # absent.
+    #
+    # `ALL_INPUTS` rather than the tier list alone: the person tier reads two tables that no
+    # tier is named after, and a file whose contents change the .eaf has to appear in the
+    # dependency record and in the fingerprint or the reuse check will not see it.
+    inputs = ALL_INPUTS
     outputs = ("elan_annotations",)
     config_keys = ("elan",)
 
@@ -92,16 +97,21 @@ class ElanStage(Stage):
             # dropping a tier changes every file, and these names are what a reader expects to
             # see when they open ELAN.
             "tiers": [spec.tier for spec in TIERS],
+            # Which extra files each tier is allowed to read. Hashed alongside the tier names for
+            # the same reason the tier names are here: adding a secondary dependency changes what
+            # the export can claim, so a dataset must not look reusable across that change.
+            "secondary_inputs": {tier: list(names)
+                                 for tier, names in sorted(SECONDARY_INPUTS.items())},
             "_python_code_sha256": python_source_digest(elan_core, elan_stage),
         }
-        for spec in TIERS:
-            path = ctx.artifact(spec.artifact)
+        for artifact in ALL_INPUTS:
+            path = ctx.artifact(artifact)
             # Memoised like every other derived stage's digest, because the fingerprint is
             # computed on `status --plan` as well as before a run.
-            cache_key = f"elan_digest:{spec.artifact}"
+            cache_key = f"elan_digest:{artifact}"
             if cache_key not in ctx.scratch:
                 ctx.scratch[cache_key] = sha256_of(path) if path.is_file() else None
-            payload[f"{spec.tier}_digest"] = ctx.scratch[cache_key]
+            payload[f"{artifact}_digest"] = ctx.scratch[cache_key]
         return payload
 
     # ------------------------------------------------------------------ enablement

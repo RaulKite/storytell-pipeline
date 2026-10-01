@@ -11,22 +11,27 @@ what happened in a clip: two datasets could then not be compared column-for-colu
 rename would look like a new tier. Twelve tiers with fixed names are the contract every other
 stage follows — the schema is known before the file is opened, and an absent producer is an
 absent tier rather than a renamed one. What they are *not* is a module list: those twelve tiers
-read twelve of the twenty-two normalised tables, because two diarizers and two fusions account
-for four of them and the token, sentence, per-segment-acoustic, hand, face and normalised-pose
-tables are simply not exported yet. A tier is a decision, so adding one is a change to this
+read fourteen of the twenty-two normalised tables, because two diarizers and two fusions account
+for four of them, ``person_tracks`` reads two more to place its sightings, and the token,
+sentence, per-segment-acoustic, hand, face and normalised-pose tables are simply not exported
+yet. A tier is a decision, so adding one is a change to this
 list rather than a name being reused for something else.
 
-Absence is a named state here, exactly as ``face_status`` makes it in the ASD table. Each
-tier reads exactly one producer's file; when that file is not there the tier is skipped and
-one line is logged naming what was missing. An empty tier would be ambiguous between "nobody
+Absence is a named state here, exactly as ``face_status`` makes it in the ASD table. Each tier
+reads one producer's file — one, plus whatever :data:`SECONDARY_INPUTS` declares for it — and
+when a file it needs is not there the tier is skipped and one line is logged naming what was
+missing. An empty tier would be ambiguous between "nobody
 spoke", "no face was on screen" and "this engine never ran", which is the collapse the
 pipeline has refused everywhere else (§17's ``face_status``, §20.2's person counts).
 
-Four things are not obvious from reading the code — three about the format, one about what a
-tier is *for*:
+Five things are not obvious from reading the code — three about the format, one about what a
+tier is *for*, one about what a person tier is entitled to claim:
 
-* **Time slots are integer milliseconds and ``start < end`` is a hard requirement.** See
-  :func:`seconds_to_ms` and :func:`interval_ms`.
+* **Time slots are integer milliseconds, ``start < end`` is a hard requirement, and a row with no
+  time is not exported at all.** See :func:`seconds_to_ms` and :func:`interval_ms`. ELAN has no
+  "time unknown" annotation, so a null endpoint has no honest representation: the export boundary
+  drops such a row and counts it, rather than putting it at second zero and letting it read as
+  something that happened when the clip started.
 * **Every per-frame signal is collapsed into blocks.** The ASD, pose and acoustic tables
   are dense grids at three different rates — the ASD stage's 25 FPS working timeline, the
   source video's own PTS list, a 10 ms Praat step. One annotation per frame would put tens
@@ -34,7 +39,9 @@ tier is *for*:
   what an analyst reads anyway. Because the three grids differ, each block's end is extended
   by *that table's own* median step (`median_positive_step`), never by a shared constant. The
   block ELAN then stores is half-open — `start ≤ t < end`, with `end` already carrying that
-  extension — so the last sampled frame is inside the block rather than on its edge.
+  extension — so the last sampled frame is inside the block rather than on its edge. The person
+  tier is the deliberate exception: a sighting is one frame and nothing says the next one was
+  ever sampled, so its interval is never widened by a step (see :func:`person_track_rows`).
 * **A label is the only place a tier's meaning lives.** Every value printed here is a summary
   of a producer's row, and the parts of it that could be misread — which id space an id came
   from, whether a number was measured, whether a segment-level translation is a word gloss —
@@ -44,6 +51,11 @@ tier is *for*:
   :func:`pose_presence_rows` — the ASD and pose grids number the same instant differently,
   and §20.2 already documents what happens when two unrelated integer id spaces are treated
   as one key.
+* **A person sighting run is bounded by the clip's frame list, not by the track's endpoints.**
+  See :func:`person_track_rows`. ``persons/frames.parquet`` records detections only — no stride,
+  no sampling grid, no record of frames looked at and found empty — so the only adjacency that
+  can be checked comes from ``source/frame_index.parquet``, and everything the index cannot place
+  or confirm becomes a lone mark that says so in the label.
 """
 
 from __future__ import annotations
@@ -74,6 +86,26 @@ class NonFiniteTimestamp(ValueError):
     """
 
 
+class MissingTimestamp(ValueError):
+    """A producer wrote no timestamp where ELAN needs an integer millisecond.
+
+    Split from :class:`NonFiniteTimestamp` because the two states are counted and reported
+    separately in the run log, and for the same reason §17 keeps ``face_status`` apart from a
+    score: "there is no measurement" and "the measurement is not a number" imply different
+    fixes upstream. It is raised by :func:`interval_ms` — the only time path `build_eaf` uses —
+    and never by :func:`seconds_to_ms`, which stays a plain converter.
+
+    The pre-B2 rule here was "``None`` becomes 0, so the annotation stays visible next to its
+    siblings." That rule put a false fact in the file. ELAN has no "time unknown" annotation, so
+    an untimed row landed at second zero and read as "this happened when the clip started": a
+    person with no timestamp was exported as on screen at t=0, and a word with a null
+    ``end_time`` was exported over ``[0, 1)`` ms. A reader cannot tell that annotation from one
+    genuinely measured at the start, and the file is the part that leaves the repository. Dropping
+    the row loses one invisible bar; inventing a time loses the reader's ability to trust the
+    rest of the tier.
+    """
+
+
 def seconds_to_ms(value: Any, end: bool = False) -> int:
     """Convert seconds to the integer milliseconds ELAN's ``TIME_VALUE`` requires.
 
@@ -96,18 +128,22 @@ def seconds_to_ms(value: Any, end: bool = False) -> int:
        input. Widening the *end* keeps the interval where it was measured; the start is never
        moved, because shifting a start forward deletes when something began.
 
-    ``end`` exists only for rule 3, and applies to a null end too — a null is a missing
-    measurement, and (0, 0) is not writable.
+    ``end`` exists only for rule 3, and applies to a null end too.
 
-    ``None`` becomes 0 for a start: a null timestamp is a missing measurement, and putting the
-    annotation at t=0 keeps it visible next to its siblings instead of dropping it from a tier
-    the user already sees as complete.
+    **``None`` becomes 0 here, and that is a converter answer, not an export policy.**
+    :func:`interval_ms` — the only time path `build_eaf` takes — refuses a missing endpoint with
+    :class:`MissingTimestamp` rather than exporting it at second zero. Earlier exports used this
+    function's null rule; new exports refuse that invented placement. The rule stays because it is the
+    documented answer to "what should a converter do with no value", and because keeping it here
+    makes the refusal legible: one function decides what an .eaf may claim about *when*, and it no
+    longer calls this one for nulls. An .eaf cannot say "time unknown" — every ``TIME_VALUE`` is a
+    claim about when — so the export boundary drops an untimed row and counts it instead.
 
     A NaN or infinity raises :class:`NonFiniteTimestamp` instead of being clamped to 0, which
-    is the one case clamping would be a lie: a null is *known* to be missing and lands beside
-    its siblings, while a NaN clamped to 0 would claim the annotation starts at second zero.
-    It raises rather than returns a sentinel because every caller here is placing an
-    annotation, and "this interval has no time" is only useful as something to skip.
+    is the one case clamping would be a lie: a NaN clamped to 0 makes the same claim about second
+    zero that a null used to make. It raises rather than returns a sentinel because every caller
+    here is placing an annotation, and "this interval has no time" is only useful as something to
+    skip.
     """
     if value is None:
         ms = 0
@@ -133,7 +169,22 @@ def interval_ms(start: Any, end: Any) -> tuple[int, int]:
     leave here with ``start < end``.
 
     A non-finite endpoint propagates :class:`seconds_to_ms`'s ``NonFiniteTimestamp``.
+
+    **Either endpoint missing raises :class:`MissingTimestamp`.** This is the export boundary for
+    every tier, so no builder — not `words`, not `person_tracks`, not a later segment-context tier
+    — can land a row at second zero because its producer wrote null. A legitimate ``start == end``
+    still gets its +1 ms display width; a *missing* end does not get one, because the pair it would
+    widen is invented rather than measured.
+
+    The two states raise two exceptions rather than one, because `build_eaf` counts them on two
+    separate log lines and they describe different producer defects — the same reason B1 kept a
+    null score apart from a NaN one inside a label.
     """
+    if start is None or end is None:
+        raise MissingTimestamp("endpoint is null; ELAN has no 'time unknown' slot")
+    for value in (start, end):
+        if not math.isfinite(float(value)):
+            raise NonFiniteTimestamp(f"timestamp is {float(value)}, not a measurable time")
     start_ms = seconds_to_ms(start)
     end_ms = seconds_to_ms(end, end=True)
     if end_ms <= start_ms:
@@ -211,9 +262,21 @@ def _label_key(label: Any) -> Any:
 
 # ------------------------------------------------------------------- tier plumbing
 
+class TierDependencyMissing(Exception):
+    """A tier's *secondary* input is absent or unreadable, so the tier cannot be built honestly.
+
+    Distinct from :class:`NonFiniteTimestamp` (one row is unusable) and from the bare
+    "the tier's own file is not there" case `build_eaf` already handles: here the primary table
+    exists, has rows, and would export *something* — but the extra file that makes the claim
+    precise is gone, and the remaining choices are a span dressed up as a sighting or a tier
+    that says it cannot be read. This exception is how a builder picks the second one and says
+    why; `build_eaf` turns it into the same one logged line an absent primary input gets.
+    """
+
+
 @dataclass(frozen=True)
 class TierInput:
-    """What one tier builder may read: its own table, and the dataset it came from.
+    """What one tier builder may read: its own table, its secondary inputs, and the dataset.
 
     ``dataset_dir`` is here because one tier needs a second producer's file: the ASD
     *tracks* table reports a track's endpoints but not the frame step those endpoints were
@@ -245,6 +308,33 @@ class TierInput:
         rows = self.rows(columns)
         rows.sort(key=lambda row: tuple(_seconds(row.get(key)) for key in keys))
         return rows
+
+    def secondary_rows(self, artifact: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        """Another producer's table, or :class:`TierDependencyMissing`.
+
+        Three things make this different from calling :func:`read_table` directly:
+
+        * the artifact name is resolved through :func:`artifact_path`, so a tier cannot invent
+          a filename the registry does not know;
+        * an absent file and an unreadable one raise the *same* exception, because from the
+          tier's side they are one state — "I cannot verify what I was about to claim" — and a
+          builder that handled them separately would end up handling only one of them;
+        * the message names the dataset-relative path, which is what the run log and the
+          per-tier skip line have to print for a reader to act on.
+
+        Callers list what they need in :data:`SECONDARY_INPUTS`, so this stays one mechanism
+        for every tier that reads more than its own table rather than one bespoke try/except
+        per builder.
+        """
+        relative = artifact_path(artifact)
+        path = self.dataset_dir / relative
+        if not path.is_file():
+            raise TierDependencyMissing(f"{relative} not produced")
+        try:
+            return read_table(path, columns=list(columns)).to_pylist()
+        except Exception as exc:  # noqa: BLE001 - unreadable is the same state as absent here
+            raise TierDependencyMissing(f"{relative} unreadable "
+                                        f"({type(exc).__name__}: {exc})") from exc
 
 
 def _seconds(value: Any) -> float:
@@ -376,8 +466,34 @@ TIER_SEMANTICS: str = (
     "and came out inactive — evidence about that track's mouth, not about the audio, so another "
     "or an off-screen speaker may still be talking in the same second. A score carried from the "
     "previous frame says 'imputed tail score' on either activity state. "
-    "Blocks are half-open in milliseconds: a block covers [start, end), and the last sampled "
-    "frame is inside it. "
+    "Blocks are half-open in milliseconds: a block in asd_speaking, pose_presence or "
+    "voiced_blocks covers [start, end), where end already carries that tier's own median "
+    "grid-step extension, so the last sampled frame is inside the block rather than on its "
+    "edge; person_tracks is the deliberate exception and adds no grid step of its own. "
+    "Persons: person_id is a tracker trajectory, not a human — ids are recycled and lost, so "
+    "counts of ids are not counts of people; 'sighting run N frames of M' is this id's own "
+    "N de-duplicated sightings joined only across consecutive source frames that "
+    "source/frame_index.parquet places and whose times agree, over M sightings in total; "
+    "'sighting mark 1 frame' is a sighting the grouping did not join to a neighbour, and the "
+    "adjacency marker on an annotation says whether that annotation's own boundary was checked "
+    "against the clip's frame list, including a check that ended the run, so 'verified' never "
+    "means 'known to continue', and 'source adjacency unverified (no source frame index, "
+    "coverage unknown)' names its own cause; a person interval "
+    "spans its own sightings' endpoints — it starts at the first sighting's time and ends at the "
+    "last sighting's measured PTS, with no grid step added, because nothing says the next frame "
+    "was ever sampled; 'max gap reported S s' (seconds, printed with the number so a missing "
+    "value says only 'unknown') is the persons track table's own "
+    "longest_gap_seconds column printed as reported and never recomputed here, and that column is "
+    "the elapsed time between two consecutive sightings, which on a regularly sampled clip "
+    "includes the sampling interval and is therefore not a measure of absence — it prints "
+    f"'{UNKNOWN_DISPLAY}' when the id has a single sighting or no reported value, because the "
+    "producer writes 0.0 where no pair exists; a mark's 1 ms width is "
+    "ELAN's minimum representable interval, not a measured duration; a sighting whose row carries "
+    "no timestamp is dropped from the file rather than placed at second zero, and the drop is "
+    "counted in the run log. Sampling coverage is not "
+    "established anywhere here even where the grouping is verified: the detection table records "
+    "what was seen and never which frames were looked at, so absence of a sighting is not "
+    "evidence that nobody was there. "
     "Coverage: this document is a summary of the dataset's tables, not every number in them "
     "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement."
 )
@@ -651,19 +767,294 @@ def face_track_rows(item: TierInput) -> list[dict[str, Any]]:
             for row in rows]
 
 
-def person_track_rows(item: TierInput) -> list[dict[str, Any]]:
-    """One annotation per person id.
+# What one sighting is, and what may join two of them into a run.
+#
+# `persons/frames.parquet` is a **detection** table: one row per (person, frame) the detector
+# reported, and nothing else. It carries no stride, no sampling grid, and no record of the
+# frames it looked at and found nobody — `stages.persons.person_track_rows` shows how little the
+# track table knows by computing `longest_gap_seconds` from consecutive *sightings* alone. So a
+# track's two endpoints are a span and not a sighting history, and on this corpus the difference
+# is not small: La-1's id 10 disappears for a whole second (source frames 114 → 144), ids 1 and 2
+# are seen in two frames each, and the pre-B2 tier gave every one of them exactly one annotation.
+#
+# The one adjacency the tables do prove is the source's. `source/frame_index.parquet` names every
+# decodable frame of the clip with its PTS, and on all four corpus clips
+# `persons.frames.frame_number` / `.timestamp` match `frame_index.frame_number` / `.pts_seconds`
+# exactly. Consecutive *source* frames that the index places and whose times agree are therefore
+# one sighting run; anything else — a frame the index does not name, a timestamp that disagrees
+# with it, a missing or unreadable index, a frame the detector looked at and did not report this
+# id in — ends the run.
+#
+# Adjacency is a claim about frames the detector may never have looked at, so each label below
+# says how far the evidence goes instead of leaving a run to be read as a continuous sighting.
+#: This annotation's own junctions were all checked against the clip's frame list.
+ADJACENCY_VERIFIED = "source adjacency verified"
+#: A neighbouring sighting could not be placed or confirmed, so at least one of this run's
+#: boundaries is silence about the frames rather than evidence about them.
+ADJACENCY_SPLIT = "run split at an unverifiable source frame"
+#: Adjacency could not be established for this annotation at all, so it stands alone.
+ADJACENCY_UNVERIFIED = "source adjacency unverified"
+#: :data:`ADJACENCY_UNVERIFIED` with its cause, for the case where the whole clip's frame list is
+#: unavailable: without it the *coverage* of the clip is unknown too, and saying so is what keeps
+#: a lone mark from being read as a checked-and-isolated sighting.
+ADJACENCY_NO_INDEX = "source adjacency unverified (no source frame index, coverage unknown)"
 
-    Not widened by a step: ``persons/frames.parquet`` is sampled from the source at the
-    stage's own stride, so its step is a sampling decision rather than a frame boundary, and
-    extending a sighting by one stride would claim the person was on screen in a frame that
-    was never looked at. The span is the endpoints, exactly as measured.
+#: How far a sighting's own timestamp may sit from the index's PTS for the same frame number
+#: before the two tables are treated as a mismatched pair.
+#
+# The producer copies the PTS through (`PersonsStage._frame_row` fills `timestamp` from
+# `source/frame_index.parquet`), so on a coherent dataset the two agree to the last bit —
+# measured on all four corpus clips, zero rows disagree. One microsecond is therefore generous
+# without being wide enough to hide a real mismatch: consecutive source frames on a 29.97 fps
+# clip are 33 ms apart, four orders of magnitude outside this band.
+PTS_TOLERANCE_SECONDS = 1e-6
+
+
+@dataclass(frozen=True)
+class _Sighting:
+    """One person observed at one source frame, de-duplicated and (maybe) placed."""
+
+    frame: int | None
+    timestamp: float | None
+
+
+def _reported_gap(value: Any, sightings: int) -> str:
+    """The track table's own ``longest_gap_seconds``, printed as reported, or ``unknown``.
+
+    Read from the column rather than recomputed from the sightings, which is what the label's
+    "reported" says and what makes the number checkable against the table: a label that
+    paraphrases a column invites a later reader (or a later version of this file) to derive it
+    again, and the derivation is exactly where a subtle re-interpretation would enter. The old
+    helper here recomputed the same quantity and called it "elapsed"; the value agreed with the
+    column on every corpus clip, so nothing caught the mismatch between the word and the source.
+
+    ``unknown`` when this id has fewer than two sightings, whatever the column says. That is not
+    distrusting the producer, it is reading its own documented placeholder: `PersonsStage` writes
+    ``0.0`` for an id seen once because "there is no gap, and null there would make
+    MAX(longest_gap_seconds) silently ignore the case". In a tier label 0.000 reads as "never lost
+    sight of them", which is the collapse §17 refuses everywhere else, so the placeholder is
+    printed as the state it is. A reported 0.000 on an id with two or more sightings still prints
+    as 0.000 — that one is a measurement.
+
+    The unit travels with the number rather than sitting in the label, so a missing value prints
+    ``unknown`` and not ``unknown s``: a unit on a non-number is the same small lie as a zero in
+    its place.
+
+    Deliberately not called "absence": the column is the elapsed time between two consecutive
+    *sightings*, so on a clip sampled at a fixed stride it contains the sampling interval, and
+    nothing in a detection table can tell a frame that was looked at and rejected from one that
+    was never sampled.
     """
-    rows = item.sorted_rows(("person_id", "first_timestamp", "last_timestamp", "frame_count",
-                             "mean_confidence"), "first_timestamp", "person_id")
-    return [{"start": row["first_timestamp"], "end": row["last_timestamp"],
-             "text": _text(f"person {row['person_id']} · {row['frame_count']} fr · "
-                           f"conf {_num(row['mean_confidence'], 3)}")} for row in rows]
+    if sightings < 2:
+        return UNKNOWN_DISPLAY
+    rendered = _num(value, 3)
+    return f"{rendered} s" if rendered != UNKNOWN_DISPLAY else UNKNOWN_DISPLAY
+
+
+def _group_sightings(rows: Sequence[dict[str, Any]]) -> dict[int, list[_Sighting]]:
+    """Frames-table rows into one sighting per (person id, source frame), in time order.
+
+    De-duplicated on the pair rather than per row, because a sighting is a fact about a person
+    at an instant and not a count of the rows carrying it. The corpus has no duplicate pairs
+    today; the direction a duplicate pushes is *up*, which is the direction worth refusing. Two
+    different ids in one frame stay two sightings — ``persons_in_frame`` is a property of the
+    frame and never enters here.
+
+    A row with no ``frame_number`` keeps its own slot per distinct timestamp: it is a real
+    detection and dropping it would lose a sighting, but it cannot be placed next to anything,
+    so it never joins a run.
+    """
+    grouped: dict[int, dict[Any, _Sighting]] = {}
+    for row in rows:
+        if row["person_id"] is None:
+            continue
+        person_id = int(row["person_id"])
+        number = None if row["frame_number"] is None else int(row["frame_number"])
+        stamp = None if row["timestamp"] is None else float(row["timestamp"])
+        bucket = grouped.setdefault(person_id, {})
+        key: Any = number if number is not None else ("no-frame", stamp)
+        existing = bucket.get(key)
+        if existing is None:
+            bucket[key] = _Sighting(frame=number, timestamp=stamp)
+            continue
+        # Keep whichever row carries the measurement: a duplicate with a time beats one without.
+        if existing.timestamp is None and stamp is not None:
+            bucket[key] = _Sighting(frame=existing.frame, timestamp=stamp)
+    return {
+        person_id: sorted(
+            bucket.values(),
+            key=lambda s: (s.timestamp is None, s.timestamp or 0.0,
+                           s.frame if s.frame is not None else -1))
+        for person_id, bucket in grouped.items()
+    }
+
+
+def _person_sighting_rows(item: TierInput) -> list[dict[str, Any]]:
+    """Sighting runs and marks, joined only over source frames the index can verify.
+
+    Reads ``person_frames`` (required — a missing one raises
+    :class:`TierDependencyMissing`, because a track's two endpoints are a span and not a
+    sighting history) and ``frame_index`` (optional — without it nothing is verifiable and every
+    sighting becomes an isolated :data:`ADJACENCY_NO_INDEX` mark).
+
+    Each junction between consecutive sightings of one id is decided three ways, never two:
+
+    * **joined** — both sightings are placed in the index with agreeing times and their frame
+      numbers differ by exactly 1;
+    * **broken** — both are verifiable and their frame numbers differ by more than 1. The run
+      ends. Whether the frames in between were sampled and empty or never sampled is not
+      knowable from a detection table, so nothing in the label claims either;
+    * **unverifiable** — the index is missing, unreadable, names no such frame, or disagrees
+      with the row's own time. Adjacency is unknown, so the run also ends, and the annotations
+      on either side say so rather than implying the gap was measured.
+
+    Nothing is repaired or interpolated: a sparse stride stays sparse, because nothing in a
+    detection table says what the stride was.
+    """
+    rows = item.secondary_rows("person_frames", ("frame_number", "timestamp", "person_id"))
+    try:
+        index_rows = item.secondary_rows("frame_index", ("frame_number", "pts_seconds"))
+    except TierDependencyMissing:
+        index: dict[int, float] = {}
+    else:
+        index = {int(row["frame_number"]): float(row["pts_seconds"]) for row in index_rows
+                 if row["frame_number"] is not None and row["pts_seconds"] is not None}
+
+    def placed(sighting: _Sighting) -> bool:
+        """Is this sighting's source frame in the index, at the time the row claims?"""
+        if not index or sighting.frame is None or sighting.timestamp is None:
+            return False
+        return sighting.frame in index \
+            and abs(index[sighting.frame] - sighting.timestamp) <= PTS_TOLERANCE_SECONDS
+
+    annotations: list[dict[str, Any]] = []
+    for person_id, sightings in _group_sightings(rows).items():
+        runs: list[list[_Sighting]] = []
+        # `boundary_unverified[i]` is the state of the gap between runs[i-1] and runs[i], so a run
+        # can report that one of its own edges is not evidence.
+        boundary_unverified: list[bool] = []
+        for sighting in sightings:
+            joined = False
+            unverified = not placed(sighting)
+            if runs:
+                previous = runs[-1][-1]
+                both_placed = placed(previous) and placed(sighting)
+                joined = (both_placed and sighting.frame is not None
+                          and previous.frame is not None
+                          and sighting.frame == previous.frame + 1)
+                if not joined:
+                    # A boundary is *unverified* when at least one side could not be read; when
+                    # both were read and were simply not neighbours, the run ends on evidence.
+                    unverified = unverified or not both_placed
+            if joined:
+                runs[-1].append(sighting)
+            else:
+                if runs:
+                    boundary_unverified.append(unverified)
+                runs.append([sighting])
+
+        for position, run in enumerate(runs):
+            edge_unverified = (position > 0 and boundary_unverified[position - 1]) or \
+                (position < len(boundary_unverified) and boundary_unverified[position])
+            single = len(run) == 1
+            # Only a junction that held can put more than one sighting in a run, so this says
+            # "at least one boundary of this annotation was checked and joined".
+            joined_here = not single
+            head = "sighting mark 1 frame" if single else f"sighting run {len(run)} frames"
+            if single:
+                covered = (f"covers src frame {run[0].frame}" if run[0].frame is not None
+                           else "covers src frame unknown")
+            else:
+                covered = f"covers src {run[0].frame}-{run[-1].frame}"
+            # The marker describes *this* annotation, not the id's whole grouping: a singleton
+            # whose only boundary was unreadable established nothing and may not borrow a
+            # neighbour's verified marker, while a run that joined sightings and then met an
+            # unreadable boundary reports both, because both are true of it.
+            if not index:
+                marker = ADJACENCY_NO_INDEX
+            elif not placed(run[0]) or (edge_unverified and not joined_here):
+                marker = ADJACENCY_UNVERIFIED
+            elif edge_unverified:
+                marker = f"{ADJACENCY_VERIFIED}; {ADJACENCY_SPLIT}"
+            else:
+                marker = ADJACENCY_VERIFIED
+            annotations.append({
+                "start": run[0].timestamp,
+                # A sighting is an instant, so no grid step extends the end: the next frame may
+                # never have been sampled. `interval_ms` widens a zero-width pair by 1 ms, which
+                # is ELAN's representational minimum and not a measured duration — the `covers`
+                # fragment says which frame the mark stands for, so the difference is in the file.
+                "end": run[-1].timestamp,
+                "_person_id": person_id,
+                "_total": len(sightings),
+                "_marker": marker,
+                "_head": head,
+                "_covered": covered,
+            })
+    return annotations
+
+
+def person_track_rows(item: TierInput) -> list[dict[str, Any]]:
+    """Sighting runs and marks per person id, over verified source-frame adjacency.
+
+    Three inputs, and the tier names the one it could not use:
+
+    * ``person_tracks`` — the ids the tracker reported and each one's mean confidence;
+    * ``person_frames`` — what was seen in which source frame. Without it there is nothing to
+      group, so the tier is **skipped** with that dependency named rather than falling back to
+      one annotation per track span: a span says something was seen at both ends and nothing
+      about the frames between, and the corpus proves the gap is not theoretical (La-1's id 10
+      loses a full second between source frames 114 and 144). Skipping one tier also keeps the
+      other eleven, which is the asymmetry :func:`build_eaf` already documents;
+    * ``frame_index`` — the clip's own frame list, the only thing that makes "adjacent" mean
+      anything. Absent or unreadable, every sighting is a lone mark.
+
+    An id the track table reports but the frames table never names produces no annotation: the
+    sighting has to have been observed somewhere, and a row in a summary table is not an
+    observation. A sighting whose own row carries no timestamp is grouped and counted (it is a real
+    detection, and `of M` says it happened) but produces no annotation, because :func:`interval_ms`
+    refuses a missing endpoint rather than placing it at t=0; `build_eaf` logs the drop with the
+    tier's other missing-time drops.
+
+    Ids are **tracker trajectories, not humans**: ByteTracker recycles and loses ids, so
+    `person_demo` produces 75 ids over 205 sampled frames. The label says "person <id>" because
+    the column is `person_id`, and :data:`TIER_SEMANTICS` carries the caveat into the file.
+    """
+    tracks = item.sorted_rows(("person_id", "first_timestamp", "mean_confidence",
+                               "frame_coverage", "longest_gap_seconds"),
+                              "first_timestamp", "person_id")
+    rank = {int(row["person_id"]): position
+            for position, row in enumerate(tracks) if row["person_id"] is not None}
+
+    rows = _person_sighting_rows(item)
+    # This id's own sighting count, straight from the grouping: one annotation can carry several
+    # sightings, so the count that decides whether a reported 0.0 is a measurement or a
+    # "no pair exists" placeholder comes from the grouping, not from the annotation width.
+    sightings_of = {row["_person_id"]: row["_total"] for row in rows}
+    # The three numbers are read out of the track table and printed as reported; none of them is
+    # recomputed from the frames table here (see :func:`_reported_gap` for why that matters for
+    # the gap in particular). An id the track table does not know prints `unknown` three times.
+    reported = {int(row["person_id"]): (
+        _num(row["mean_confidence"], 3), _num(row["frame_coverage"], 3),
+        _reported_gap(row["longest_gap_seconds"],
+                      sightings_of.get(int(row["person_id"]), 0)))
+        for row in tracks if row["person_id"] is not None}
+
+    # The producer's appearance order first, then time, so the tier reads in the order the clip
+    # introduced people rather than in whatever order Parquet returned. An id the track table
+    # does not know sorts last rather than disappearing.
+    rows.sort(key=lambda row: (rank.get(row["_person_id"], len(rank)),
+                               row["start"] is None, _seconds(row["start"]),
+                               row["_person_id"]))
+    return [{"start": row["start"], "end": row["end"],
+             "text": _text(f"person {row['_person_id']} · {row['_head']} of {row['_total']} · "
+                           f"conf {conf} · track coverage {coverage} · "
+                           f"max gap reported {gap} · {row['_covered']} · "
+                           f"{row['_marker']}")}
+            for row in rows
+            for conf, coverage, gap in [reported.get(row["_person_id"],
+                                                     (UNKNOWN_DISPLAY, UNKNOWN_DISPLAY,
+                                                      UNKNOWN_DISPLAY))]]
 
 
 #: A keypoint counts as a measured body only above this OpenPose confidence.
@@ -778,10 +1169,31 @@ TIERS: tuple[TierSpec, ...] = (
     TierSpec("fusion_nemotron", "speaker_fusion_nemotron", fusion_rows, "engine 2 A/V verdict"),
     TierSpec("asd_speaking", "active_speaker_frames", asd_speaking_rows, "ASD blocks"),
     TierSpec("face_tracks", "active_speaker_tracks", face_track_rows, "TalkNet tracks"),
-    TierSpec("person_tracks", "person_tracks", person_track_rows, "YOLO person tracks"),
+    TierSpec("person_tracks", "person_tracks", person_track_rows, "YOLO person sightings"),
     TierSpec("pose_presence", "pose_body", pose_presence_rows, "body-present blocks"),
     TierSpec("voiced_blocks", "acoustic_frames", voiced_rows, "voiced blocks"),
 )
+
+#: Artifacts a tier reads besides its own, keyed by the tier that reads them.
+# A tier's primary artifact is what names it and what its absence skips it for. Some tiers need
+# more than that one table: `person_tracks` cannot say anything honest about sightings without
+# the per-frame detections and the clip's own frame list.
+#
+# This is one exported list rather than a lookup inside each builder, because three things have
+# to agree about the same set of files and only one of them can be checked locally:
+# `ElanStage.inputs` (what `status --plan` and the state record report as the stage's
+# dependencies), `ElanStage.config_fingerprint` (a file the export reads must move the hash, or a
+# hand-replaced table exports its new contents under a fingerprint that still says "reusable"),
+# and the builders themselves via :meth:`TierInput.secondary_rows`. Hardcoded paths at each of
+# the three are how a dependency ends up read but undeclared and unhashed.
+SECONDARY_INPUTS: dict[str, tuple[str, ...]] = {
+    "person_tracks": ("person_frames", "frame_index"),
+}
+
+#: Every artifact the export may read: each tier's own table, then the secondary inputs.
+#: Order is deliberate — tier order first, so the fingerprint's keys stay in tier order.
+ALL_INPUTS: tuple[str, ...] = tuple(spec.artifact for spec in TIERS) + tuple(
+    name for names in SECONDARY_INPUTS.values() for name in names)
 
 #: Mimetype by suffix. pympi's own guess table covers wav/mpg/mpeg/xml and nothing else, so
 #: leaving an .mp4 to the library raises KeyError; and ELAN will not open a linked file whose
@@ -892,12 +1304,20 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     own tier and not the eleven that were already built correctly, and a .eaf with eleven
     tiers and one logged line is worth more to a user than no .eaf at all.
 
-    One row with a non-finite timestamp costs **that row**, not its tier. Placing an
-    annotation needs an integer millisecond, and a NaN in a timestamp column is producible by
-    an upstream stage that wrote a division it never checked; the tier's other rows were
-    measured and belong in the file. The count is logged, so a tier that dropped half its rows
-    says so in the run output — the difference between "this clip has few words" and "the
-    words table is full of NaN" stays readable.
+    One row with an unusable timestamp costs **that row**, not its tier, and the two unusable
+    states are counted and logged apart. Placing an annotation needs an integer millisecond: a
+    NaN in a timestamp column is producible by an upstream stage that wrote a division it never
+    checked, and a null is a measurement the producer never took. The tier's other rows were
+    measured and belong in the file.
+
+    **A missing endpoint drops the row; it is never placed at t=0.** The rule used to be the
+    opposite — "a null lands at zero so the annotation stays visible next to its siblings" — and
+    that put a false fact in a file an analyst trusts: ELAN has no "time unknown" annotation, so an
+    untimed row looked like something that happened when the clip started. The check lives here, at
+    the one place every tier's rows pass through :func:`interval_ms`, so no builder (word timing,
+    person sightings, or a future segment-context tier) can invent a time by omission. The counts
+    are logged, so a tier that dropped half its rows says so in the run output — the difference
+    between "this clip has few words" and "the words table has no times in it" stays readable.
 
     The tier census is written as a document property, so a reader of the file alone can tell
     "this clip has no person tier because ``persons`` was off" from "the export lost it" —
@@ -920,22 +1340,40 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
             try:
                 rows = spec.build(TierInput(tier=spec.tier, artifact=spec.artifact,
                                             path=path, dataset_dir=dataset_dir))
+            except TierDependencyMissing as exc:
+                # The tier's own table was there; a file it needs in order to be truthful was
+                # not. Same one logged line as an absent primary input, and the same decision:
+                # lose this tier, keep the other eleven.
+                reason = f"requires {exc}"
+                rows = []
             except Exception as exc:  # noqa: BLE001 - one bad table must not lose eleven
                 reason = f"{path.name} unreadable ({type(exc).__name__}: {exc})"
                 rows = []
             if not reason:
                 eaf.add_tier(tier_id=spec.tier)
-                dropped = 0
+                # Two drop counters, two log lines. A row the producer wrote no time for and a
+                # row whose time is a NaN are different defects — one needs a timestamp, the
+                # other needs a working division upstream — and B1's rule applies to the run log
+                # as well as to a label: never merge two states into one printable number.
+                missing_time = 0
+                non_finite = 0
                 for row in rows:
                     try:
                         start_ms, end_ms = interval_ms(row["start"], row["end"])
+                    except MissingTimestamp:
+                        missing_time += 1
+                        continue
                     except NonFiniteTimestamp:
-                        dropped += 1
+                        non_finite += 1
                         continue
                     eaf.add_annotation(spec.tier, start_ms, end_ms, _text(row["text"]))
-                built[spec.tier] = len(rows) - dropped
-                if dropped:
-                    log(f"elan: tier {spec.tier} dropped {dropped} of {len(rows)} "
+                built[spec.tier] = len(rows) - missing_time - non_finite
+                if missing_time:
+                    log(f"elan: tier {spec.tier} dropped {missing_time} of {len(rows)} "
+                        f"annotation(s) with a missing timestamp (no time is exported rather "
+                        f"than an invented one at t=0)")
+                if non_finite:
+                    log(f"elan: tier {spec.tier} dropped {non_finite} of {len(rows)} "
                         f"annotation(s) with a non-finite timestamp")
         if reason:
             skipped[spec.tier] = reason

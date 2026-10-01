@@ -987,12 +987,14 @@ why it runs after `finalization`, and why it is **on by default** while `persons
 `diarization_nemotron` are off: it needs no GPU, no download, no credential.
 
 Twelve tiers, fixed names, no hierarchy — and **not** one tier per module. Those twelve read
-twelve of the twenty-two normalised tables the pipeline publishes; the spaCy token and sentence
-tables, the per-segment acoustic aggregates, `pose/hands`, `pose/face`, `pose/normalized`, the
-person *frames* table and the source frame index are not exported, and a tier is never silently
-renamed to cover them (`manifest.artifacts_not_generated` is where absence is declared). Two
-diarizers and two fusions are why twelve tiers is more tiers than producers: an absent engine is
-an absent tier, not a shared one.
+fourteen of the twenty-two normalised tables the pipeline publishes, because `person_tracks`
+also reads `persons/frames.parquet` and `source/frame_index.parquet` to decide where a sighting
+run ends (below); the spaCy token and sentence tables, the per-segment acoustic aggregates,
+`pose/hands`, `pose/face`, `pose/normalized` and the person *frames* table get no tier of their
+own, and a tier is never silently renamed to cover them
+(`manifest.artifacts_not_generated` is where absence is declared). Two diarizers and two fusions
+are why twelve tiers is more tiers than producers: an absent engine is an absent tier, not a
+shared one.
 
 | Tier | From | Annotation text |
 |---|---|---|
@@ -1003,11 +1005,11 @@ an absent tier, not a shared one.
 | `fusion_pyannote` / `fusion_nemotron` | `speaker/fusion_*.parquet` | `face_matched: turn turn000001 · turn speaker SPEAKER_00 (pyannote)` then `\| face track 0 \|` and the verdict's arithmetic, verbatim |
 | `asd_speaking` | `speaker/active_speaker_frames.parquet` | `speaking track 0` / `not speaking` / `not evaluated` / `no face`, **collapsed into runs** — a score carried forward adds `(imputed tail score)` on either activity state |
 | `face_tracks` | `speaker/active_speaker_tracks.parquet` | `track 0 · 75/78 act · mean 2.505` — `mean` is a TalkNet logit-like score, unbounded, **not a probability** |
-| `person_tracks` | `persons/tracks.parquet` | `person 1 · 126 fr · conf 0.928` |
+| `person_tracks` | `persons/tracks.parquet` + `persons/frames.parquet` + `source/frame_index.parquet` | `person 1 · sighting run 126 frames of 126 · conf 0.928 · track coverage 1.000 · max gap reported 0.033 s · covers src 0-125 · source adjacency verified` — and `sighting mark 1 frame` where adjacency did not hold |
 | `pose_presence` | `pose/body.parquet` | `body present` runs (any keypoint ≥ 0.3) |
 | `voiced_blocks` | `acoustic/frame_features.parquet` | `voiced (f0)` runs |
 
-Three rules the labels obey, because a tier value is the part of an `.eaf` that leaves the file
+Four rules the labels obey, because a tier value is the part of an `.eaf` that leaves the file
 — into a screenshot, an issue, a talk — without this README next to it. They are also written
 into the document itself as the `pipeline-tier-semantics` property, so the file explains its own
 notation:
@@ -1046,33 +1048,72 @@ notation:
   carried score −1.4667; `person_demo` frame 96 at 3.84 s). Before this correction both printed a
   plain `not speaking`.
 
+- **A person id is a trajectory, and a sighting run is only as long as the source frames prove.**
+  `person_id` is ByteTracker's, so ids are recycled and lost: `person_demo` reports **75 ids over
+  205 sampled frames**, and the count of ids is not a count of people. The tier used to print one
+  annotation per id from `first_timestamp` to `last_timestamp`, which is a *span* — it says the id
+  was seen at both ends and nothing about the frames between. `persons/frames.parquet` records
+  detections only (no stride, no sampling grid, no record of frames looked at and found empty), so
+  the one adjacency that can be verified comes from `source/frame_index.parquet`: consecutive
+  source frames the index places, whose PTS matches the row's own timestamp. Anything else — a
+  frame the index does not name, a disagreeing timestamp, a missing or unreadable index, a frame
+  the detector measured and did not report this id in — ends the run, and the label says which of
+  the four states it is in (`source adjacency verified`, `run split at an unverifiable source
+  frame`, `source adjacency unverified`, and `source adjacency unverified (no source frame index,
+  coverage unknown)` when the index itself is gone). This is why La-1's id 10 is now **two runs** rather than
+  one: source frames 112–114 and 144–239, with 29 source frames between them carrying no row for
+  that id. Whether those frames were *sampled* and empty or never sampled is not in any table:
+  La-1's raw document happens to report `frames_measured` 240 of the index's 240, but that number
+  never reaches a Parquet column, so the tier prints neither inference. `max gap reported S s` is
+  the track table's own `longest_gap_seconds` **printed as reported and never recomputed here** —
+  naming the column is what makes the number checkable in the table instead of trusting the label's
+  paraphrase. That column is the elapsed time between two consecutive **sightings**, which on a clip
+  sampled at a fixed interval contains the sampling interval itself, so it is not a measure of
+  absence: nothing here can distinguish "looked and did not see" from "never looked", and no label
+  or property claims sampling coverage even where the grouping is verified. It prints `unknown`
+  where the id has a single sighting, because the producer writes `0.0` there as a placeholder for
+  "no pair exists" and `0.000` in a tier reads as "never lost sight of them". A person interval
+  spans its own sightings' endpoints — it ends at the last sighting's measured **PTS**, with no grid
+  step added, because nothing says the next frame was ever sampled. A single sighting keeps its
+  measured time and is 1 ms wide only because ELAN cannot store a zero-width annotation and that
+  width is a display minimum, not a duration. If
+  `persons/frames.parquet` is absent or unreadable the tier is **skipped** with that dependency
+  named: a track span is not a sighting history, so it is not exported under the word.
+
 Per-frame signals collapse into contiguous runs because 249 one-frame annotations per tier
 would be unusable in ELAN and true to nothing: the collapse is per label-run, and the block's end
 is already one median grid-step past the last frame that carried the label — stated because it is
 a choice. A block then covers `start ≤ t < end` in ELAN's integer milliseconds, where `end` is
 that extended value (not a further step on top of it), so the last sampled frame is inside the
-block rather than on its edge.
+block rather than on its edge. **That sentence is about `asd_speaking`, `pose_presence` and
+`voiced_blocks`, the three tiers whose ends carry a grid-step extension, and it is false of
+`person_tracks`, which adds no step and stops at the last sighting's own PTS.** Stated as a global
+rule it made a person run look like a claim that the subject was still on screen one step past the
+last frame that placed them, which is the inference this tier exists to refuse.
 
-Measured on the corpus, annotations per dataset. **The numbers below are read straight out of the
-`.eaf` files on this disk**, and they are stale in one specific way: the ASD label split gives every
-imputed-tail frame its own run (active or not), so a rebuild moves KABC 49 → 50, CNN 36 → 37, La-1
-86 → 90 and `person_demo` 94 → 95 — La-1's `asd_speaking` tier goes 7 → 11 blocks (three active
-imputed frames plus the inactive one at 2.40 s). Measured in memory against these files; nothing
-was written, because the export is regenerated by a pipeline run and the corpus files are the
-operator's to regenerate. The other three datasets are unchanged, and no measurement in any Parquet
-table moved:
+Measured on the corpus, annotations per dataset. **The "on disk" columns are read straight out of
+the `.eaf` files sitting here, and they are historical.** Two changes to the tier code are not in
+them: the ASD label split (every imputed-tail frame gets its own run), and the person tier becoming
+sighting runs instead of one span per id. The rebuild column is what the same tables produce today,
+measured in memory against these files with no write — the export is regenerated by a pipeline run
+and the corpus `.eaf` files are the operator's to regenerate. **Read the two columns as a
+before/after of the export's code, never as a change in what was measured:** not one value in any
+Parquet table moved, and every added annotation is a split of a run that was already there. La-1's
+`person_tracks` goes 8 → 9 because one trajectory breaks in two (id 10, source frames 114 → 144)
+while its eight ids stay eight; `person_demo`'s 75 ids become 138 annotations (110 runs and 28
+single-frame marks) and KABC's 3 become 11.
 
-| dataset | tiers | annotations | note |
-|---|---|---|---|
-| KABC | 12 | 49 | `asd_speaking` = 3 blocks; `pose_presence` = 1 (0→4204 ms) |
-| CNN | 12 | 36 | |
-| La-1 | 12 | 86 | 7 ASD blocks, 8 person tracks |
-| `person_demo` | 12 | 94 | transcript tiers are **empty**: its words table has 0 rows |
-| `pipeline_demo` | 12 | 59 | |
-| `pipeline_demo_ntsc` | 12 | 59 | |
-| `pipeline_silent` | 12 | 1 | the silence case: one block, no transcript |
+| dataset | tiers | annotations on disk | rebuild now | note |
+|---|---|---|---|---|
+| KABC | 12 | 49 | 58 | `asd_speaking` 3 → 4 blocks; `person_tracks` 3 → 11; `pose_presence` = 1 (0→4204 ms) |
+| CNN | 12 | 36 | 37 | person sightings unchanged (4 ids, 4 runs) |
+| La-1 | 12 | 86 | 91 | 7 → 11 ASD blocks; `person_tracks` 8 → 9 |
+| `person_demo` | 12 | 94 | 158 | transcript tiers are **empty**: its words table has 0 rows |
+| `pipeline_demo` | 12 | 59 | 59 | its persons tables have 0 rows, so `person_tracks` is an **empty tier** here too — 0 stays 0 |
+| `pipeline_demo_ntsc` | 12 | 59 | 59 | |
+| `pipeline_silent` | 12 | 1 | 1 | the silence case: one block, no transcript |
 
-Three more things the export does that are worth knowing before you open one:
+Four more things the export does that are worth knowing before you open one:
 
 - **The video is linked twice.** The `MEDIA_DESCRIPTOR` carries both an absolute `file://`
   URL and a `RELATIVE_MEDIA_URL` (`../../../input_videos/<name>` — relative to the `.eaf`
@@ -1091,13 +1132,29 @@ Three more things the export does that are worth knowing before you open one:
   QuickTime container, so a catch-all `video/mp4` would have been false on disk.
 - **A missing table skips its tier with a logged reason; a missing transcript fails.** No
   words *and* no segments is a dataset nobody asked to annotate, so the stage fails loudly
-  there; anything else (translation off, ASD off) just exports fewer tiers.
+  there; anything else (translation off, ASD off) just exports fewer tiers. A tier's *secondary*
+  input is missing is the same outcome, with the dependency named — `person_tracks` is skipped
+  when `persons/frames.parquet` is not there, and the other eleven tiers still build. Absent and
+  unreadable are reported as one state, because what the tier can do about either is the same.
+- **Reuse sees the extra tables.** The fingerprint hashes every file in
+  `ElanStage.inputs` — the twelve tier tables *plus* `person_frames` and `frame_index` — keyed by
+  artifact name with `null` for an absent one, and it also carries the tier→dependency map itself,
+  so a tier that starts reading one more table changes the hash even when every file is
+  byte-identical.
 
 Reuse works like every derived stage: its fingerprint mixes the digests of the tables it
 reads **and** the Python that builds the tiers (§31), so editing `elan.py` re-runs it and an
 untouched dataset re-uses in 0 s (`status --plan`: `valid previous result`). Times go
 seconds → integer milliseconds (ELAN's unit), a zero-width interval widens by 1 ms because
-pympi refuses a zero-length annotation, and no interval is ever negative.
+pympi refuses a zero-length annotation, and no interval is ever negative. **A row whose producer
+wrote no time is dropped and counted, never placed at t=0.** The rule used to be that a null
+timestamp landed at zero "so the annotation stays visible next to its siblings", and that was a
+false claim: ELAN has no *time unknown* annotation, so an untimed row looked like something that
+happened when the clip started — a person sighting with no timestamp exported as being on screen at
+second zero, a word with a null `end_time` exported over `[0, 1)` ms. The check sits in
+`interval_ms`, which every tier's rows pass through, so no builder can invent a time by omission,
+and the drop is logged separately from a non-finite one (`dropped N of M annotation(s) with a
+missing timestamp`) because the two describe different upstream defects.
 
 ---
 
@@ -1632,7 +1689,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1613 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1653 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1689,7 +1746,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1613 tests
+tests/unit/                1653 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
