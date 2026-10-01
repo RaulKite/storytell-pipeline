@@ -79,6 +79,7 @@ from multimodal_pipeline.elan import (
 )
 from multimodal_pipeline.schemas import (
     ACOUSTIC_FRAMES_SCHEMA,
+    ACOUSTIC_SEGMENTS_SCHEMA,
     ACTIVE_SPEAKER_FRAMES_SCHEMA,
     ACTIVE_SPEAKER_TRACKS_SCHEMA,
     BODY_SCHEMA,
@@ -605,7 +606,7 @@ def logical_texts(eaf: Any, tier: str) -> list[str]:
 
 
 class TestBuildEaf:
-    """The sixteen tiers, built from real Parquet and read back out of real XML."""
+    """The seventeen tiers, built from real Parquet and read back out of real XML."""
 
     def test_only_the_tiers_with_input_files_are_present(self, dataset: dict[str, Path]) -> None:
         eaf = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
@@ -626,15 +627,15 @@ class TestBuildEaf:
         build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: lines.append(str(a[0])))
         # "skipped (" and not bare "skipped": the closing census line also reports the count,
         # and counting it would make this assertion pass at seven tiers or at seventy.
-        # Eleven, not seven: the four linguistic tables join the absent set, because the synthetic
-        # clip writes five producers' tables and no linguistic one.
+        # Twelve, not eleven: the per-segment acoustic table joins the absent set the synthetic
+        # clip writes nothing for (five producers' tables, no linguistic one and no acoustic one).
         skipped = [line for line in lines if "skipped (" in line]
-        assert len(skipped) == 11, skipped
+        assert len(skipped) == 12, skipped
         assert len([line for line in skipped if "linguistic/" in line]) == 4, skipped
         assert sum(1 for line in skipped if "gloss_en" in line) == 1
         assert any("translation/segments_en.parquet not produced" in line for line in skipped)
         # The census line agrees with the per-tier lines rather than restating a constant.
-        assert any(line.startswith("elan: 5 tier(s)") and "skipped 11" in line for line in lines)
+        assert any(line.startswith("elan: 5 tier(s)") and "skipped 12" in line for line in lines)
 
     def test_a_known_word_lands_on_the_expected_millisecond_pair(self,
                                                                 dataset: dict[str, Path]
@@ -1759,13 +1760,13 @@ def eaf_of(dataset: dict[str, Path]) -> Any:
 class TestTierRegistration:
     """Every tier reads a registered artifact; no file name is invented here."""
 
-    def test_the_sixteen_tiers_are_the_ones_the_design_named(self) -> None:
+    def test_the_seventeen_tiers_are_the_ones_the_design_named(self) -> None:
         assert [spec.tier for spec in TIERS] == [
             "words", "segments_src", "gloss_en", "turns_pyannote", "turns_nemotron",
             "fusion_pyannote", "fusion_nemotron", "asd_speaking", "face_tracks",
             "person_tracks", "pose_presence", "voiced_blocks",
             "spacy_source_tokens", "spacy_source_sentences",
-            "spacy_english_tokens", "spacy_english_sentences"]
+            "spacy_english_tokens", "spacy_english_sentences", "acoustic_segments"]
 
     def test_every_tier_input_is_a_registered_artifact(self) -> None:
         unregistered = sorted({spec.artifact for spec in TIERS} - set(ARTIFACT_LAYOUT))
@@ -2453,7 +2454,7 @@ class TestPersonSightings:
 
         Both columns are nullable in ``PERSON_FRAMES_SCHEMA``, and the schema's own comment says
         why a null there is a missing measurement rather than a zero. Neither may crash the tier
-        (that would lose all fifteen sibling tiers through the per-tier guard's log line), neither
+        (that would lose all sixteen sibling tiers through the per-tier guard's log line), neither
         may be counted as a sighting of somebody, and the row that has a time but no frame still
         belongs in the file as a mark that cannot be placed.
         """
@@ -2953,7 +2954,7 @@ class TestIndependentTierProjection:
                                                          ) -> None:
         """The synthetic clip has no same-tier overlap, so it gets no property at all.
 
-        Checked by absence rather than by an empty dict per tier: a document that lists sixteen
+        Checked by absence rather than by an empty dict per tier: a document that lists seventeen
         unaffected tiers is a document where a reader cannot see which two were rewritten.
         """
         eaf = eaf_of(dataset)
@@ -3983,9 +3984,9 @@ class TestLinguisticTiers:
             assert {"spacy_source_tokens", "spacy_english_tokens"} - {artifact} <= others
             assert "words" in others, "one bad linguistic table must not lose the export"
 
-    def test_a_broken_linguistic_table_still_leaves_the_other_fifteen_tiers_buildable(
+    def test_a_broken_linguistic_table_still_leaves_the_other_sixteen_tiers_buildable(
             self, tmp_path: Path) -> None:
-        """The per-tier guard's whole purpose, at sixteen tiers instead of twelve."""
+        """The per-tier guard's whole purpose, at seventeen tiers instead of twelve."""
         root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
         (root / LINGUISTIC_PATHS[SPACY_SOURCE_SENTENCES]).write_bytes(b"junk")
         eaf = build_eaf(root, video, log=lambda *a, **k: None)
@@ -4158,3 +4159,698 @@ class TestLinguisticTiers:
         # And the sentence that carries it still says which way the rule goes.
         sentence = next(s for s in clause.split(". ") if "rounding noise" in s)
         assert "placed at 0 ms" in sentence and "producer defect" in sentence
+
+
+
+# ------------------------------------------------- acoustic segment tier (B4)
+
+#: The tier's registry artifact key, resolved through the registry like the linguistic ones.
+ACOUSTIC_SEGMENTS = "acoustic_segments"
+
+#: Every numeric column the label prints, as ``column -> unit``.
+# Written out here rather than read back from `elan.py`, because the unit a label prints is the
+# claim B4 exists to make: a test that imported the module's own unit map would let a wrong unit
+# move to both sides of the comparison.
+ACOUSTIC_UNITS: dict[str, str] = {
+    "f0_mean": "Hz", "f0_median": "Hz", "f0_min": "Hz", "f0_max": "Hz", "f0_std": "Hz",
+    "intensity_mean": "dB", "intensity_median": "dB", "intensity_min": "dB",
+    "intensity_max": "dB", "intensity_std": "dB",
+    "f1_mean": "Hz", "f2_mean": "Hz", "f3_mean": "Hz",
+    "duration": "s", "pause_duration": "s",
+}
+
+#: The four family headers, in the order the label prints them, each naming its family once.
+ACOUSTIC_FAMILIES: tuple[str, ...] = (
+    "pitch (over the frames flagged voiced, not the voiced (f0) bars)",
+    "intensity (over every frame in the window)",
+    "formants (F1, F2, F3 mean over every frame in the window)",
+    "pauses (clipped silence runs inside the window)",
+)
+
+
+def _num_expected(value: Any, places: int = 3) -> str:
+    """The display form a label is expected to carry: rounded, or the word for missing.
+
+    Written out here rather than by calling `_num`, so the rounding asserted below is this file's
+    claim about what a reader should see and not the implementation's own words.
+    """
+    if value is None:
+        return UNKNOWN_DISPLAY
+    return f"{float(value):.{places}f}"
+
+
+def _acoustic_segment(segment_id: str, start: Any, end: Any, *,
+                      speaker_id: Any = "SPEAKER_00", duration: Any = 4.204204,
+                      **overrides: Any) -> dict[str, Any]:
+    """One ``acoustic/segment_features.parquet`` row, as `acoustics.aggregate_segment` writes it.
+
+    The defaults are the measured KABC `seg000001` values, because the state a test has to leave
+    deliberately is a real number: every family (pitch, intensity, formants, pauses) carries a
+    value, so a fixture that nulled them by default could never tell "printed as unknown" from
+    "not printed at all".
+
+    `duration` defaults to the **clip's** duration rather than the segment's span, which is what
+    the producer actually stores: `stages/acoustic.py` hands `aggregate_segment` the source media
+    duration and the column falls back to end−start only when the metadata had none. A fixture
+    that wrote end−start would encode a belief about that column the producer does not hold.
+
+    `overrides` are how a test asks for the states this corpus does not contain: a null
+    `pause_ratio` (the producer's documented answer when its span is unknown or zero), a null
+    `f0_*` family (a segment with no voiced frames), a NaN formant mean.
+    """
+    row = {
+        "schema_version": "1.0", "video_id": "clip", "segment_id": segment_id,
+        "speaker_id": speaker_id, "start_time": start, "end_time": end, "duration": duration,
+        "voiced_ratio": 0.759494, "f0_mean": 147.699967, "f0_median": 135.995284,
+        "f0_min": 101.334322, "f0_max": 229.536756, "f0_std": 30.309343,
+        "intensity_mean": 55.326073, "intensity_median": 60.058433,
+        "intensity_min": 19.610111, "intensity_max": 66.281099, "intensity_std": 12.075171,
+        "f1_mean": 584.424409, "f2_mean": 1684.471309, "f3_mean": 2804.56804,
+        "pause_count": 1, "pause_duration": 0.41, "pause_ratio": 0.097521,
+    }
+    row.update(overrides)
+    return row
+
+
+def acoustic_clip(tmp_path: Path, rows: list[dict[str, Any]],
+                  *, with_frames: bool = True) -> tuple[Path, Path]:
+    """A transcript, ``acoustic/segment_features.parquet``, and (by default) the frame table.
+
+    ``with_frames=False`` is one direction of the isolation case; the other is deleting the
+    segment table afterwards. The two acoustic tiers read two different files that one
+    `normalize()` pass writes, so a directory holding one and not the other is a real state.
+    """
+    root, video = _clip(tmp_path)
+    _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+    _write(ACOUSTIC_SEGMENTS_SCHEMA, root / ARTIFACT_LAYOUT[ACOUSTIC_SEGMENTS], rows)
+    if with_frames:
+        _write(ACOUSTIC_FRAMES_SCHEMA, root / ARTIFACT_LAYOUT["acoustic_frames"], [
+            {"schema_version": "1.0", "video_id": "clip", "timestamp": 0.0, "f0_hz": 120.0,
+             "intensity_db": 60.0, "voiced": True, "f1_hz": 500.0, "f2_hz": 1500.0,
+             "f3_hz": 2500.0},
+            {"schema_version": "1.0", "video_id": "clip", "timestamp": 0.01, "f0_hz": None,
+             "intensity_db": 40.0, "voiced": False, "f1_hz": None, "f2_hz": None,
+             "f3_hz": None},
+        ])
+    return root, video
+
+
+def acoustic_label(eaf: Any, segment_id: str) -> str:
+    """The one logical acoustic row for `segment_id`."""
+    texts = [text for text in logical_texts(eaf, "acoustic_segments")
+             if f" [{segment_id}] · " in text]
+    assert len(texts) == 1, (segment_id, texts)
+    return texts[0]
+
+
+def acoustic_fragment(text: str, prefix: str) -> str:
+    """The one ` · `-separated fragment of a label that starts with `prefix`."""
+    found = [part for part in text.split(" · ") if part.startswith(prefix)]
+    assert len(found) == 1, (prefix, found, text)
+    return found[0]
+
+
+class TestAcousticSegmentTier:
+    """One flat tier of per-segment acoustic summaries, with every unit written in the label.
+
+    This is a new way the export can mislead with a bar. `voiced_blocks` prints runs, the
+    linguistic tiers print text over a borrowed interval, and this tier prints **numbers** — and a
+    number in a label is read as a measurement. Each test below pins one of four claims: which
+    unit a value carries, what a null prints, what the interval is entitled to mean (it is the
+    transcript segment's, not something the audio timed), and a distinction the producer itself
+    draws that a label can easily erase — the pitch statistics cover the frames `acoustics.py`
+    flagged `voiced`, while `voiced_blocks` blocks on `f0_hz` being present.
+    """
+
+    # --------------------------------------------------------------- registration
+
+    def test_the_tier_is_appended_after_the_four_linguistic_tiers_with_ids_unchanged(
+            self) -> None:
+        """Existing tier ids and their order are the contract; the new tier is appended.
+
+        The whole list is asserted rather than membership, because a tier that *moves* is
+        indistinguishable from a tier that was renamed — the reason B3 appended its four tiers
+        instead of interleaving them, and the same rule one tier later.
+        """
+        assert [spec.tier for spec in TIERS] == [
+            "words", "segments_src", "gloss_en", "turns_pyannote", "turns_nemotron",
+            "fusion_pyannote", "fusion_nemotron", "asd_speaking", "face_tracks",
+            "person_tracks", "pose_presence", "voiced_blocks",
+            "spacy_source_tokens", "spacy_source_sentences",
+            "spacy_english_tokens", "spacy_english_sentences",
+            "acoustic_segments"]
+
+    def test_the_tier_reads_the_registered_segment_acoustic_artifact(self) -> None:
+        """Its own table is its primary input, so its absence skips only it."""
+        assert ARTIFACT_LAYOUT[ACOUSTIC_SEGMENTS] == "acoustic/segment_features.parquet"
+        spec = next(spec for spec in TIERS if spec.tier == "acoustic_segments")
+        assert spec.artifact == ACOUSTIC_SEGMENTS
+        assert ACOUSTIC_SEGMENTS not in elan_core.SECONDARY_INPUTS
+        assert "acoustic_segments" not in elan_core.SECONDARY_INPUTS
+
+    def test_the_segment_acoustic_table_is_an_input_so_reuse_and_fingerprint_see_it(
+            self) -> None:
+        """The §31 argument, one table at a time.
+
+        `ElanStage.inputs` is `ALL_INPUTS` and the fingerprint hashes a key per entry, so a tier
+        reading an unlisted table would export new contents under a hash that still says "valid
+        previous result".
+        """
+        from multimodal_pipeline.stages.elan import ElanStage
+
+        assert ACOUSTIC_SEGMENTS in elan_core.ALL_INPUTS
+        assert ACOUSTIC_SEGMENTS in ElanStage.inputs
+        assert elan_core.ALL_INPUTS[0] == "speech_words"
+        assert ACOUSTIC_SEGMENTS in elan_core.ALL_INPUTS[:len(TIERS)], \
+            "ALL_INPUTS lists tier tables in tier order, so the fingerprint keys stay in tier order"
+
+    def test_every_acoustic_column_the_builder_reads_exists_in_its_schema(self) -> None:
+        """The silent failure: a projected read of a renamed column kills the tier in the guard.
+
+        Checked against the schema object that *writes* the table, and the unit map is checked
+        against the read list, so a printed column can never be missing from the projection.
+        """
+        known = {field.name for field in ACOUSTIC_SEGMENTS_SCHEMA}
+        read = set(elan_core.ACOUSTIC_SEGMENT_COLUMNS)
+        assert read <= known, read - known
+        assert set(ACOUSTIC_UNITS) | {"segment_id", "speaker_id", "start_time", "end_time",
+                                      "voiced_ratio", "pause_count", "pause_ratio"} <= read
+
+    # ------------------------------------------------------------------- placement
+
+    def test_a_row_is_placed_on_its_own_start_and_end_time(self, tmp_path: Path) -> None:
+        """The bar spans the row's own `start_time`/`end_time`, in integer milliseconds.
+
+        The fixture's endpoints are deliberately not round, so a truncation or an off-by-one
+        shows up as a wrong pair rather than passing on a lucky value.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.071, 3.223)])
+        emitted = annotations(eaf_of({"dir": root, "video": video}), "acoustic_segments")
+        assert len(emitted) == 1
+        assert emitted[0][:2] == (71, 3223)
+        assert emitted[0][2].startswith("seg000001 · ")
+
+    def test_the_bar_says_it_is_a_window_and_not_an_independently_timed_event(
+            self, tmp_path: Path) -> None:
+        """ELAN can only put a bar somewhere; this one's times come from the transcript.
+
+        The interval is the segment the acoustic stage was handed, and the numbers describe what
+        was sampled inside it. Read as an event, the bar would claim the pitch *began* at 71 ms.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.071, 3.223)])
+        _start, _end, text = annotations(eaf_of({"dir": root, "video": video}),
+                                         "acoustic_segments")[0]
+        assert "acoustic summary over this window" in text
+        assert "timed by the transcript segment, not independently timed" in text
+
+    def test_a_row_with_a_null_endpoint_is_dropped_and_counted_on_the_existing_line(
+            self, tmp_path: Path) -> None:
+        """No fallback to 0 and none to the duration column — the existing refusal path.
+
+        The times are the row's own pair; when either is missing the row has no time this export
+        may place, exactly as for a sighting or a word, and it is counted where it is counted.
+        """
+        root, video = acoustic_clip(tmp_path, [
+            _acoustic_segment("seg-null", None, 3.223),
+            _acoustic_segment("seg-ok", 4.0, 5.0)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [pair[:2] for pair in annotations(eaf, "acoustic_segments")] == [(4000, 5000)]
+        drop = [line for line in lines if "acoustic_segments" in line
+                and "missing timestamp" in line]
+        assert len(drop) == 1, lines
+        assert "1 of 2" in drop[0], drop[0]
+
+    @pytest.mark.parametrize("bad_start,bad_end", [
+        # A reversed pair, an equal pair, and a materially negative pair: three producer defects,
+        # one refusal, and the negative is the one the converter would have laundered.
+        (3.0, 1.0), (5.0, 5.0), (-2.0, -1.0),
+    ])
+    def test_a_row_with_an_unusable_pair_is_dropped_not_widened_or_clamped_onto_zero(
+            self, tmp_path: Path, bad_start: float, bad_end: float) -> None:
+        """`interval_ms` widens a real zero-width measurement, which is wrong for a broken pair.
+
+        The same distinction `_valid_pair` draws for the linguistic tiers, applied before the pair
+        reaches it: a reversed pair is not a measurement the display rule gets to rescue, an equal
+        pair would print twenty statistics over a 1 ms bar no audio spans, and a materially
+        negative pair is the case the converter's clamp turns into a bar at second zero — the
+        invented placement this export already refuses for sightings and words. All three are one
+        state here (the row has no time it may place), counted once, on one line.
+        """
+        root, video = acoustic_clip(tmp_path, [
+            _acoustic_segment("seg-bad", bad_start, bad_end),
+            _acoustic_segment("seg-ok", 4.0, 5.0)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert tier_counts(eaf)["acoustic_segments"] == 1
+        # `interval_ms` would have handed the reversed and equal pairs a 1 ms bar at whatever
+        # millisecond the conversion produced, and the negative pair that bar at second zero.
+        assert [pair[:2] for pair in annotations(eaf, "acoustic_segments")] == [(4000, 5000)]
+        drop = [line for line in lines if "acoustic_segments" in line
+                and "missing timestamp" in line]
+        assert len(drop) == 1 and "1 of 2" in drop[0], lines
+
+    def test_a_row_with_a_non_finite_time_costs_only_itself_and_its_own_line(
+            self, tmp_path: Path) -> None:
+        """A NaN endpoint is the other counted state, and it stays on its own log line."""
+        root, video = acoustic_clip(tmp_path, [
+            _acoustic_segment("seg-nan", float("nan"), 3.0),
+            _acoustic_segment("seg-ok", 0.071, 3.223)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert tier_counts(eaf)["acoustic_segments"] == 1
+        assert sum(1 for line in lines if "acoustic_segments" in line
+                   and "non-finite timestamp" in line) == 1, lines
+        assert not [line for line in lines if "acoustic_segments" in line
+                    and "missing timestamp" in line], lines
+
+    def test_two_overlapping_segment_rows_both_survive_with_their_own_labels(
+            self, tmp_path: Path) -> None:
+        """Segments can overlap (diarization, ASD, a resegmented transcript) and the tier is
+        still independent, so the B2a projection re-cuts it and both rows keep their numbers.
+
+        Asserted on the *logical* rows and on the emitted partition at once: the bars are a sweep
+        of the two rows' own endpoints, the middle one carries both labels, and each row's own
+        interval and full label survive in the projection property. The two labels differ, so a
+        row lost in the merge is visible rather than silently deduplicated.
+        """
+        root, video = acoustic_clip(tmp_path, [
+            _acoustic_segment("seg-outer", 0.0, 2.0, f0_mean=100.0),
+            _acoustic_segment("seg-inner", 1.0, 1.5, f0_mean=200.0)])
+        eaf = eaf_of({"dir": root, "video": video})
+        outer = acoustic_label(eaf, "seg-outer")
+        inner = acoustic_label(eaf, "seg-inner")
+        assert "f0_mean 100.000 Hz" in outer and "f0_mean 200.000 Hz" in inner
+        assert [(row["start_ms"], row["end_ms"])
+                for row in logical_rows(eaf, "acoustic_segments")] == [(0, 2000), (1000, 1500)]
+        document = projection_of(eaf)["acoustic_segments"]
+        assert document["logical_row_count"] == 2
+        assert document["final_annotation_count"] == 3
+        emitted = annotations(eaf, "acoustic_segments")
+        assert [pair[:2] for pair in emitted] == [(0, 1000), (1000, 1500), (1500, 2000)]
+        assert emitted[0][2] == outer and emitted[2][2] == outer
+        assert json.loads(emitted[1][2]) == [inner, outer]
+        assert [row["source"]["segment_id"]
+                for row in logical_rows(eaf, "acoustic_segments")] == ["seg-outer", "seg-inner"]
+
+    # ---------------------------------------------------------------- the label
+
+    def test_the_label_leads_with_the_segment_and_speaker_then_groups_the_families(
+            self, tmp_path: Path) -> None:
+        """Scannable first: the id is the link, and each family is named once, not per number.
+
+        `segment_id` leads because it is the join to `segments_src`, `gloss_en` and the four
+        linguistic tiers — a label that opened with a pitch number could not be traced back once
+        quoted. The four families are headers, so the label is four groups of numbers rather than
+        a 20-key dump.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.071, 3.223)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert text.startswith("seg000001 · SPEAKER_00 · [seg000001] · ")
+        assert text.index("pitch ") < text.index("intensity ") < text.index("formants ")
+        assert text.index("formants ") < text.index("pauses ")
+        for header in ACOUSTIC_FAMILIES:
+            assert acoustic_fragment(text, header.split(" (")[0] + " ") == header, header
+        # The unit travels on the value, so no family header needs it and no value prints bare.
+        assert text.count(" Hz") == 8, text
+        assert text.count(" dB") == 5, text
+
+    def test_every_number_carries_its_unit(self, tmp_path: Path) -> None:
+        """The B4 rule, per column: value and unit together, at the producer's own precision.
+
+        Asserted column by column rather than over the whole label, so a fragment printed from a
+        neighbouring column — `intensity_median` rendering `intensity_mean`'s value, say — still
+        dies instead of being a difference inside one long expected string.
+        """
+        row = _acoustic_segment("seg000001", 0.071, 3.223)
+        root, video = acoustic_clip(tmp_path, [row])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        for column, unit in ACOUSTIC_UNITS.items():
+            printed = acoustic_fragment(text, f"{column} ").split(" ", 1)[1]
+            if column == "duration":
+                # The one value carrying a provenance note after its unit; the note itself is
+                # asserted as its own test rather than folded into every column's comparison.
+                printed = printed.split(" (")[0]
+            assert printed == f"{_num_expected(row[column])} {unit}", (column, printed, text)
+
+    def test_the_two_ratios_name_their_denominators(self, tmp_path: Path) -> None:
+        """A 0-1 number is the one value in this table with no physical unit, so its meaning *is*
+        its denominator and the label has to print it.
+
+        Measured in `acoustics.py`: `voiced_ratio` is voiced frames over the frames inside the
+        segment interval, and `pause_ratio` is `pause_duration` over the span the producer was
+        handed — which `stages/acoustic.py` fills from the **source media duration**, so it is not
+        the segment's own length wherever the metadata duration was known. Neither is dressed as a
+        share of the clip.
+        """
+        row = _acoustic_segment("seg000001", 0.071, 3.223)
+        root, video = acoustic_clip(tmp_path, [row])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert acoustic_fragment(text, "pause_ratio ") == (
+            f"pause_ratio {row['pause_ratio']:.3f} of this row's duration")
+        assert acoustic_fragment(text, "voiced_ratio ") == (
+            f"voiced_ratio {row['voiced_ratio']:.3f} of the frames sampled in the window")
+
+    def test_pause_count_prints_as_a_count_and_not_a_unit_bearing_measurement(
+            self, tmp_path: Path) -> None:
+        """`pause_count` is an integer count; `3.000` would borrow a measurement's shape."""
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0,
+                                                                 pause_count=3)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert acoustic_fragment(text, "pause_count ") == "pause_count 3"
+
+    def test_the_pitch_family_says_its_numbers_cover_the_frames_flagged_voiced(
+            self, tmp_path: Path) -> None:
+        """The producer filters pitch on the `voiced` flag; the bars above filter on `f0_hz`.
+
+        `acoustics.py::aggregate_segment` builds the pitch list from frames where
+        ``frame["voiced"] is True``, while :func:`voiced_rows` blocks on ``f0_hz is not None`` and
+        documents that it deliberately does not read `voiced`. Two criteria and two tiers: without
+        the qualifier a reader compares `f0_mean` against the bars and sees a contradiction where
+        the tables simply answered different questions.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert acoustic_fragment(text, "pitch ") == (
+            "pitch (over the frames flagged voiced, not the voiced (f0) bars)")
+
+    def test_the_intensity_and_formant_families_do_not_borrow_the_voicing_qualifier(
+            self, tmp_path: Path) -> None:
+        """Intensity and formants are summarised over every frame in the window.
+
+        The opposite direction of the same mistake: one "voiced only" note sitting above all four
+        families would make the intensity and formant numbers look narrower than they are.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        pitch = text[text.index("pitch "):text.index("intensity ")]
+        rest = text[text.index("intensity "):]
+        assert "flagged voiced" in pitch
+        assert "flagged voiced" not in rest
+        assert acoustic_fragment(text, "intensity ") == (
+            "intensity (over every frame in the window)")
+        assert acoustic_fragment(text, "formants ") == (
+            "formants (F1, F2, F3 mean over every frame in the window)")
+        assert acoustic_fragment(text, "pauses ") == (
+            "pauses (clipped silence runs inside the window)")
+
+    def test_the_row_duration_is_labelled_as_reported_because_it_is_not_the_segment_span(
+            self, tmp_path: Path) -> None:
+        """Measured in the producer, and visible on this corpus.
+
+        `aggregate_segment` takes `duration` from its caller and `stages/acoustic.py` passes the
+        **source media duration**, falling back to end−start only when the metadata had none. On
+        this disk KABC's two rows carry `duration` 4.204204 s over spans of 3.152 s and 0.808 s,
+        and La-1's four carry 8.008008 s. Printing that column as the segment's duration would
+        state a false fact in the same label as the `pause_ratio` that divides by it.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.071, 3.223)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert acoustic_fragment(text, "duration ") == (
+            "duration 4.204 s (as reported: source duration when known, else segment span)")
+
+    # --------------------------------------------------------------- unknown states
+
+    def test_a_null_number_prints_unknown_and_never_a_measured_zero(self, tmp_path: Path) -> None:
+        """One case per numeric column: the missing value stays missing, and loses its unit.
+
+        Per column rather than one whole-label check, because the failure worth catching is one
+        family defaulting to `0.000` while its siblings print `unknown`. Both states are reachable
+        from the producer — a segment with no voiced frames nulls the whole `f0_*` family, and a
+        null `pause_ratio` is its documented answer for an unknown or zero span — but neither
+        occurs in the seven-corpus data on this disk, so these fixtures are the only thing that
+        exercises them; the corpus test below asserts that rather than assuming it. The unit goes
+        with the number, because `unknown Hz` puts a unit on a non-measurement.
+        """
+        for column in ACOUSTIC_UNITS:
+            root, video = acoustic_clip(
+                tmp_path / f"null-{column}", [_acoustic_segment("seg000001", 0.071, 3.223,
+                                                                **{column: None})])
+            text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+            printed = acoustic_fragment(text, f"{column} ").split(" ", 1)[1]
+            # `duration` keeps its provenance note even when the number is missing, so the word
+            # 'unknown' stays attributable to the column it came from.
+            head = printed.split(" (")[0] if column == "duration" else printed
+            assert head == UNKNOWN_DISPLAY, (column, printed, text)
+            assert not printed.startswith("0."), (column, printed, text)
+
+    def test_a_non_finite_number_prints_unknown_rather_than_nan(self, tmp_path: Path) -> None:
+        """`f0_mean nan Hz` is not a value; a NaN that reached the table is a producer defect."""
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0,
+                                                                 f0_mean=float("nan"))])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert acoustic_fragment(text, "f0_mean ") == f"f0_mean {UNKNOWN_DISPLAY}"
+        assert "nan" not in text.lower()
+
+    def test_a_measured_zero_prints_as_a_measured_zero(self, tmp_path: Path) -> None:
+        """The other half of the rule: a window with no pause *was* measured, and says 0.
+
+        KABC's `seg000002` really carries `pause_count` 0, `pause_duration` 0.0 and
+        `pause_ratio` 0.0. Printing `unknown` there would tell a reader the stage never looked.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment(
+            "seg000002", 3.243, 4.051, pause_count=0, pause_duration=0.0, pause_ratio=0.0)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000002")
+        assert acoustic_fragment(text, "pause_count ") == "pause_count 0"
+        assert acoustic_fragment(text, "pause_duration ") == "pause_duration 0.000 s"
+        assert acoustic_fragment(text, "pause_ratio ") == (
+            "pause_ratio 0.000 of this row's duration")
+
+    def test_a_null_pause_ratio_is_unknown_and_is_never_turned_into_zero(
+            self, tmp_path: Path) -> None:
+        """The producer's own None, and the stage validator's boundary beside it.
+
+        `aggregate_segment` writes `pause_ratio = None` when its span is unknown or zero, and
+        `AcousticStage.validate` rejects a ratio above 1.0 — the column's null is a documented
+        statement about the denominator. Turning it into 0.0 would claim "no silence in this
+        window", the one measurement the row says was not taken.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0,
+                                                                 pause_ratio=None)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert acoustic_fragment(text, "pause_ratio ") == (
+            f"pause_ratio {UNKNOWN_DISPLAY} of this row's duration")
+
+    def test_the_other_ratios_and_counts_keep_their_missing_states_separate(
+            self, tmp_path: Path) -> None:
+        """A silent window: `voiced_ratio`, the pitch family and the pauses are all null while
+        intensity is still measured.
+
+        Collapsing any of them into another's shape — or into a zero — is what the per-column
+        rules exist to stop, so the state is built here rather than hoped for.
+        """
+        row = _acoustic_segment("seg-silent", 0.0, 2.0, voiced_ratio=None, pause_count=None,
+                                pause_duration=None, pause_ratio=None, f0_mean=None,
+                                f0_median=None, f0_min=None, f0_max=None, f0_std=None)
+        root, video = acoustic_clip(tmp_path, [row])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg-silent")
+        assert acoustic_fragment(text, "voiced_ratio ") == (
+            f"voiced_ratio {UNKNOWN_DISPLAY} of the frames sampled in the window")
+        assert acoustic_fragment(text, "pause_count ") == f"pause_count {UNKNOWN_DISPLAY}"
+        assert acoustic_fragment(text, "pause_duration ") == (
+            f"pause_duration {UNKNOWN_DISPLAY}")
+        assert acoustic_fragment(text, "f0_mean ") == f"f0_mean {UNKNOWN_DISPLAY}"
+        assert acoustic_fragment(text, "f0_std ") == f"f0_std {UNKNOWN_DISPLAY}"
+        assert acoustic_fragment(text, "intensity_mean ") == "intensity_mean 55.326 dB"
+
+    def test_a_null_speaker_prints_unknown_like_every_other_id_bearing_label(
+            self, tmp_path: Path) -> None:
+        """The column is nullable, and prints the same word the segment tiers print for it."""
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0,
+                                                                 speaker_id=None)])
+        text = acoustic_label(eaf_of({"dir": root, "video": video}), "seg000001")
+        assert text.startswith("seg000001 · unknown · ")
+        assert "None" not in text
+
+    # ------------------------------------------------------------- per-tier isolation
+
+    def test_a_missing_or_corrupt_segment_acoustic_table_costs_only_this_tier(
+            self, tmp_path: Path) -> None:
+        """The per-tier guard on the newest tier, in both of its failure shapes.
+
+        Absent and unreadable are reported as one state naming the file, and the frame-based
+        `voiced_blocks` tier reads a different file, so it keeps working.
+        """
+        for broken in ("missing", "corrupt"):
+            root, video = acoustic_clip(tmp_path / broken,
+                                        [_acoustic_segment("seg000001", 0.0, 2.0)])
+            path = root / ARTIFACT_LAYOUT[ACOUSTIC_SEGMENTS]
+            if broken == "missing":
+                path.unlink()
+                expected = "not produced"
+            else:
+                path.write_bytes(b"not parquet at all")
+                expected = "unreadable"
+            lines: list[str] = []
+            eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+            assert "acoustic_segments" not in tier_counts(eaf), broken
+            assert [line for line in lines if "acoustic_segments skipped" in line
+                    and expected in line], (broken, lines)
+            assert "voiced_blocks" in tier_counts(eaf), broken
+            assert "words" in tier_counts(eaf), broken
+
+    def test_the_frame_based_voiced_tier_survives_without_the_segment_table(
+            self, tmp_path: Path) -> None:
+        """The reverse direction, and the reason one table per tier is worth the tier count.
+
+        `voiced_blocks` reads `acoustic/frame_features.parquet`; this tier reads
+        `acoustic/segment_features.parquet`. Losing the aggregate must not lose the bars.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0)])
+        (root / ARTIFACT_LAYOUT[ACOUSTIC_SEGMENTS]).unlink()
+        eaf = eaf_of({"dir": root, "video": video})
+        assert "acoustic_segments" not in tier_counts(eaf)
+        # One voiced frame at 0.0 s on a 10 ms grid: the block ends one median grid step past the
+        # last frame that carried the label, which is `voiced_rows`' own rule, unchanged by B4.
+        assert annotations(eaf, "voiced_blocks") == [(0, 10, "voiced (f0)")]
+
+    def test_an_empty_segment_table_is_an_empty_tier_and_not_a_skip(self, tmp_path: Path) -> None:
+        """`person_demo` and `pipeline_silent` really are in this state on this disk.
+
+        The distinction the whole export keeps: a tier whose file was never produced is skipped
+        with a reason, and a tier whose file exists and holds nothing is present and empty.
+        """
+        root, video = acoustic_clip(tmp_path, [])
+        eaf = eaf_of({"dir": root, "video": video})
+        assert tier_counts(eaf)["acoustic_segments"] == 0
+
+    # ---------------------------------------------------------------- corpus
+
+    def test_the_corpus_labels_recompute_from_their_own_rows_column_by_column(self) -> None:
+        """The real tables, so the units and the rounding are checked against measurements.
+
+        Every printed value is recomputed here from `acoustic/segment_features.parquet` and
+        compared against the reopened file's own labels — the synthetic fixtures pin the format,
+        only the corpus pins the arithmetic against a producer that was not written for this test.
+        The overlap question is asked of the tables rather than assumed: on this disk no two
+        segment rows share an instant, so the projection branch has its coverage in the fixture
+        above and this loop records what the corpus actually looks like.
+        """
+        if not PROCESSED.is_dir():
+            pytest.skip(f"no corpus under {PROCESSED}")
+        checked_rows = 0
+        overlapping_pairs = 0
+        printed_unknown: dict[str, int] = {}
+        source_nulls: dict[str, int] = {}
+        for root in sorted(p for p in PROCESSED.iterdir() if (p / "manifest.json").is_file()):
+            path = root / ARTIFACT_LAYOUT[ACOUSTIC_SEGMENTS]
+            if not path.is_file():
+                continue
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            video = Path(manifest["source"]["path"])
+            if not video.is_file():
+                continue
+            table = read_table(path).to_pylist()
+            for row in table:
+                for column, value in row.items():
+                    if value is None:
+                        source_nulls[column] = source_nulls.get(column, 0) + 1
+            timed = [row for row in table
+                     if row["start_time"] is not None and row["end_time"] is not None]
+            overlapping_pairs += sum(
+                1 for index, left in enumerate(timed)
+                for right in timed[index + 1:]
+                if float(right["start_time"]) < float(left["end_time"])
+                and float(left["start_time"]) < float(right["end_time"]))
+            # Built in memory only: nothing under data/processed/ is opened for writing.
+            eaf = build_eaf(root, video, log=lambda *a, **k: None)
+            by_segment = {row["segment_id"]: row for row in table}
+            assert set(by_segment) == {row["segment_id"] for row in table}, root.name
+            for entry in logical_rows(eaf, "acoustic_segments"):
+                text = entry["text"]
+                segment_id = text.split(" · ")[0]
+                source = by_segment.get(segment_id)
+                assert source is not None, (root.name, segment_id)
+                # Placement: the row's own two times, in integer milliseconds.
+                assert (entry["start_ms"], entry["end_ms"]) == (
+                    int(round(float(source["start_time"]) * 1000)),
+                    int(round(float(source["end_time"]) * 1000))), (root.name, entry)
+                for column, unit in ACOUSTIC_UNITS.items():
+                    value = source[column]
+                    want = (f"{column} {UNKNOWN_DISPLAY}" if value is None
+                            else f"{column} {float(value):.3f} {unit}")
+                # `duration` keeps its provenance note after the unit; everything else ends there.
+                    fragment = [part for part in text.split(" · ")
+                                if part.startswith(f"{column} ")]
+                    assert len(fragment) == 1, (root.name, column, text)
+                    head = (fragment[0].split(" (")[0] if column == "duration"
+                            else fragment[0])
+                    assert head == want, (root.name, segment_id, column, head, want)
+                    if head.endswith(UNKNOWN_DISPLAY):
+                        printed_unknown[column] = printed_unknown.get(column, 0) + 1
+                for column, denominator in (("pause_ratio", "this row's duration"),
+                                            ("voiced_ratio",
+                                             "the frames sampled in the window")):
+                    value = source[column]
+                    want = (f"{column} {UNKNOWN_DISPLAY} of {denominator}" if value is None
+                            else f"{column} {float(value):.3f} of {denominator}")
+                    assert [part for part in text.split(" · ")
+                            if part.startswith(f"{column} ")] == [want], (
+                                root.name, segment_id, column, text)
+                count = source["pause_count"]
+                assert [part for part in text.split(" · ")
+                        if part.startswith("pause_count ")] == [
+                            f"pause_count {UNKNOWN_DISPLAY}" if count is None
+                            else f"pause_count {int(count)}"], (root.name, segment_id, text)
+                checked_rows += 1
+        # A measurement, stated so this test cannot quietly stop meaning anything.
+        assert checked_rows, "no acoustic segment rows on this disk; the loop proved nothing"
+        assert overlapping_pairs == 0, (
+            f"the corpus now writes overlapping segments ({overlapping_pairs} pairs); the tier "
+            "has a projection test in the fixtures but its corpus behaviour needs reviewing")
+        # The invariant, checked per column rather than asserted as a number: a label prints
+        # `unknown` for a column exactly as often as that column was null in the rows it came from.
+        # The counts are also a measurement of *this* disk: all nine corpus rows carry a value for
+        # every printed column, so the `unknown` rendering is exercised here by the fixture cases
+        # above and not by corpus data, and that is recorded rather than glossed over.
+        for column in ACOUSTIC_UNITS:
+            assert printed_unknown.get(column, 0) == source_nulls.get(column, 0), (
+                column, printed_unknown, source_nulls)
+
+    # ----------------------------------------------------------- semantics property
+
+    def test_the_semantics_property_carries_an_acoustic_clause(self, tmp_path: Path) -> None:
+        """The file explains its own numbers, because a label is quoted without the README.
+
+        The claims the clause has to make: the units, the denominator of each ratio, that the bar
+        is the transcript's window rather than an independently timed event, how the values are
+        rounded, and that a missing one says `unknown`.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0)])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Acoustic summary tier:"):text.index("Coverage:")]
+        assert "acoustic_segments" in clause
+        for fragment in ("Hz", "dB", "second", "this row's duration",
+                         "frames sampled in the window", "not independently timed",
+                         UNKNOWN_DISPLAY, "round", "pause_count"):
+            assert fragment in clause, fragment
+
+    def test_the_acoustic_clause_keeps_the_two_voicing_criteria_separate(
+            self, tmp_path: Path) -> None:
+        """The property states two criteria, because the code has two.
+
+        A clause saying the pitch numbers cover the voiced bars would invent a link between two
+        tiers and contradict `voiced_rows`, whose docstring refuses to read the `voiced` column.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0)])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Acoustic summary tier:"):text.index("Coverage:")]
+        assert "flagged voiced" in clause
+        assert "voiced (f0)" in clause
+        assert "not the same criterion" in clause
+        assert "every frame" in clause
+
+    def test_the_semantics_property_still_names_only_tiers_this_file_writes(
+            self, tmp_path: Path) -> None:
+        """The B1 ratchet, re-run with a new tier and a new clause in play.
+
+        It has teeth here: the acoustic clause names `voiced (f0)`, which is a *label* and not a
+        tier, so the new text must keep the existing convention of never writing the `<name> =`
+        shape for anything outside `TIERS`.
+        """
+        root, video = acoustic_clip(tmp_path, [_acoustic_segment("seg000001", 0.0, 2.0)])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        declared = {spec.tier for spec in TIERS}
+        for token in re.findall(r"([a-z_]+)\s*=", text):
+            assert token in declared, f"semantics describes an unknown tier: {token}"
+        assert "acoustic_segments" in declared

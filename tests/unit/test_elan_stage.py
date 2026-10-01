@@ -107,7 +107,8 @@ class TestStageWiring:
                                             "fusion_pyannote", "fusion_nemotron",
                                             "person_tracks", "voiced_blocks",
                                             "spacy_source_tokens", "spacy_source_sentences",
-                                            "spacy_english_tokens", "spacy_english_sentences"]
+                                            "spacy_english_tokens", "spacy_english_sentences",
+                                            "acoustic_segments"]
         assert summary["media_url"] == dataset["video"].resolve().as_uri()
         assert summary["mimetype"] == "video/mp4"
         assert summary["bytes"] == ctx.artifact("elan_annotations").stat().st_size

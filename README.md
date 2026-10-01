@@ -10,7 +10,7 @@ OpenAI-compatible endpoint, spaCy linguistic features (source language and
 English), Praat/Parselmouth acoustic features and OpenPose BODY_25 + hands + face
 keypoints — all normalised to Parquet on a single video timeline, with raw tool
 artifacts, logs, status, provenance, a manifest, and an ELAN `.eaf` annotation file
-per video: sixteen fixed tiers that summarise what each stage measured, with the clip
+per video: seventeen fixed tiers that summarise what each stage measured, with the clip
 linked, so the corpus opens in ELAN. The `.eaf` is a summary, not a copy — it carries
 the label runs an analyst reads, not every number in the tables (see
 [ELAN export](#elan-export-elan)).
@@ -279,7 +279,7 @@ data/processed/<video_id>/
 │   ├── fusion_nemotron.parquet         ← same fusion, Nemotron turns, if that engine is selected
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── elan/
-│   └── annotations.eaf             ← ELAN export: 16 fixed summary tiers, video linked (see below)
+│   └── annotations.eaf             ← ELAN export: 17 fixed summary tiers, video linked (see below)
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
     ├── config.json               ← resolved config, secrets masked, config hash
@@ -427,7 +427,7 @@ Now the files, with what those numbers mean:
 | `speaker/fusion_{pyannote,nemotron}.parquet` | 2 / 1 | One row per diarization turn per engine: the turn's times plus what the face evidence said about it, as a verdict in `agreement` and the arithmetic behind it in `agreement_detail`. On this clip both engines answer `no_face_visible` — "a voice with nothing visible" — which is the correct reading of a test pattern, not a failure to decide. |
 | `speaker/active_speaker_frames.parquet` | 249 | Dense on the 25 FPS grid, and on this clip the grid *is* the source grid. Every row is `face_status='no_face'`, `frame_reason='no_face'`, `score_imputed=False`, `is_active_speaker=False`, `track_id=None`. |
 | `speaker/active_speaker_tracks.parquet` | 0 | No track, because no face was ever located. |
-| `elan/annotations.eaf` | 12 tiers / 59 annotations *(on disk)* | The ELAN export of the tiers above: fixed flat tiers, the video linked by both an absolute and a relative URL, per-frame signals collapsed into runs. It is XML, so the count is annotations and tiers rather than rows, and it is a **summary** — label text and run boundaries are derived, so this is not a row-for-row copy of the tables. **These two numbers are what the file on this disk holds, and the file is historical:** it was written when the export had twelve tiers, and the current code measures **16 tiers / 85 annotations** against these same tables in memory (the four linguistic tiers add 26: `spacy_source_tokens` 23, `spacy_source_sentences` 1, `spacy_english_tokens` 1, `spacy_english_sentences` 1). Nothing was regenerated — see the table under [ELAN export](#elan-export-elan) for the on-disk vs measured split. Measured here, both then and now: `words` 23, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
+| `elan/annotations.eaf` | 12 tiers / 59 annotations *(on disk)* | The ELAN export of the tiers above: fixed flat tiers, the video linked by both an absolute and a relative URL, per-frame signals collapsed into runs. It is XML, so the count is annotations and tiers rather than rows, and it is a **summary** — label text and run boundaries are derived, so this is not a row-for-row copy of the tables. **These two numbers are what the file on this disk holds, and the file is historical:** it was written when the export had twelve tiers, and the current code measures **17 tiers / 86 annotations** against these same tables in memory (the four linguistic tiers add 26: `spacy_source_tokens` 23, `spacy_source_sentences` 1, `spacy_english_tokens` 1, `spacy_english_sentences` 1; the acoustic segment tier adds 1, this clip's single `seg000001`). Nothing was regenerated — see the table under [ELAN export](#elan-export-elan) for the on-disk vs measured split. Measured here, both then and now: `words` 23, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
 | `provenance/{config,tools,processing}.json` | — | Resolved config with secrets masked, the machine inventory, and every stage's exact command, hashes and duration. |
 
 One row read straight out of `speech/words.parquet`, which is the row every other modality
@@ -978,7 +978,7 @@ passes `persist=False` unconditionally, and counts GMC failures into
 ## ELAN export: `elan`
 
 The last stage writes one `elan/annotations.eaf` per dataset: an ELAN annotation file that
-links the source video and puts a fixed set of sixteen flat tiers over it, so the corpus is
+links the source video and puts a fixed set of seventeen flat tiers over it, so the corpus is
 readable in the tool linguists already use instead of only through Parquet. It is a
 *derived summary*, not a new measurement and not a copy: it reads the tables the other stages
 wrote, changes no number in them, and writes down the label runs an analyst reads — which means
@@ -986,8 +986,8 @@ it deliberately leaves things out (see the coverage note below). That is why it 
 why it runs after `finalization`, and why it is **on by default** while `persons` and
 `diarization_nemotron` are off: it needs no GPU, no download, no credential.
 
-Sixteen tiers, fixed names, no hierarchy — and **not** one tier per module. Those sixteen read
-eighteen of the twenty-two normalised tables the pipeline publishes, because `person_tracks`
+Seventeen tiers, fixed names, no hierarchy — and **not** one tier per module. Those seventeen read
+nineteen of the twenty-two normalised tables the pipeline publishes, because `person_tracks`
 also reads `persons/frames.parquet` and `source/frame_index.parquet` to decide where a sighting
 run ends (below). Those two are **consumed support for the sightings tier** — they place the
 sightings the tier reports — and neither is an exported analysis of its own: no tier is written
@@ -995,12 +995,15 @@ sightings the tier reports — and neither is an exported analysis of its own: n
 tier (`spacy_source_tokens`, `spacy_source_sentences`, `spacy_english_tokens`,
 `spacy_english_sentences`), and they are flat peers: the sentence tier is **not** the token tier's
 parent and no tier is created per token, because a parent/child chain would make the file's shape
-depend on the data and two datasets could no longer be compared tier-for-tier. What still gets no
-tier is the per-segment acoustic aggregate, `pose/hands`, `pose/face` and `pose/normalized`. A
+depend on the data and two datasets could no longer be compared tier-for-tier. The per-segment
+acoustic aggregate has a tier of its own (`acoustic_segments`) and it is a flat peer of
+`voiced_blocks`, not its child: the two tables are filtered differently (below) and a hierarchy
+would make the file's shape depend on which of the two a run produced. What still gets no
+tier is `pose/hands`, `pose/face` and `pose/normalized`. A
 tier is never silently renamed to cover them
 (`manifest.artifacts_not_generated` is where absence is declared, and what still belongs there is
 classified with the coverage refresh, not here). Two diarizers and two fusions
-are why sixteen tiers is more tiers than producers: an absent engine is an absent tier, not a
+are why seventeen tiers is more tiers than producers: an absent engine is an absent tier, not a
 shared one.
 
 | Tier | From | Annotation text |
@@ -1019,8 +1022,9 @@ shared one.
 | `spacy_source_sentences` | `linguistic/source/sentences.parquet` | `Now that you say that, I can remember hearing your voice at the Laker game. · SPEAKER_00 · source sentence seg000001-s001 · tokens 17 · [seg000001] · char 0-75 · placement=segment context (not token aligned) · the only bounds this table carries are the segment's, never a sentence-onset measurement` (measured on KABC) |
 | `spacy_english_tokens` | `linguistic/english/tokens.parquet` | the same analysis for the translated word, then `variant no_timing · placement=segment context (not token aligned) · translation text, not word alignment to the source` (KABC: `placed 71 ms-3223 ms · alignment=no_timing conf=0.000`) |
 | `spacy_english_sentences` | `linguistic/english/sentences.parquet` | the translated sentence over its segment, with the same context wording preceded by `variant no_timing · translation text, not word alignment to the source` (KABC `seg000001-s001`: 16 tokens, `char 0-74`) |
+| `acoustic_segments` | `acoustic/segment_features.parquet` | `seg000001 · SPEAKER_00 · [seg000001] · acoustic summary over this window · timed by the transcript segment, not independently timed · duration 4.204 s (as reported: source duration when known, else segment span) · voiced_ratio 0.759 of the frames sampled in the window · pitch (over the frames flagged voiced, not the voiced (f0) bars) · f0_mean 147.700 Hz · f0_median 135.995 Hz · f0_min 101.334 Hz · f0_max 229.537 Hz · f0_std 30.309 Hz · intensity (over every frame in the window) · intensity_mean 55.326 dB · intensity_median 60.058 dB · intensity_min 19.610 dB · intensity_max 66.281 dB · intensity_std 12.075 dB · formants (F1, F2, F3 mean over every frame in the window) · f1_mean 584.424 Hz · f2_mean 1684.471 Hz · f3_mean 2804.568 Hz · pauses (clipped silence runs inside the window) · pause_count 1 · pause_duration 0.410 s · pause_ratio 0.098 of this row's duration` (measured on KABC `seg000001`, 876 characters) |
 
-Six rules the labels obey, because a tier value is the part of an `.eaf` that leaves the file
+Seven rules the labels obey, because a tier value is the part of an `.eaf` that leaves the file
 — into a screenshot, an issue, a talk — without this README next to it. They are also written
 into the document itself as the `pipeline-tier-semantics` property, so the file explains its own
 notation:
@@ -1167,6 +1171,46 @@ notation:
   config, so a re-export after a config edit still reports the model that produced the tokens. A
   table that recorded no model says `unknown` there, and a table that was never read gets no entry
   at all — absence is not "a table with an unknown model".
+- **An acoustic number carries its unit, and the pitch numbers say which frames they cover.**
+  `acoustic_segments` is the one tier whose labels are mostly numbers, and a number quoted out of
+  the file has no column name next to it, so every value prints its unit: `Hz` on the five F0
+  statistics and the three formant means, `dB` on the five intensity statistics, `s` on `duration`
+  and `pause_duration`. The two dimensionless values print their denominator instead —
+  `pause_ratio 0.098 of this row's duration` and `voiced_ratio 0.759 of the frames sampled in the
+  window` — because for a 0-1 value the denominator *is* the meaning, and the producer computes
+  each over a different base. The producer's two filters are stated separately, because they are
+  two: `acoustics.aggregate_segment` summarises F0 over the frames where the worker's `voiced`
+  flag is true, while `voiced_blocks` builds its bars on `f0_hz` being present and deliberately
+  never reads that flag, and the intensity and formant means are summarised over **every** frame
+  in the window with no voicing filter at all. Measured on this corpus the two criteria currently
+  agree frame-for-frame (4,435 frame rows across the seven datasets, 2,372 with a non-null `f0_hz`
+  and 2,372 flagged voiced, zero rows where the two disagree), which is exactly why the labels do
+  not claim they must: `workers/acoustic_worker.py` sets `voiced = f0 is not None` today, and a
+  label that borrowed that equality would go false the day the flag changes. The bar itself is the
+  **transcript** segment's interval — the acoustic stage aggregated the frames inside it — so the
+  label says the numbers describe a window and are not independently timed, which is the same
+  lesson the linguistic tiers learned about a borrowed interval, in a tier where it is easier to
+  miss because the numbers really were measured. `duration` is printed *as reported* rather than
+  as the segment's length, and that wording is measured too: the stage passes the source media
+  duration into that column, so KABC's two rows both read 4.204 s over segment spans of 3.152 s
+  and 0.808 s, and calling it "segment duration" would put a false fact beside the `pause_ratio`
+  that was divided by it. A null in any of these columns prints `unknown` with **no unit after
+  it** — `unknown Hz` would put a unit on a non-measurement — while a measured zero keeps its
+  digits, which is the state KABC's `seg000002` is really in (`pause_count 0`, `pause_duration
+  0.000 s`, `pause_ratio 0.000`). The producer's own null `pause_ratio` is never turned into 0.0:
+  `aggregate_segment` writes it when the span it divided by was unknown or zero, and the acoustic
+  stage's validator rejects a stored ratio above 1.0, so that null is a documented answer about
+  the denominator and 0.0 would claim a window with no silence in it. A row whose own two times
+  are null, non-finite, reversed or zero-width is dropped and counted rather than widened by the
+  display rule, because twenty measured statistics over a 1 ms bar no audio spans is the invented
+  placement every other tier already refuses. The cost of putting twenty numbers in one label is
+  the label, and the figure is measured rather than imagined: 874–876 characters per bar on the
+  five datasets that have rows. That makes it the third-longest emitted label on this corpus —
+  behind the coincident English-token context bars (7.0 k on KABC, 12.3 k on `pipeline_demo`) and
+  the multi-id `person_tracks` bars (2.0 k on `person_demo`) — and roughly twelve times the longest
+  visual-tier label (`face_tracks` peaks at 72 characters). It is the price of reading a segment's
+  pitch, loudness, formants and pauses without opening the Parquet, and it is paid once per
+  transcript segment rather than once per frame.
 
 Per-frame signals collapse into contiguous runs because 249 one-frame annotations per tier
 would be unusable in ELAN and true to nothing: the collapse is per label-run, and the block's end
@@ -1208,15 +1252,17 @@ written by the same code that wrote the bars is not evidence about them — and 
 overlap, an unresolvable slot reference, and any interval with `start >= end`.
 
 Measured on the corpus, annotations per dataset. **The "on disk" columns are read straight out of
-the `.eaf` files sitting here, and they are historical.** Four changes to the tier code are not in
+the `.eaf` files sitting here, and they are historical.** Five changes to the tier code are not in
 them: the ASD label split (every imputed-tail frame gets its own run), the person tier becoming
-sighting runs instead of one span per id, the independent-tier projection, and the four linguistic
-tiers. The rebuild column is what the same tables produce today, measured in memory against these
+sighting runs instead of one span per id, the independent-tier projection, the four linguistic
+tiers, and the acoustic segment summary tier. The rebuild column is what the same tables produce
+today, measured in memory against these
 files with no write — the export is regenerated by a pipeline run and the corpus `.eaf` files are
 the operator's to regenerate. **Read the two columns as a before/after of the export's code, never
 as a change in what was measured:** not one value in any Parquet table moved, and every added
 annotation is a split of a run that was already there, a segment of rows that already shared the
-time, or a linguistic tier that did not exist when the file was written. La-1's `person_tracks`
+time, a linguistic tier that did not exist when the file was written, or one bar per row of the
+per-segment acoustic table. La-1's `person_tracks`
 stays 9 because one trajectory breaks in two (id 10, source frames 114 → 144) while its eight ids
 stay eight; `person_demo`'s 75 ids become 138 logical sightings (110 runs and 28 single-frame marks)
 emitted as 157 bars, and KABC's 3 become 11 logical sightings emitted as 17. KABC and La-1 also
@@ -1227,17 +1273,23 @@ projection property, which is why `pipeline_demo` and `pipeline_demo_ntsc` moved
 time: their English tokens are 28 coincident context rows partitioned into **1** bar. Only
 `person_demo` and `pipeline_silent` have empty linguistic tables, so their totals are unchanged from
 before B3 (0 stays 0): `person_demo`'s projection property still names only `person_tracks`, and
-`pipeline_silent` still carries no projection property at all.
+`pipeline_silent` still carries no projection property at all. The acoustic tier is the smallest
+movement in the table and the only one that is not a re-cut: it adds exactly one bar per row of
+`acoustic/segment_features.parquet` — KABC 2, CNN 1, La-1 4, both `pipeline_demo`s 1 — and
+**nothing** on `person_demo` and `pipeline_silent`, whose acoustic segment tables exist and hold 0
+rows, so those two totals are unchanged from before B4 for the same reason the linguistic ones were
+empty (0 stays 0). No dataset's acoustic tier was projected: measured across all seven, the
+segment rows never overlap on this disk, so each is written exactly as measured.
 
 | dataset | tiers on disk | annotations on disk | rebuild now | note |
 |---|---|---|---|---|
-| KABC | 12 | 49 | 92 | `asd_speaking` 3 → 4 blocks; `person_tracks` 3 → 11 logical / 17 emitted; `turns_nemotron` and `fusion_nemotron` 3 → 4 each; `pose_presence` = 1 (0→4204 ms); **linguistic +26** — source tokens 24 logical → 20 bars, English tokens 23 logical → 2, sentences 2 + 2 |
-| CNN | 12 | 36 | 50 | projected `person_tracks` 4 logical → 1 bar (four ids sighted together); every visual tier unchanged; **linguistic +16** — source tokens 15 → 13, English tokens 15 → 1, sentences 1 + 1 |
-| La-1 | 12 | 86 | 125 | 7 → 11 ASD blocks; `person_tracks` 8 → 9; `turns_nemotron`/`fusion_nemotron` 4 → 6 each; `face_tracks` 4 → 5; **linguistic +29** — source tokens 21 → 17, English tokens 25 → 4, sentences 4 + 4 |
-| `person_demo` | 12 | 94 | 177 | transcript tiers are **empty**: its words table has 0 rows; 138 logical sightings → 157 bars; the four linguistic tiers are **empty too** (0 rows each), so this total is unchanged from before B3 |
-| `pipeline_demo` | 12 | 59 | 85 | its persons tables have 0 rows, so `person_tracks` is an **empty tier** here too — 0 stays 0; **linguistic +26** — source tokens 26 logical → 23 bars, English tokens 28 → 1, English sentences 2 → 1 |
-| `pipeline_demo_ntsc` | 12 | 59 | 85 | same tables, same projection: 26 → 23, 28 → 1, 2 → 1 |
-| `pipeline_silent` | 12 | 1 | 1 | the silence case: one block, no transcript, and empty linguistic tables |
+| KABC | 12 | 49 | 94 | `asd_speaking` 3 → 4 blocks; `person_tracks` 3 → 11 logical / 17 emitted; `turns_nemotron` and `fusion_nemotron` 3 → 4 each; `pose_presence` = 1 (0→4204 ms); **linguistic +26** — source tokens 24 logical → 20 bars, English tokens 23 logical → 2, sentences 2 + 2; **acoustic +2** |
+| CNN | 12 | 36 | 51 | projected `person_tracks` 4 logical → 1 bar (four ids sighted together); every visual tier unchanged; **linguistic +16** — source tokens 15 → 13, English tokens 15 → 1, sentences 1 + 1; **acoustic +1** |
+| La-1 | 12 | 86 | 129 | 7 → 11 ASD blocks; `person_tracks` 8 → 9; `turns_nemotron`/`fusion_nemotron` 4 → 6 each; `face_tracks` 4 → 5; **linguistic +29** — source tokens 21 → 17, English tokens 25 → 4, sentences 4 + 4; **acoustic +4** |
+| `person_demo` | 12 | 94 | 177 | transcript tiers are **empty**: its words table has 0 rows; 138 logical sightings → 157 bars; the four linguistic tiers are **empty too** (0 rows each) and so is `acoustic/segment_features.parquet`, so this total is unchanged from before B3 |
+| `pipeline_demo` | 12 | 59 | 86 | its persons tables have 0 rows, so `person_tracks` is an **empty tier** here too — 0 stays 0; **linguistic +26** — source tokens 26 logical → 23 bars, English tokens 28 → 1, English sentences 2 → 1; **acoustic +1** |
+| `pipeline_demo_ntsc` | 12 | 59 | 86 | same tables, same projection: 26 → 23, 28 → 1, 2 → 1; **acoustic +1** |
+| `pipeline_silent` | 12 | 1 | 1 | the silence case: one block, no transcript, empty linguistic tables, and an **empty** acoustic segment table (0 rows, but the frame table still parses) |
 
 Four more things the export does that are worth knowing before you open one:
 
@@ -1260,10 +1312,10 @@ Four more things the export does that are worth knowing before you open one:
   words *and* no segments is a dataset nobody asked to annotate, so the stage fails loudly
   there; anything else (translation off, ASD off) just exports fewer tiers. A tier's *secondary*
   input is missing is the same outcome, with the dependency named — `person_tracks` is skipped
-  when `persons/frames.parquet` is not there, and the other fifteen tiers still build. Absent and
+  when `persons/frames.parquet` is not there, and the other sixteen tiers still build. Absent and
   unreadable are reported as one state, because what the tier can do about either is the same.
 - **Reuse sees the extra tables.** The fingerprint hashes every file in
-  `ElanStage.inputs` — the sixteen tier tables *plus* `person_frames` and `frame_index` — keyed by
+  `ElanStage.inputs` — the seventeen tier tables *plus* `person_frames` and `frame_index` — keyed by
   artifact name with `null` for an absent one, and it also carries the tier→dependency map itself,
   so a tier that starts reading one more table changes the hash even when every file is
   byte-identical.
@@ -1824,7 +1876,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1779 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1811 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1881,7 +1933,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1779 tests
+tests/unit/                1811 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
