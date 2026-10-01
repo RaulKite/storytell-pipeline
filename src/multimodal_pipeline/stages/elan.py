@@ -22,6 +22,9 @@ reader, the writer, and the reuse guarantees around them:
 
 * per-tier absence is normal and logged, never an error — translation has no endpoint by
   default, ``persons`` ships disabled, either diarizer may be off;
+* what the export represents and what it leaves out travels in the file and in this stage's
+  record, because "that tier is missing" has two causes an opened ``.eaf`` cannot tell apart —
+  see :func:`~multimodal_pipeline.elan.coverage_inventory`;
 * a dataset with *neither* transcript table is a different case and is refused, because an .eaf
   with no words and no segments tier opens to an empty grid and reads as a broken export rather
   than an unfinished dataset.
@@ -29,12 +32,14 @@ reader, the writer, and the reuse guarantees around them:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from ..elan import (ALL_INPUTS, SECONDARY_INPUTS, TIERS, build_eaf, overlap_projection,
-                    tier_counts)
+from ..elan import (ALL_INPUTS, COVERAGE_EXPORTED, COVERAGE_PROPERTY, COVERAGE_STATES,
+                    COVERAGE_SUMMARISED, COVERAGE_VERSION, SECONDARY_INPUTS, TIERS, build_eaf,
+                    coverage_of, drop_counts, overlap_projection, tier_counts)
 from ..exceptions import ValidationError
 from .base import Stage, StageContext
 
@@ -77,6 +82,14 @@ class ElanStage(Stage):
         ``speaker_fusion`` and ``pose_normalized`` make the same argument for their inputs; this
         stage simply has more of them.
 
+        ``inventory_present`` is here because the coverage inventory makes the document a function
+        of three files this stage never reads. ``pose/hands``, ``pose/face`` and
+        ``pose/normalized`` are not inputs — no tier is built from them — so their appearance on
+        disk moved a *state* in the .eaf while leaving the config, every digest and the dependency
+        hash identical, and the reuse check would have kept a file claiming ``absent`` about a table
+        that was now there. Existence only, never contents: unread bytes cannot change a state, and
+        hashing them would rerun the export on every ``openpose`` run for an unchanged file.
+
         ``_python_code_sha256`` is the third thing the output is a function of, and the one no
         dependency hash can see: there is no worker, so without it a change to the
         millisecond rounding or the block collapsing in ``elan.py`` would leave the config,
@@ -103,6 +116,18 @@ class ElanStage(Stage):
             # the export can claim, so a dataset must not look reusable across that change.
             "secondary_inputs": {tier: list(names)
                                  for tier, names in sorted(SECONDARY_INPUTS.items())},
+            # Which of the inventoried tables were on disk, as booleans only. The coverage
+            # inventory writes a table's state into the .eaf, and a table it does not read is one
+            # of the four states away from being accurately described by an *existence* check and
+            # nothing else — `pose/face.parquet` appearing changes what the document says while
+            # changing no byte of any file the export reads. Content is deliberately not hashed
+            # here: unread-table contents cannot move a state, so hashing them would rerun the
+            # export every time `openpose` reran for no change in the file. Cost is 22 stat()s on a
+            # path that already runs on `status --plan`; the 19 read inputs need no flag here,
+            # because their digest is already `None` versus a hash.
+            "inventory_present": {
+                name: (ctx.paths.dataset_dir / elan_core.artifact_path(name)).is_file()
+                for name in elan_core.normalized_artifact_names()},
             "_python_code_sha256": python_source_digest(elan_core, elan_stage),
         }
         for artifact in ALL_INPUTS:
@@ -149,6 +174,13 @@ class ElanStage(Stage):
         :meth:`enabled`, re-checked because the two calls are not atomic and a file that
         vanished between them is worth failing loudly for), or a source video that is not on
         disk (the media descriptor is the one part of the export nothing can recover later).
+
+        Three parts of the record exist so that a question about the clip can be answered from
+        ``status.json``: ``skipped_tiers`` and ``coverage`` for "is this signal missing because of
+        the video or because of the export"; ``projected_tiers`` for "why are there more bars than
+        rows"; and ``dropped_rows`` for the opposite — "why are there fewer". The latter two are
+        read back out of the built document and its report rather than accumulated here, so what
+        the record claims is what the file carries.
         """
         missing = [name for name in TRANSCRIPT_ARTIFACTS if not ctx.artifact(name).is_file()]
         if len(missing) == len(TRANSCRIPT_ARTIFACTS):
@@ -165,7 +197,7 @@ class ElanStage(Stage):
                                    f"{video_path} — the .eaf would link a file that is not there"])
 
         dataset_dir = ctx.paths.dataset_dir
-        eaf = build_eaf(dataset_dir, video_path, log=ctx.log)
+        eaf, report = build_eaf(dataset_dir, video_path, log=ctx.log)
         counts = tier_counts(eaf)
         # The tier counts in this record are what ELAN shows. Where a tier was re-cut, the number
         # of producer rows behind it is different, and a reader comparing `tier_counts` against a
@@ -184,6 +216,16 @@ class ElanStage(Stage):
             "projected_tiers": {tier: {"logical_rows": document["logical_row_count"],
                                        "emitted": document["final_annotation_count"]}
                                 for tier, document in sorted(projection.items())},
+            # The other direction of the same question. A tier can show fewer bars than its table
+            # has rows because two rows shared an instant and were re-cut (above), or because rows
+            # carried no usable time and were refused. Only the second is a producer defect, and
+            # until now it lived only in the run log — so the honest answer to "this tier shows 20
+            # bars for 24 rows" depended on nobody having rotated the log.
+            "dropped_rows": drop_counts(report),
+            # Read back out of the document rather than recomputed here, exactly like the tier
+            # counts and the projection: the record's coverage *is* the file's coverage, so the two
+            # cannot disagree about whether `pose/face.parquet` is represented.
+            "coverage": coverage_of(eaf),
             "media_url": descriptor.get("MEDIA_URL"),
             "relative_media_url": descriptor.get("RELATIVE_MEDIA_URL"),
             "mimetype": descriptor.get("MIME_TYPE"),
@@ -249,15 +291,20 @@ class ElanStage(Stage):
 
         What is checked is openability and self-consistency, the two things a reader notices and
         the file cannot report from outside: ELAN refusing to parse it, a linked video it cannot
-        find, a tier lost to a truncation that left well-formed XML behind, and — since the export
-        began projecting simultaneous rows — same-tier overlap and unselectable intervals.
+        find, a tier lost to a truncation that left well-formed XML behind, a declared tier the
+        coverage inventory no longer accounts for, and — since the export began projecting
+        simultaneous rows — same-tier overlap and unselectable intervals. Every one of those is
+        answered out of the XML: the registry and the tables on disk are never consulted, because
+        a document's consistency is a property of the document.
 
         Because ``validate`` is also the reuse gate (:func:`outputs_present` and the rerun check in
         ``stages.base`` both call it), a document written before the projection rule fails and is
         sent back through ``execute``. That is the intended consequence: a file ELAN cannot lay out
         is not a reusable result, and the rerun is a two-second, pure-python re-export of tables
         that have not changed. It does mean the corpus ``.eaf`` files still on disk report overlap
-        until they are regenerated — measured, four of the seven on this machine.
+        until they are regenerated — measured, four of the seven on this machine (KABC, CNN,
+        La-1 and ``person_demo``, in ``person_tracks``/``turns_nemotron``/``fusion_nemotron``/
+        ``face_tracks``; the three ``pipeline_*`` clips are clean).
         """
         path = ctx.artifact("elan_annotations")
         if not path.is_file():
@@ -297,6 +344,7 @@ class ElanStage(Stage):
         else:
             issues.extend(self._check_media(ctx, descriptors[0], eaf_dir=path.parent))
         issues.extend(self._check_census(root, tiers))
+        issues.extend(self._check_coverage(root, tiers, path.name))
         issues.extend(self._check_independent_tiers(root, path.name))
         if issues:
             raise ValidationError(self.name, issues)
@@ -345,6 +393,116 @@ class ElanStage(Stage):
                               "was written for another source")
         if relative and not (eaf_dir / relative).resolve().exists():
             issues.append(f"linked media is not reachable from {eaf_dir.name}/: {relative}")
+        return issues
+
+    @staticmethod
+    def _check_coverage(root: Any, tiers: list[Any], name: str) -> list[str]:
+        """Every tier this document declares must be claimed by a coverage entry.
+
+        Two properties make a claim about the same ``TIER`` elements: ``pipeline-tiers`` says which
+        tiers carry annotations (checked by :meth:`_check_census`) and ``pipeline-coverage`` says
+        which tier represents each table in the registry. Only the second maps an **artifact** to a
+        tier, so it is the one that can be contradicted by an edit the census check cannot see.
+
+        The rule is one-directional, and the direction is the only one a legitimate export cannot
+        produce: **every tier this document declares has to be claimed by some coverage entry.**
+        A built tier always has an entry naming it, so a declared tier that no entry claims means
+        the property was edited — a bar is still on screen and the file no longer says which table
+        it came from.
+
+        The reverse is deliberately **not** an error, and that is not an oversight: an entry naming
+        a tier this document does not declare is what a *skipped* tier looks like. A table that
+        exists but cannot be read leaves its tier undeclared while its artifact stays `exported` —
+        the documented "lose one tier, keep the other sixteen" state — and a tier that was never
+        written is `absent` and names no tier at all. Complaining there would fail a partial export
+        the writer produces on purpose, and since `validate` is also the reuse gate the stage would
+        never settle: re-export, skip the same tier, fail the same way forever instead of settling.
+        The case worth catching in that direction — a tier removed from the document while its count
+        stayed in the census — is exactly what :meth:`_check_census` already reports, with a message
+        naming the missing tier. (An earlier revision of this docstring opened by stating that
+        reverse as the rule; ``TestValidateChecksCoverageAgainstTheDocument`` in
+        ``tests/unit/test_elan_stage.py`` is the guard that the reverse is not enforced, since the
+        corrupt-table partial export it would refuse has to keep validating.)
+
+        **The registry is deliberately not consulted.** Asking ``ARTIFACT_LAYOUT`` which tables
+        exist would ask the tree what this clip contains, and a tree is edited by rerunning stages;
+        that would make a finished document unvalidateable because a producer later wrote one more
+        file. The state set, each entry's shape and the tier names are all properties of the file,
+        which is the same boundary :meth:`_check_independent_tiers` holds.
+
+        A missing property fails nothing, as with the census: a document written before coverage
+        existed, or one whose ``HEADER`` was edited, still holds annotations that are fine, and this
+        stage's reuse gate must not destroy a usable export over a missing property. A property that
+        parses but holds no artifacts is the same shape — nothing to cross-check. A property that is
+        there and is not JSON is different: absence says "this file predates the claim", corruption
+        says "the claim exists and cannot be read", which is what an operator needs to know before
+        trusting an empty tier to mean "the clip has nothing".
+
+        The version marker *is* refused when it is not the one this code reads, because that failure
+        mode is silent. :func:`~multimodal_pipeline.elan.coverage_of` ignores the marker and returns
+        the artifact map whatever its shape turns out to be, so a document from a later export could
+        be reported — or validated — against meanings its keys no longer carry. Only a document whose
+        entries match what this code reads is pronounced consistent, so only such a document may be
+        reused as one.
+        """
+        raw = ""
+        for element in root.iter("PROPERTY"):
+            if element.attrib.get("NAME") == COVERAGE_PROPERTY:
+                raw = (element.text or "").strip()
+                break
+        if not raw:
+            return []
+        try:
+            document = json.loads(raw)
+        except ValueError:
+            return [f"{name}: {COVERAGE_PROPERTY} is not valid JSON; rerun elan"]
+        if not isinstance(document, dict):
+            return [f"{name}: {COVERAGE_PROPERTY} is {type(document).__name__}, expected an "
+                    "object; rerun elan"]
+        version = document.get("version")
+        if version != COVERAGE_VERSION:
+            return [f"{name}: {COVERAGE_PROPERTY} is version {version!r}, this export reads "
+                    f"{COVERAGE_VERSION}; rerun elan"]
+        artifacts = document.get("artifacts")
+        if not isinstance(artifacts, dict) or not artifacts:
+            return []
+
+        present = {tier for tier in tiers if tier}
+        issues: list[str] = []
+        claimed: set[Any] = set()
+        for artifact, entry in sorted(artifacts.items()):
+            if not isinstance(entry, dict):
+                issues.append(f"{name}: coverage entry for {artifact} is "
+                              f"{type(entry).__name__}, expected an object")
+                continue
+            state = entry.get("state")
+            if state not in COVERAGE_STATES:
+                issues.append(f"{name}: coverage entry for {artifact} claims state {state!r}, "
+                              f"outside {sorted(COVERAGE_STATES)}")
+                continue
+            if state not in (COVERAGE_EXPORTED, COVERAGE_SUMMARISED):
+                continue
+            tier = entry.get("tier")
+            if not tier:
+                # A shape defect rather than a claim about the tiers: an entry that says a table is
+                # represented and names nothing is not a claim that can be checked, so it is not a
+                # claim. Absent/present-not-exported carry no tier and are silent by design.
+                issues.append(f"{name}: coverage says {artifact} is {state} but names no tier")
+                continue
+            if not isinstance(tier, str):
+                # Same reasoning as the `state` branch above: a value this code cannot interpret is
+                # reported, not acted on. It cannot go in the set — a list or dict raises
+                # `TypeError: unhashable type` there, and `validate` is the reuse gate, so a
+                # non-ValidationError escape is a crashed pipeline rather than a rerun.
+                issues.append(f"{name}: coverage entry for {artifact} names tier {tier!r}, "
+                              "expected a tier name as a string")
+                continue
+            claimed.add(tier)
+        unclaimed = sorted(present - claimed)
+        if unclaimed:
+            issues.append(f"{name}: {len(unclaimed)} declared tier(s) are named by no coverage "
+                          f"entry: {', '.join(unclaimed)} — the file was modified after elan "
+                          "wrote it")
         return issues
 
     @staticmethod

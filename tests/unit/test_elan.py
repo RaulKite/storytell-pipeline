@@ -83,8 +83,11 @@ from multimodal_pipeline.schemas import (
     ACTIVE_SPEAKER_FRAMES_SCHEMA,
     ACTIVE_SPEAKER_TRACKS_SCHEMA,
     BODY_SCHEMA,
+    FACE_SCHEMA,
+    HANDS_SCHEMA,
     FRAME_INDEX_SCHEMA,
     PERSON_FRAMES_SCHEMA,
+    POSE_NORMALIZED_SCHEMA,
     PERSON_TRACKS_SCHEMA,
     SEGMENTS_SCHEMA,
     SENTENCES_SCHEMA,
@@ -479,6 +482,43 @@ def _pose_row(index: int, confidence: float) -> dict[str, Any]:
     }
 
 
+def _face_row(index: int, detection_index: int) -> dict[str, Any]:
+    """One row of `pose/face.parquet` — the table no tier reads.
+
+    The coverage tests need that file to *exist* with a row in it, which is the state a reader has
+    to be able to tell from "the openpose stage never ran". Built through the real schema like every
+    other fixture row, so a column rename in `FACE_SCHEMA` lands here rather than in a fixture that
+    quietly stops matching the producer.
+    """
+    return {"schema_version": "1.0", "video_id": "clip", "frame_number": index,
+            "timestamp": round(index * (1001 / 30000), 6),
+            "detection_index": detection_index, "landmark_id": 0, "x": 1.0, "y": 2.0,
+            "confidence": 0.9}
+
+
+def _write_unread_pose_tables(root: Path) -> None:
+    """Put the three tables no tier reads on disk, with a row in each.
+
+    `make_dataset` writes only the five producers its rules need, so hands/face/normalized are
+    absent there. The corpus is the other way round — every dataset on this disk has all three, and
+    `pose/face.parquet` alone holds 16,799 rows — so a test that wants `present, not exported` has
+    to create them. Rows are built through the real schemas, because a fixture that wrote a stub
+    would blur the state this file exists to keep apart: an unreadable file and an unread one are
+    different answers.
+    """
+    _write(HANDS_SCHEMA, root / ARTIFACT_LAYOUT["pose_hands"], [{
+        "schema_version": "1.0", "video_id": "clip", "frame_number": 0,
+        "timestamp": 0.0, "detection_index": 0, "hand": "left", "keypoint_id": 0,
+        "keypoint_name": "wrist", "x": 1.0, "y": 2.0, "confidence": 0.9}])
+    _write(FACE_SCHEMA, root / ARTIFACT_LAYOUT["pose_face"], [_face_row(0, 0)])
+    _write(POSE_NORMALIZED_SCHEMA, root / ARTIFACT_LAYOUT["pose_normalized"], [{
+        "schema_version": "1.0", "video_id": "clip", "frame_number": 0, "timestamp": 0.0,
+        "detection_index": 0, "keypoint_id": 0, "keypoint_name": "Nose",
+        "origin_keypoint_name": "MidHip", "basis_keypoint_name": "Neck",
+        "second_axis": "perpendicular", "basis_state": "basis_ok", "basis_detail": "|vi| 1.0",
+        "x_norm": 0.1, "y_norm": 0.2, "value_status": "normalized"}])
+
+
 def make_dataset(tmp_path: Path) -> dict[str, Path]:
     """A dataset directory with five producers' tables and a video outside it.
 
@@ -609,7 +649,7 @@ class TestBuildEaf:
     """The seventeen tiers, built from real Parquet and read back out of real XML."""
 
     def test_only_the_tiers_with_input_files_are_present(self, dataset: dict[str, Path]) -> None:
-        eaf = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
+        eaf, _report = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
         assert tiers_of(eaf) == ["words", "turns_pyannote", "asd_speaking", "face_tracks",
                                  "pose_presence"]
         assert set(tier_counts(eaf)) == set(tiers_of(eaf))
@@ -624,7 +664,8 @@ class TestBuildEaf:
         while silence would be a lost signal.
         """
         lines: list[str] = []
-        build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: lines.append(str(a[0])))
+        build_eaf(dataset["dir"], dataset["video"],
+                  log=lambda *a, **k: lines.append(str(a[0])))[0]
         # "skipped (" and not bare "skipped": the closing census line also reports the count,
         # and counting it would make this assertion pass at seven tiers or at seventy.
         # Twelve, not eleven: the per-segment acoustic table joins the absent set the synthetic
@@ -690,7 +731,7 @@ class TestBuildEaf:
         root = dataset["dir"]
         _write(SPEAKER_FUSION_SCHEMA, root / "speaker" / "fusion_pyannote.parquet",
                [_fusion_row("t-0", "SPEAKER_00", 0.0, 1.0)])
-        eaf = build_eaf(root, dataset["video"], log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, dataset["video"], log=lambda *a, **k: None)
         turn_id = annotations(eaf, "turns_pyannote")[0][2].rsplit("·", 1)[-1].strip()
         fused = annotations(eaf, "fusion_pyannote")[0][2]
         assert turn_id == "t-0"
@@ -772,7 +813,7 @@ class TestBuildEaf:
         video.parent.mkdir(parents=True)
         video.write_bytes(b"stub")
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hi", 0.0, 0.2)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert eaf.media_descriptors[0]["MIME_TYPE"] == mimetype
 
     def test_an_unknown_suffix_still_produces_a_well_formed_descriptor(self,
@@ -789,7 +830,7 @@ class TestBuildEaf:
         video.parent.mkdir(parents=True)
         video.write_bytes(b"stub")
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hi", 0.0, 0.2)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert eaf.media_descriptors[0]["MIME_TYPE"] == UNKNOWN_MIME_TYPE
         assert eaf.media_descriptors[0]["MIME_TYPE"] != "video/mp4"
         # and the document still writes and parses with the empty type
@@ -815,7 +856,7 @@ class TestBuildEaf:
         root, video = dataset["dir"], dataset["video"]
         out = root / ARTIFACT_LAYOUT["elan_annotations"]
         out.parent.mkdir(parents=True, exist_ok=True)
-        build_eaf(root, video, log=lambda *a, **k: None).to_file(str(out))
+        build_eaf(root, video, log=lambda *a, **k: None)[0].to_file(str(out))
 
         reopened = Eaf(str(out))
         descriptor = reopened.media_descriptors[0]
@@ -845,7 +886,7 @@ class TestBuildEaf:
 
         out = root / ARTIFACT_LAYOUT["elan_annotations"]
         out.parent.mkdir(parents=True, exist_ok=True)
-        build_eaf(root, video, log=lambda *a, **k: None).to_file(str(out))
+        build_eaf(root, video, log=lambda *a, **k: None)[0].to_file(str(out))
         rel = Eaf(str(out)).media_descriptors[0]["RELATIVE_MEDIA_URL"]
         assert rel == "../../../../input_videos/clip.mp4"
         assert (out.parent / rel).resolve() == video.resolve()
@@ -875,7 +916,7 @@ class TestBuildEaf:
             "diarization_type": "exclusive",
         }])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         # The other tier survived, and the good row of the poisoned tier survived with it.
         assert [(start, end) for start, end, _value in annotations(eaf, "words")] == [(0, 400)]
         assert annotations(eaf, "words")[0][2].startswith("hello")
@@ -902,7 +943,7 @@ class TestBuildEaf:
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
             _word("a", float("nan"), 1.0), _word("b", 2.0, float("inf"))])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert annotations(eaf, "words") == []
         assert "words" in tiers_of(eaf)
         assert [line for line in lines if "dropped 2 of 2" in line], lines
@@ -934,7 +975,7 @@ class TestBuildEaf:
             "diarization_type": "exclusive",
         }])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [(start, end) for start, end, _t in annotations(eaf, "words")] == [(0, 400)]
         # A sibling tier is untouched, and the census counts only the row really placed.
         assert len(annotations(eaf, "turns_pyannote")) == 1
@@ -962,7 +1003,7 @@ class TestBuildEaf:
             _word("nan-start", float("nan"), 4.0),
         ])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [start for start, _e, text in annotations(eaf, "words")
                 if text.startswith("good")] == [0]
         assert [line for line in lines if "words" in line and "1 of 3" in line
@@ -992,7 +1033,7 @@ class TestBuildEaf:
             _word("negative", start, end),
         ])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [(s, e) for s, e, _t in annotations(eaf, "words")] == [(0, 400)], (start, end)
         assert [line for line in lines if "words" in line and "1 of 2" in line
                 and "missing timestamp" in line], (start, end, lines)
@@ -1011,7 +1052,7 @@ class TestBuildEaf:
             _word("first", -1e-06, 0.4),
         ])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [(s, e) for s, e, _t in annotations(eaf, "words")] == [(0, 400)]
         assert not [line for line in lines if "missing timestamp" in line], lines
 
@@ -1034,7 +1075,7 @@ class TestBuildEaf:
              "duration": 2.0, "diarization_type": "exclusive"},
         ])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [(s, e) for s, e, _t in annotations(eaf, "turns_pyannote")] == [(0, 1000)]
         assert [line for line in lines if "turns_pyannote" in line and "1 of 2" in line
                 and "missing timestamp" in line], lines
@@ -1068,7 +1109,8 @@ class TestBuildEaf:
         """
         dataset["dir"].joinpath("pose/body.parquet").write_bytes(b"not parquet at all")
         lines: list[str] = []
-        eaf = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: lines.append(str(a[0])))
+        eaf, _report = build_eaf(dataset["dir"], dataset["video"],
+                                 log=lambda *a, **k: lines.append(str(a[0])))
         assert "pose_presence" not in tiers_of(eaf)
         assert any("pose_presence skipped" in line and "unreadable" in line for line in lines)
         assert {"words", "asd_speaking", "face_tracks", "turns_pyannote"} <= set(tiers_of(eaf))
@@ -1117,7 +1159,7 @@ class TestSegmentIdentityLinksTiers:
     def _build(self, tmp_path: Path) -> Any:
         root = self._three_tier_clip(tmp_path)
         return build_eaf(root, tmp_path / "input_videos" / "clip.mp4",
-                         log=lambda *a, **k: None)
+                         log=lambda *a, **k: None)[0]
 
     def test_a_word_names_its_speaker_and_its_own_id_and_its_segment(self,
                                                                      tmp_path: Path
@@ -1172,7 +1214,7 @@ class TestSegmentIdentityLinksTiers:
         video.write_bytes(b"stub")
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
             _word("hello", 0.0, 0.4, segment_id=None, word_id=None)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert annotations(eaf, "words") == [
             (0, 400, "hello · SPEAKER_00 · unknown · [unknown]")]
 
@@ -1196,7 +1238,7 @@ class TestSegmentIdentityLinksTiers:
                [_segment("seg000001", 0.0, 0.9, "Hola mundo", speaker_id=None)])
         _write(TRANSLATION_SCHEMA, root / "translation" / "segments_en.parquet",
                [_translation("seg000001", 0.0, 0.9, "Hello world", speaker_id=None)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert [text for _s, _e, text in annotations(eaf, "segments_src")] == [
             "unknown: Hola mundo · [seg000001]"]
         assert [text for _s, _e, text in annotations(eaf, "gloss_en")] == [
@@ -1250,8 +1292,8 @@ class TestNamespaceInLabels:
         verdict's own arithmetic (`agreement_detail`) is kept verbatim after them.
         """
         root = self._fusion_clip(tmp_path)
-        eaf = build_eaf(root, tmp_path / "input_videos" / "clip.mp4",
-                        log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, tmp_path / "input_videos" / "clip.mp4",
+                             log=lambda *a, **k: None)
         assert [text for _s, _e, text in annotations(eaf, "fusion_pyannote")] == [
             "face_matched: turn turn000001 · turn speaker SPEAKER_00 (pyannote) | "
             "face track 0 | track 0 active on 4/5 frames",
@@ -1283,7 +1325,7 @@ class TestNamespaceInLabels:
                  "max_score": 2.0, "scenes": [1], "mean_bbox_area": 10.0}])
         _write(SPEAKER_FUSION_SCHEMA, root / "speaker" / "fusion_pyannote.parquet",
                [_fusion_row("turn000001", "SPEAKER_00", 0.0, 1.0, face_track_id=4)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
 
         fused = annotations(eaf, "fusion_pyannote")[0][2]
         face_track = fused.split("face track ", 1)[1].split(" ", 1)[0]
@@ -1316,7 +1358,7 @@ class TestNamespaceInLabels:
             _fusion_row("turn000001", "speaker_0", 0.0, 1.0, engine="nemotron"),
             _fusion_row("turn000002", "SPEAKER_00", 1.0, 2.0, engine=None),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert [text for _s, _e, text in annotations(eaf, "fusion_pyannote")] == [
             "face_matched: turn turn000001 · turn speaker speaker_0 (nemotron) | "
             "face track 0 | track 0 active on 4/5 frames",
@@ -1339,7 +1381,7 @@ class TestNamespaceInLabels:
                [{"schema_version": "1.0", "video_id": "clip", "turn_id": "nt-1",
                  "speaker_id": "speaker_0", "start_time": 0.0, "end_time": 0.5,
                  "duration": 0.5, "diarization_type": "overlapping", "overlap_s": 0.2}])
-        eaf = build_eaf(root, dataset["video"], log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, dataset["video"], log=lambda *a, **k: None)
         assert annotations(eaf, "turns_nemotron") == [
             (0, 500, "speaker speaker_0 (nemotron, overlapping) · nt-1")]
 
@@ -1380,7 +1422,7 @@ class TestUnknownIsNotZero:
                  "first_timestamp": 0.0, "last_timestamp": 0.04, "frame_count": 3,
                  "active_frame_count": 0, "active_ratio": 0.0, "mean_score": None,
                  "max_score": None, "scenes": [1], "mean_bbox_area": 10.0}])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert annotations(eaf, "face_tracks") == [
             (0, 40, "track 4 · 0/3 act · mean unknown")]
 
@@ -1396,7 +1438,7 @@ class TestUnknownIsNotZero:
         _persons(root, [_person_frame(0, 2)],
                  [_person_track(2, 0.0, 1.0, 5, mean_confidence=None)])
         _frame_index(root, [_frame_row(0, 0.0)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         _start, _end, text = annotations(eaf, "person_tracks")[0]
         assert "conf unknown" in text
         assert "conf 0.000" not in text
@@ -1537,7 +1579,7 @@ class TestAsdStates:
             row["frame_number"] = index
         _write(ACTIVE_SPEAKER_FRAMES_SCHEMA,
                root / "speaker" / "active_speaker_frames.parquet", rows)
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert annotations(eaf, "asd_speaking") == [
             (0, 80, "speaking track 0"),
             (80, 120, ASD_NOT_EVALUATED),
@@ -1564,7 +1606,7 @@ class TestAsdStates:
         ]
         _write(ACTIVE_SPEAKER_FRAMES_SCHEMA,
                root / "speaker" / "active_speaker_frames.parquet", rows)
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert annotations(eaf, "asd_speaking") == [
             (0, 40, "not speaking"),
             (40, 80, "not speaking" + ASD_IMPUTED_SUFFIX),
@@ -1754,7 +1796,7 @@ def real_tier_names(root: ET.Element) -> list[str]:
 
 
 def eaf_of(dataset: dict[str, Path]) -> Any:
-    return build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
+    return build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)[0]
 
 
 class TestTierRegistration:
@@ -1848,7 +1890,7 @@ class TestAgainstTheCorpus:
         """
         if not self.CORPUS.is_dir():
             pytest.skip(f"corpus dataset not present under {PROCESSED}")
-        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
         ent_none = ent_unknown = 0
         for artifact, tier in ((SPACY_SOURCE_TOKENS, "spacy_source_tokens"),
                                (SPACY_ENGLISH_TOKENS, "spacy_english_tokens")):
@@ -1889,7 +1931,7 @@ class TestAgainstTheCorpus:
         """
         if not self.CORPUS.is_dir():
             pytest.skip(f"corpus dataset not present under {PROCESSED}")
-        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
         if "spacy_english_tokens" not in tier_counts(eaf):
             pytest.skip("corpus has no English linguistic table")
         table = {row["token_id"]: row for row in read_table(
@@ -1926,7 +1968,7 @@ class TestAgainstTheCorpus:
         """
         if not self.CORPUS.is_dir():
             pytest.skip(f"corpus dataset not present under {PROCESSED}")
-        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
         table = read_table(self.CORPUS / ARTIFACT_LAYOUT[SPACY_SOURCE_TOKENS],
                            columns=["is_alpha", "is_stop", "is_digit", "like_num"]).to_pylist()
         all_null = sum(1 for row in table
@@ -1946,7 +1988,7 @@ class TestAgainstTheCorpus:
         """
         if not (self.CORPUS / "manifest.json").is_file():
             pytest.skip(f"corpus dataset not present under {PROCESSED}")
-        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
         counts = tier_counts(eaf)
         assert len(counts) >= 8, counts
         assert counts.get("words", 0) > 0
@@ -1991,7 +2033,7 @@ class TestAgainstTheCorpus:
         video = Path(manifest["source"]["path"])
         if not video.is_file():
             pytest.skip(f"source video {video} is not on this disk")
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         # The **logical** rows: two ids sighted in the same frame overlap, and an ELAN independent
         # tier cannot hold both, so the emitted annotations are segments carrying both labels. The
         # grouping this test re-derives is a property of the producers' rows, which is what the
@@ -2201,7 +2243,7 @@ class TestPersonSightings:
         _frame_index(root, [_frame_row(0, 0.0)])
         (root / "persons" / "frames.parquet").unlink()
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
         assert "person_tracks" not in tier_counts(eaf)
         assert any("person_tracks skipped" in line and "persons/frames.parquet" in line
                    for line in lines), lines
@@ -2214,7 +2256,7 @@ class TestPersonSightings:
         _frame_index(root, [_frame_row(0, 0.0)])
         (root / "persons" / "frames.parquet").write_bytes(b"not parquet at all")
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
         assert "person_tracks" not in tier_counts(eaf)
         assert any("person_tracks skipped" in line and "unreadable" in line
                    for line in lines), lines
@@ -2231,7 +2273,7 @@ class TestPersonSightings:
         _persons(root, [_person_frame(i, 1) for i in (0, 1, 2)],
                  [_person_track(1, 0.0, 0.08, 3)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
         labels = annotations(eaf, "person_tracks")
         assert len(labels) == 3
         assert all("sighting mark 1 frame" in text for _s, _e, text in labels)
@@ -2435,7 +2477,7 @@ class TestPersonSightings:
                  [_person_track(1, 0.04, 0.04, 2)])
         _frame_index(root, [_frame_row(1, 0.04), _frame_row(2, 0.08)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: lines.append(str(a[0])))
         labels = annotations(eaf, "person_tracks")
         # The timed sighting is still there, at the time its own table measured.
         assert [(start, end) for start, end, _t in labels] == [(40, 41)]
@@ -2548,9 +2590,15 @@ PROJECTION_PROPERTY = "pipeline-overlap-projection"
 
 
 def _segment_row(segment_id: str, start: float, end: float, text: str) -> dict[str, Any]:
-    """One `speech/segments.parquet` row for the overlap fixtures."""
+    """One `speech/segments.parquet` row for the overlap fixtures.
+
+    `duration` is left null when either endpoint is, exactly as `_word` does it: a row with no time
+    has no duration to report, and a fixture that subtracted through a null would both crash and
+    invent a number the producer could not have written.
+    """
+    duration = (end - start) if (start is not None and end is not None) else None
     return {"schema_version": "1.0", "video_id": "clip", "segment_id": segment_id,
-            "start_time": start, "end_time": end, "duration": end - start,
+            "start_time": start, "end_time": end, "duration": duration,
             "language": "en", "speaker_id": "SPEAKER_00", "text": text, "confidence": -0.15}
 
 
@@ -2636,7 +2684,7 @@ class TestIndependentTierProjection:
         _persons(root, [_person_frame(0, 1), _person_frame(0, 2)],
                  [_person_track(1, 0.0, 0.0, 1), _person_track(2, 0.0, 0.0, 1)])
         _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in range(3)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         emitted = annotations(eaf, "person_tracks")
         assert len(emitted) == 1, emitted
         start, end, value = emitted[0]
@@ -2699,7 +2747,7 @@ class TestIndependentTierProjection:
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet",
                [_segment_row(f"seg-{i}", start, end, f"text {i}")
                 for i, (start, end) in enumerate(rows)])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         got = [(start, end) for start, end, _text in annotations(eaf, "segments_src")]
         assert got == [(int(start * 1000), int(end * 1000)) for start, end in expected]
         assert got == [(int(a * 1000), int(b * 1000)) for a, b in _sweep_boundaries(rows)]
@@ -2724,7 +2772,7 @@ class TestIndependentTierProjection:
         assert [(s, e) for s, e, _t in got] == [(0, 1000), (1000, 2000)]
         assert [t for _s, _e, t in got] == ["SPEAKER_00: first · [seg-0]",
                                             "SPEAKER_00: second · [seg-1]"]
-        assert projection_of(build_eaf(root, video, log=lambda *a, **k: None)) == {}
+        assert projection_of(build_eaf(root, video, log=lambda *a, **k: None)[0]) == {}
 
     # ------------------------------------------------------------------- the label shape
 
@@ -2737,7 +2785,7 @@ class TestIndependentTierProjection:
         root, video = _clip(tmp_path)
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
             _segment_row("seg-0", 0.0, 1.0, "hola")])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert annotations(eaf, "segments_src") == [(0, 1000, "SPEAKER_00: hola · [seg-0]")]
         assert projection_of(eaf) == {}
 
@@ -2754,7 +2802,7 @@ class TestIndependentTierProjection:
             _segment_row("seg-0", 0.0, 1.0, 'weird · "quoted" · [seg-9]'),
             _segment_row("seg-1", 0.5, 1.5, "normal"),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         overlap = [t for _s, _e, t in annotations(eaf, "segments_src") if t.startswith("[")]
         assert len(overlap) == 1
         members = json.loads(overlap[0])
@@ -2776,7 +2824,7 @@ class TestIndependentTierProjection:
             _segment_row("seg-0", 0.0, 1.0, "[inaudible] 3 words"),
             _segment_row("seg-1", 0.5, 1.0, "cover"),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         emitted = annotations(eaf, "segments_src")
         assert emitted[0][2] == "SPEAKER_00: [inaudible] 3 words · [seg-0]"
         json.loads(emitted[1][2])  # the overlapping segment is the only list
@@ -2793,7 +2841,7 @@ class TestIndependentTierProjection:
             _segment_row("seg-0", 0.0, 1.0, "  Ñandú — 75%  ·  ¡oye!  "),
             _segment_row("seg-1", 0.5, 1.0, "😀 你好"),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         out = root / "unicode.eaf"
         eaf.to_file(str(out))
         from pympi.Elan import Eaf
@@ -2858,7 +2906,7 @@ class TestIndependentTierProjection:
             _segment_row("seg-0", 1.2341, 1.2349, "first"),
             _segment_row("seg-1", 1.2344, 1.2348, "second"),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         emitted = annotations(eaf, "segments_src")
         assert [s for s, _e, _t in emitted] == [1234]
         assert json.loads(emitted[0][2])[1].startswith("SPEAKER_00: second")
@@ -2882,7 +2930,7 @@ class TestIndependentTierProjection:
             _segment_row("seg-0", 0.0, 2.0, "outer"),
             _segment_row("seg-1", 0.5, 1.5, "inner"),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         document = projection_of(eaf)["segments_src"]
         logical = {row["row_id"]: row for row in document["logical"]}
         assert sorted(logical) == ["segments_src:0", "segments_src:1"]
@@ -2912,7 +2960,7 @@ class TestIndependentTierProjection:
             _segment_row("seg-1", 0.5, 1.5, "inner"),
             _segment_row("seg-2", 3.0, 4.0, "alone"),
         ])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         document = projection_of(eaf)["segments_src"]
         assert document["logical_row_count"] == 3
         assert document["final_annotation_count"] == 4
@@ -2932,7 +2980,7 @@ class TestIndependentTierProjection:
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
             _segment_row("seg-0", 0.0, 2.0, "outer"),
             _segment_row("seg-1", 0.5, 1.5, "inner")])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert projection_version(eaf) == 1
         out = root / "projection.eaf"
         eaf.to_file(str(out))
@@ -2988,7 +3036,7 @@ class TestIndependentTierProjection:
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
             _word("hello", 0.0, 0.4), _word("no-time", 1.0, None)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert len(annotations(eaf, "words")) == 1
         assert [line for line in lines if "words" in line and "missing timestamp" in line]
         assert PROJECTION_PROPERTY not in dict(eaf.properties)
@@ -3044,7 +3092,7 @@ class TestIndependentTierProjection:
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
             _segment_row("seg-0", 0.0, 2.0, "outer"),
             _segment_row("seg-1", 0.5, 1.5, "inner")])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert projection_of(eaf)["segments_src"]["final_annotation_count"] == 3
         assert list(projection_of(eaf)) == ["segments_src"]
         assert annotations(eaf, "words") == [
@@ -3064,7 +3112,7 @@ class TestIndependentTierProjection:
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
             _segment_row("seg-1", 0.5, 1.0, "inner"),
             _segment_row("seg-0", 0.0, 1.0, "outer")])
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         emitted = annotations(eaf, "segments_src")
         assert [(s, e) for s, e, _t in emitted] == [(0, 500), (500, 1000)]
         assert emitted[0][2] == "SPEAKER_00: outer · [seg-0]"
@@ -3075,7 +3123,7 @@ class TestIndependentTierProjection:
         _write(SEGMENTS_SCHEMA, forward[0] / "speech" / "segments.parquet", [
             _segment_row("seg-0", 0.0, 1.0, "outer"),
             _segment_row("seg-1", 0.5, 1.0, "inner")])
-        other = build_eaf(forward[0], forward[1], log=lambda *a, **k: None)
+        other = build_eaf(forward[0], forward[1], log=lambda *a, **k: None)[0]
         assert projection_of(other) == projection_of(eaf)
         assert annotations(other, "segments_src") == emitted
 
@@ -3094,7 +3142,7 @@ class TestIndependentTierProjection:
         root, video = _clip(tmp_path)
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
             _segment_row("seg-0", 0.0, 1.0, "first")])
-        legacy = build_eaf(root, video, log=lambda *a, **k: None)
+        legacy, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert overlap_projection(legacy) == {}
         out = root / "legacy.eaf"
         legacy.to_file(str(out))
@@ -3103,7 +3151,7 @@ class TestIndependentTierProjection:
         _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
             _segment_row("seg-0", 0.0, 1.0, "first"),
             _segment_row("seg-1", 0.5, 1.5, "second")])
-        projected = build_eaf(root, video, log=lambda *a, **k: None)
+        projected, _report = build_eaf(root, video, log=lambda *a, **k: None)
         projected.to_file(str(out))
         reopened = Eaf(str(out), suppress_version_warning=True)
         document = overlap_projection(reopened)["segments_src"]
@@ -3130,7 +3178,7 @@ class TestIndependentTierProjection:
             video = Path(manifest["source"]["path"])
             if not video.is_file():
                 continue
-            eaf = build_eaf(root, video, log=lambda *a, **k: None)
+            eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
             document = projection_of(eaf).get("person_tracks")
             if document is None:
                 continue
@@ -3169,7 +3217,7 @@ class TestIndependentTierProjection:
             video = Path(manifest["source"]["path"])
             if not video.is_file():
                 continue
-            eaf = build_eaf(root, video, log=lambda *a, **k: None)
+            eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
             for tier, (annotations_of_tier, _ref, _dict, _type) in eaf.tiers.items():
                 if tier == "default":
                     continue
@@ -3630,7 +3678,7 @@ class TestLinguisticTiers:
             _spacy_token("bad", token_index=1, start=-2.0, end=-1.0,
                          seg_start=-20.0, seg_end=-10.0, status="aligned", conf=1.0)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [(s, e) for s, e, _t in annotations(eaf, "spacy_source_tokens")] == [(0, 1000)]
         assert [line for line in lines if "spacy_source_tokens" in line
                 and "1 of 2" in line and "missing timestamp" in line], lines
@@ -3642,7 +3690,7 @@ class TestLinguisticTiers:
             "hombre", start=None, end=None, seg_start=-5.0, seg_end=5.0, status="unmatched",
             conf=0.0))
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert annotations(eaf, "spacy_source_tokens") == []
         assert [line for line in lines if "spacy_source_tokens" in line
                 and "1 of 1" in line and "missing timestamp" in line], lines
@@ -3857,7 +3905,7 @@ class TestLinguisticTiers:
                             seg_start=seg_start, seg_end=seg_end),
             _spacy_sentence("Clara.", sentence_id="seg-0-s002", sentence_index=1)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         emitted = annotations(eaf, "spacy_source_sentences")
         assert [(s, e) for s, e, _t in emitted] == [(0, 1000)]
         texts = logical_texts(eaf, "spacy_source_sentences")
@@ -3906,7 +3954,7 @@ class TestLinguisticTiers:
             _spacy_token("nowhere", start=None, end=None, seg_start=None, seg_end=None,
                          status="unmatched", conf=0.0, token_index=1)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         rows = annotations(eaf, "spacy_source_tokens")
         assert [(s, e) for s, e, _t in rows] == [(0, 1000)]
         assert "hello" in rows[0][2] and "nowhere" not in json.dumps(rows)
@@ -3929,7 +3977,7 @@ class TestLinguisticTiers:
                                          conf=0.0)],
             english_sentences=[_spacy_sentence("X.", seg_start=0.0, seg_end=2.0)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         counts = tier_counts(eaf)
         # `spacy_source_tokens` carries 2 rows and emits 1 bar: both remaining tokens share their
         # segment's interval, so the independent tier partitions them into one shared bar (B2a).
@@ -3976,7 +4024,7 @@ class TestLinguisticTiers:
                 path.write_bytes(b"not parquet at all")
                 expected = "unreadable"
             lines: list[str] = []
-            eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+            eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
             assert artifact not in tier_counts(eaf), (artifact, broken)
             assert [line for line in lines if f"{artifact} skipped" in line
                     and expected in line], (artifact, broken, lines)
@@ -3989,7 +4037,7 @@ class TestLinguisticTiers:
         """The per-tier guard's whole purpose, at seventeen tiers instead of twelve."""
         root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
         (root / LINGUISTIC_PATHS[SPACY_SOURCE_SENTENCES]).write_bytes(b"junk")
-        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
         assert tier_counts(eaf) == {"words": 1, "spacy_source_tokens": 1}
 
     # ------------------------------------------------------------------- provenance property
@@ -4374,7 +4422,7 @@ class TestAcousticSegmentTier:
             _acoustic_segment("seg-null", None, 3.223),
             _acoustic_segment("seg-ok", 4.0, 5.0)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [pair[:2] for pair in annotations(eaf, "acoustic_segments")] == [(4000, 5000)]
         drop = [line for line in lines if "acoustic_segments" in line
                 and "missing timestamp" in line]
@@ -4401,7 +4449,7 @@ class TestAcousticSegmentTier:
             _acoustic_segment("seg-bad", bad_start, bad_end),
             _acoustic_segment("seg-ok", 4.0, 5.0)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert tier_counts(eaf)["acoustic_segments"] == 1
         # `interval_ms` would have handed the reversed and equal pairs a 1 ms bar at whatever
         # millisecond the conversion produced, and the negative pair that bar at second zero.
@@ -4417,7 +4465,7 @@ class TestAcousticSegmentTier:
             _acoustic_segment("seg-nan", float("nan"), 3.0),
             _acoustic_segment("seg-ok", 0.071, 3.223)])
         lines: list[str] = []
-        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert tier_counts(eaf)["acoustic_segments"] == 1
         assert sum(1 for line in lines if "acoustic_segments" in line
                    and "non-finite timestamp" in line) == 1, lines
@@ -4682,7 +4730,7 @@ class TestAcousticSegmentTier:
                 path.write_bytes(b"not parquet at all")
                 expected = "unreadable"
             lines: list[str] = []
-            eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+            eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
             assert "acoustic_segments" not in tier_counts(eaf), broken
             assert [line for line in lines if "acoustic_segments skipped" in line
                     and expected in line], (broken, lines)
@@ -4753,7 +4801,7 @@ class TestAcousticSegmentTier:
                 if float(right["start_time"]) < float(left["end_time"])
                 and float(left["start_time"]) < float(right["end_time"]))
             # Built in memory only: nothing under data/processed/ is opened for writing.
-            eaf = build_eaf(root, video, log=lambda *a, **k: None)
+            eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
             by_segment = {row["segment_id"]: row for row in table}
             assert set(by_segment) == {row["segment_id"] for row in table}, root.name
             for entry in logical_rows(eaf, "acoustic_segments"):
@@ -4854,3 +4902,516 @@ class TestAcousticSegmentTier:
         for token in re.findall(r"([a-z_]+)\s*=", text):
             assert token in declared, f"semantics describes an unknown tier: {token}"
         assert "acoustic_segments" in declared
+
+
+def eaf_only(dataset_dir: Path, video: Path) -> Any:
+    """The document from `build_eaf`, without its report.
+
+    The tuple is what B5 added, so most of this file unpacks it. Where a test cares only about the
+    bars, this says so rather than leaving a throwaway `_report` in the signature.
+    """
+    return build_eaf(dataset_dir, video, log=lambda *a, **k: None)[0]
+
+
+#: The three normalised tables no tier reads on this corpus, named once here so the tests below
+#: assert the *set* rather than three copies of a guess.
+UNREAD_TABLES = ("pose_face", "pose_hands", "pose_normalized")
+
+
+def coverage_map(eaf: Any) -> dict[str, Any]:
+    """The document's own per-artifact inventory, parsed, or `{}` when it carries none."""
+    return elan_core.coverage_of(eaf)
+
+
+def corpus_datasets() -> list[Path]:
+    """Every dataset directory on this disk, in name order."""
+    if not PROCESSED.is_dir():
+        return []
+    return sorted(p for p in PROCESSED.iterdir() if (p / "manifest.json").is_file())
+
+
+def corpus_video(root: Path) -> Path:
+    """The source video the dataset's own manifest names — never a path this file invents."""
+    return Path(json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+                ["source"]["path"])
+
+
+def registry_parquet_states(dataset_dir: Path) -> dict[str, str]:
+    """Every `.parquet` artifact's state, recomputed here from the registry and the filesystem.
+
+    Deliberately **not** `coverage_inventory`: it re-derives "which table does a tier read" from
+    `TIERS`/`SECONDARY_INPUTS` and re-stats the path from `ARTIFACT_LAYOUT`, so the state map is
+    rebuilt rather than echoed. A test that compared the property against the writer's own function
+    would pass when the writer was wrong, which is the failure B5 has to be able to see.
+    """
+    exported = {spec.artifact: spec.tier for spec in TIERS}
+    consumers: dict[str, str] = {}
+    for tier, artifacts in SECONDARY_INPUTS.items():
+        for artifact in artifacts:
+            consumers.setdefault(artifact, tier)
+    states: dict[str, str] = {}
+    for artifact, relative in ARTIFACT_LAYOUT.items():
+        if not relative.endswith(".parquet"):
+            continue
+        if not (dataset_dir / relative).is_file():
+            states[artifact] = elan_core.COVERAGE_ABSENT
+        elif artifact in exported:
+            states[artifact] = elan_core.COVERAGE_EXPORTED
+        elif artifact in consumers:
+            states[artifact] = elan_core.COVERAGE_SUMMARISED
+        else:
+            states[artifact] = elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+    return states
+
+
+class TestCoverageInventory:
+    """What the export represents, what it read as support, and what it left out — in the file.
+
+    The defect is not a wrong number. An opened `.eaf` proves what it contains and nothing in it
+    proves what was never exported, so "this clip has no person data" and "this export never
+    represents pose" both arrive at the reader as *a tier that is not there*. One of those is a
+    fact about the video, the other is a fact about this file, and only the first is answerable
+    from the grid. These tests pin the four states, the one distinction between the two "not in
+    the file" states, and the two ways the inventory could quietly stop being true (a hand-edited
+    document, and a table added to the registry after the list was last written).
+    """
+
+    # --------------------------------------------------------------- the property itself
+
+    def test_the_document_inventories_every_parquet_artifact_with_one_state(
+            self, dataset: dict[str, Path]) -> None:
+        """22 tables in, 22 entries out, each holding exactly one of the four words.
+
+        The count is taken from the registry rather than typed, because the claim is "every
+        normalised table appears", not "22 appear today". The state vocabulary is asserted as a
+        closed set so a fifth state cannot be introduced without being named.
+        """
+        eaf = eaf_of(dataset)
+        inventory = coverage_map(eaf)
+        parquet = {name for name, relative in ARTIFACT_LAYOUT.items()
+                   if relative.endswith(".parquet")}
+        assert set(inventory) == parquet
+        assert len(inventory) == 22, "the registry's normalised-table count changed shape"
+        assert {entry["state"] for entry in inventory.values()} <= set(elan_core.COVERAGE_STATES)
+
+    def test_the_inventory_is_a_json_property_that_survives_the_round_trip(
+            self, dataset: dict[str, Path], tmp_path: Path) -> None:
+        """The claim has to travel with the file, so it has to survive `to_file`.
+
+        pympi's in-memory property dict is not what an operator opens; the reopened document is.
+        Reading the raw XML too, because that is the copy a hand edit reaches.
+        """
+        from pympi.Elan import Eaf
+
+        eaf = eaf_of(dataset)
+        assert elan_core.COVERAGE_PROPERTY in dict(eaf.properties)
+        out = dataset["dir"] / "round_trip.eaf"
+        eaf.to_file(str(out))
+        reopened = Eaf(str(out), suppress_version_warning=True)
+        assert coverage_map(reopened) == coverage_map(eaf)
+        root = ET.fromstring(out.read_text(encoding="utf-8"))
+        raw = next(element.text for element in root.iter("PROPERTY")
+                   if element.attrib.get("NAME") == elan_core.COVERAGE_PROPERTY)
+        document = json.loads(raw)
+        assert document["version"] == elan_core.COVERAGE_VERSION
+        assert document["artifacts"] == coverage_map(eaf)
+
+    def test_a_table_with_a_tier_is_exported_and_names_that_tier(
+            self, dataset: dict[str, Path]) -> None:
+        """The state carries the tier's name, so a reader can go from table to bar."""
+        inventory = coverage_map(eaf_of(dataset))
+        assert inventory["speech_words"] == {
+            "state": elan_core.COVERAGE_EXPORTED, "tier": "words",
+            "path": ARTIFACT_LAYOUT["speech_words"]}
+
+    def test_a_table_read_as_support_is_summarised_and_names_the_consuming_tier(
+            self, tmp_path: Path) -> None:
+        """`persons/frames.parquet` places every sighting bar and no bar is built *from* it.
+
+        That is a third state, not a variant of "exported": the table is read, and it is still not
+        an exported analysis of its own. The test builds the persons tables so the tier really is
+        written, because an absent-people fixture would report `absent` and prove nothing about the
+        distinction between *read as support* and *written as a tier*.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1), _person_frame(1, 1)], [_person_track(1, 0.0, 0.04, 2)])
+        _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 1 / 29.97)])
+        inventory = coverage_map(eaf_of({"dir": root, "video": video}))
+        for artifact in SECONDARY_INPUTS["person_tracks"]:
+            assert inventory[artifact]["state"] == elan_core.COVERAGE_SUMMARISED, artifact
+        assert inventory["person_frames"]["tier"] == "person_tracks"
+        assert inventory["frame_index"]["tier"] == "person_tracks"
+        # And the distinction holds inside one document: the tier's own table is `exported`.
+        assert inventory["person_tracks"]["state"] == elan_core.COVERAGE_EXPORTED
+        assert inventory["person_tracks"]["tier"] == "person_tracks"
+
+    # ------------------------------------------- the two "not in the file" states are two
+
+    def test_the_same_artifact_is_present_not_exported_or_absent_dependent_on_the_file(
+            self, tmp_path: Path) -> None:
+        """The whole point of the property, on one artifact name and one tier set.
+
+        `pose_face` is read by no tier, so writing the table then deleting it moves the state from
+        `present, not exported` to `absent` with `TIERS` untouched. Merge the two states — into one
+        "not exported", or by deciding states from the tier list alone and never looking at the
+        disk — and this test dies, which is the point: the merged version is the one that reads as
+        "this clip has no person data" while 16,799 rows sit unread on the shelf.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        path = root / ARTIFACT_LAYOUT["pose_face"]
+
+        _write(FACE_SCHEMA, path, [_face_row(0, 0)])
+        present = coverage_map(eaf_only(root, video))["pose_face"]
+        assert present["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+        assert "dense per-joint numeric tracks" in present["reason"]
+
+        path.unlink()
+        absent = coverage_map(eaf_only(root, video))["pose_face"]
+        assert absent["state"] == elan_core.COVERAGE_ABSENT
+        assert absent != present
+        assert "reason" not in absent, "an artifact nobody wrote has no export decision to explain"
+
+    def test_an_empty_but_present_table_is_still_present_not_exported(
+            self, tmp_path: Path) -> None:
+        """0 rows is a result; no file is a different result, and the tier set sees neither.
+
+        Every `pipeline_demo` on this disk has a real, empty `pose/face.parquet`. Calling that
+        `absent` would tell the operator the stage never ran, when the honest sentence is that it
+        ran, found nothing, and this export does not represent those rows anyway.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        _write(FACE_SCHEMA, root / ARTIFACT_LAYOUT["pose_face"], [])
+        entry = coverage_map(eaf_only(root, video))["pose_face"]
+        assert entry["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+
+    def test_the_three_unread_tables_are_the_only_ones_with_a_reason_and_each_is_specific(
+            self, tmp_path: Path) -> None:
+        """Every `present, not exported` names what was deferred; nothing else carries a reason.
+
+        The reason is the half that must not be promotional or vague, and it must not be one
+        sentence pasted onto three tables that differ: `pose_normalized` is a change of basis over
+        the same BODY_25 keypoints, not a third set of joints, and a reader handed the hands/face
+        wording there would go looking for a body-pose tier that already exists.
+        """
+        dataset = make_dataset(tmp_path)
+        _write_unread_pose_tables(dataset["dir"])
+        inventory = coverage_map(eaf_of(dataset))
+        unread = {name for name, entry in inventory.items()
+                  if entry["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED}
+        assert unread == set(UNREAD_TABLES), inventory
+        for name in unread:
+            assert inventory[name]["reason"], name
+        assert inventory["pose_hands"]["reason"] == inventory["pose_face"]["reason"]
+        assert inventory["pose_normalized"]["reason"] != inventory["pose_face"]["reason"]
+        # The checkable half of each sentence: it names the table a pose tier does read.
+        for name in unread:
+            assert ARTIFACT_LAYOUT["pose_body"].split("/")[-1] in inventory[name]["reason"], name
+
+    def test_a_reason_the_export_cannot_name_says_so_instead_of_staying_silent(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unmapped unread table gets the honest blank, not a neighbour's wording.
+
+        The alternative to admitting it has no specific reason is the tempting one — reuse the
+        pose sentence, which sounds right for anything numeric. That is how a documented reason
+        becomes a plausible fiction, so the fallback is a separate state-carrying string.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        _write(FACE_SCHEMA, root / ARTIFACT_LAYOUT["pose_face"], [_face_row(0, 0)])
+        monkeypatch.setattr(elan_core, "TIER_ABSENT_REASONS", {})
+        entry = coverage_map(eaf_only(root, video))["pose_face"]
+        assert entry["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+        assert entry["reason"] == elan_core.COVERAGE_REASON_UNKNOWN
+        assert "no specific reason" in entry["reason"]
+
+    # -------------------------------------------------------- absence outranks the tier list
+
+    def test_a_tier_named_after_a_table_that_was_never_written_does_not_make_it_exported(
+            self, tmp_path: Path) -> None:
+        """`gloss_en` exists in `TIERS`; this dataset has no translation table.
+
+        Deciding the states from the tier list alone — which is the cheap implementation, and the
+        one that never looks at a file — would report `translation_segments` as `exported` and then
+        have to explain a tier with no bars in it. Disk first is what makes the property answer
+        "what could this export read?" rather than "what tiers does the code declare?"
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        inventory = coverage_map(eaf_only(root, video))
+        assert inventory["translation_segments"]["state"] == elan_core.COVERAGE_ABSENT
+        assert "reason" not in inventory["translation_segments"]
+        # The tier itself is absent from the document, and the census says nothing about it.
+        assert "gloss_en" not in tiers_of(eaf_only(root, video))
+
+    def test_a_table_that_exists_but_cannot_be_read_is_still_exported(
+            self, tmp_path: Path) -> None:
+        """A tier that reads a table and fails is not a table this export never represents.
+
+        The file is there; the tier is skipped and the skip is reported by name in the census line
+        and in the stage's `skipped_tiers`. Relabelling the artifact `present, not exported` would
+        turn a corrupt producer into a design decision about the export — the exact collapse of
+        "broken" into "not represented" the whole property exists to prevent.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        path = root / ARTIFACT_LAYOUT["speech_segments"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not a parquet file")
+        inventory = coverage_map(eaf_only(root, video))
+        assert inventory["speech_segments"]["state"] == elan_core.COVERAGE_EXPORTED
+        assert inventory["speech_segments"]["tier"] == "segments_src"
+
+    # ------------------------------------------------------------ derived, never hand-listed
+
+    def test_a_registry_artifact_nobody_listed_appears_as_absent(
+            self, dataset: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+        """A future table shows up without anyone editing a coverage list.
+
+        The registry is patched rather than the property: an assertion that walked a hand-written
+        list of 22 names would keep passing after the 23rd table arrived, which is the only way a
+        coverage inventory can actually rot.
+        """
+        import multimodal_pipeline.artifacts as artifacts
+
+        monkeypatch.setitem(artifacts.ARTIFACT_LAYOUT, "eye_gaze", "gaze/eye.parquet")
+        inventory = coverage_map(eaf_of(dataset))
+        assert "eye_gaze" in inventory
+        assert inventory["eye_gaze"]["state"] == elan_core.COVERAGE_ABSENT
+        assert inventory["eye_gaze"]["path"] == "gaze/eye.parquet"
+
+    def test_a_new_registry_artifact_on_disk_is_present_not_exported_without_a_reason(
+            self, dataset: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+        """Same patch, file written: the state flips, and the reason is the admitted blank.
+
+        Two tests rather than one because the two states a new artifact can land in are the two
+        the operator has to be able to tell apart, and a table nobody has written a reason for yet
+        must not inherit one.
+        """
+        import multimodal_pipeline.artifacts as artifacts
+
+        monkeypatch.setitem(artifacts.ARTIFACT_LAYOUT, "eye_gaze", "gaze/eye.parquet")
+        target = dataset["dir"] / "gaze" / "eye.parquet"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"x")
+        inventory = coverage_map(eaf_of(dataset))
+        assert inventory["eye_gaze"]["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+        assert inventory["eye_gaze"]["reason"] == elan_core.COVERAGE_REASON_UNKNOWN
+
+    def test_raw_tool_outputs_are_not_inventoried(self, dataset: dict[str, Path]) -> None:
+        """The inventory is about the normalised tables the export summarises, not every file.
+
+        `pose/raw/` and `manifest.json` are registry artifacts too, and a document that mixed the
+        two would bury the answer under 25 rows a reader cannot act on. The `path` of every entry
+        ends in `.parquet`, which is the rule the inventory is built from.
+        """
+        inventory = coverage_map(eaf_of(dataset))
+        assert all(entry["path"].endswith(".parquet") for entry in inventory.values())
+        for raw in ("pose_raw", "manifest", "elan_annotations", "acoustic_raw"):
+            assert raw not in inventory
+
+    def test_the_inventory_matches_a_state_map_rebuilt_from_the_registry_and_disk(
+            self, tmp_path: Path) -> None:
+        """Independent recomputation over a directory with real tables in it.
+
+        `registry_parquet_states` re-walks `ARTIFACT_LAYOUT` and stats every path itself. Where the
+        two disagree, one of them is wrong about a file that exists.
+        """
+        root, video = person_clip(tmp_path)
+        _persons(root, [_person_frame(0, 1)], [_person_track(1, 0.0, 0.0, 1)])
+        _frame_index(root, [_frame_row(0, 0.0)])
+        _write(FACE_SCHEMA, root / ARTIFACT_LAYOUT["pose_face"], [_face_row(0, 0)])
+        inventory = coverage_map(eaf_only(root, video))
+        assert {name: entry["state"] for name, entry in inventory.items()} == \
+            registry_parquet_states(root)
+
+    def test_the_property_agrees_with_the_tiers_the_same_document_emits(
+            self, tmp_path: Path) -> None:
+        """Every `exported`/`summarised` entry names a tier that is really in this file.
+
+        The property and the tier list are written by one pass over `TIERS`, so this can disagree
+        only if the inventory is derived from something other than what `build_eaf` iterates — which
+        is exactly how a second source of truth drifts. `person_tracks` is in the fixture's table
+        set but not in its tier list (its secondary input is absent), so the assertion is one
+        direction: bars imply an entry that names them.
+        """
+        dataset = make_dataset(tmp_path)
+        _write_unread_pose_tables(dataset["dir"])
+        eaf = eaf_of(dataset)
+        declared = set(tiers_of(eaf))
+        inventory = coverage_map(eaf)
+        claimed = {entry["tier"] for entry in inventory.values()
+                   if entry["state"] in (elan_core.COVERAGE_EXPORTED,
+                                         elan_core.COVERAGE_SUMMARISED)}
+        assert declared <= claimed, declared - claimed
+        census = dict(eaf.properties)["pipeline-tiers"]
+        for name, count in (part.split("=") for part in census.split()):
+            assert int(count) >= 0 and name in declared
+
+    def test_the_coverage_clause_of_the_semantics_names_all_four_states(
+            self, dataset: dict[str, Path]) -> None:
+        """A reader who finds the semantics property must not need the README for the vocabulary.
+
+        The clause has to name the property it is describing, or it is a paragraph about a thing
+        that is not in the file.
+        """
+        text = dict(eaf_of(dataset).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Coverage:"):]
+        assert elan_core.COVERAGE_PROPERTY in clause
+        for state in elan_core.COVERAGE_STATES:
+            assert state in clause, state
+        assert "never merged" in clause
+
+    # ------------------------------------------------------------------------ corpus truth
+
+    def test_the_corpus_inventories_the_pose_tables_as_present_not_exported(self) -> None:
+        """On the real tables, the three pose files are on disk and unread — not "absent".
+
+        This is the operator's original question in executable form. KABC's `pose/face.parquet`
+        holds 16,799 rows; a document that could only say "no pose tier" would let a reader
+        conclude the clip has no person data, and the clip has plenty.
+        """
+        checked = 0
+        for root in corpus_datasets():
+            eaf, _report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
+            inventory = coverage_map(eaf)
+            assert len(inventory) == 22, root.name
+            for name in UNREAD_TABLES:
+                on_disk = (root / ARTIFACT_LAYOUT[name]).is_file()
+                expected = (elan_core.COVERAGE_PRESENT_NOT_EXPORTED if on_disk
+                            else elan_core.COVERAGE_ABSENT)
+                assert inventory[name]["state"] == expected, (root.name, name)
+                checked += 1
+        assert checked, "no corpus datasets on this disk; the loop proved nothing"
+
+    def test_the_corpus_inventory_matches_a_state_map_rebuilt_from_the_filesystem(self) -> None:
+        """The same recomputation, over the seven real corpora, with the real registry.
+
+        Asserted per corpus, and the set of states actually met is asserted too rather than
+        assumed to be all four: every producer ran on all seven datasets here, so no artifact is
+        `absent` on this disk and `absent` is covered by the fixtures instead. Claiming four would
+        be a claim about a corpus that does not exist.
+        """
+        seen = set()
+        for root in corpus_datasets():
+            eaf, _report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
+            inventory = coverage_map(eaf)
+            recomputed = registry_parquet_states(root)
+            assert {name: entry["state"] for name, entry in inventory.items()} == recomputed, \
+                root.name
+            seen.update(recomputed.values())
+        assert seen == {elan_core.COVERAGE_EXPORTED, elan_core.COVERAGE_SUMMARISED,
+                        elan_core.COVERAGE_PRESENT_NOT_EXPORTED}, seen
+        assert elan_core.COVERAGE_ABSENT not in seen, \
+            "a producer stopped writing a table on this corpus; re-measure the README's counts"
+
+
+class TestDropCountsReachTheRecord:
+    """A tier with fewer bars than rows says why in the record, not only in the run log.
+
+    The two drop rules already existed and already logged. What did not exist is a way to answer
+    "why does this tier show 20 bars for the 24 rows in the table" after the log has rotated: the
+    numbers were in one line of terminal output and nowhere else. Nothing here changes a drop rule
+    — same two exceptions, same two counters, same two log lines — it returns them.
+    """
+
+    def test_a_built_tier_reports_its_two_drop_counters(self, tmp_path: Path) -> None:
+        """The counters come back with the document, and the two states stay two keys."""
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("good", 0.0, 0.4),
+            _word("no-end", 2.0, None),
+            _word("nan", float("nan"), 3.0),
+        ])
+        eaf, report = build_eaf(root, video, log=lambda *a, **k: None)
+        assert elan_core.drop_counts(report) == {"words": {"missing_time": 1, "non_finite": 1}}
+        assert report["dropped"]["words"]["rows"] == 3
+        assert tier_counts(eaf) == {"words": 1}
+
+    def test_a_clean_tier_contributes_nothing_to_the_record(self, dataset: dict[str, Path]
+                                                           ) -> None:
+        """`{}` means no row was refused; it does not mean the export could not tell.
+
+        Suppressing zero rows is what keeps the record readable, and it is why the record's
+        *absence of a key* has to be a real answer rather than silence: every tier built cleanly
+        here, so the map is empty and the reader can trust that emptiness.
+        """
+        _eaf, report = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
+        assert elan_core.drop_counts(report) == {}
+        assert set(report["dropped"]) == set(tier_counts(_eaf))
+        assert all(counts["missing_time"] == 0 and counts["non_finite"] == 0
+                   for counts in report["dropped"].values())
+
+    def test_the_two_drop_states_are_never_summed_into_one_number(self, tmp_path: Path) -> None:
+        """The run log keeps them apart and so does the record.
+
+        B1's rule one level up: "the producer wrote no time" and "the producer wrote a NaN" are
+        different upstream defects, and one total would send somebody to fix the wrong column.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("a", None, None), _word("b", None, None), _word("c", float("inf"), 1.0)])
+        lines: list[str] = []
+        _eaf, report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert elan_core.drop_counts(report) == {"words": {"missing_time": 2, "non_finite": 1}}
+        assert not any("dropped 3" in line for line in lines), lines
+        assert [line for line in lines if "2 of 3" in line and "missing timestamp" in line]
+        assert [line for line in lines if "1 of 3" in line and "non-finite" in line]
+
+    def test_the_log_lines_are_unchanged_by_the_record(self, tmp_path: Path) -> None:
+        """Adding a machine-readable channel must not edit the human-readable one.
+
+        Asserted as the exact substrings the log has always printed, because a refactor that
+        folded the two lines together would satisfy every other test in this class.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("a", 1.0, None), _word("b", float("nan"), 1.0)])
+        lines: list[str] = []
+        build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))[0]
+        assert any("elan: tier words dropped 1 of 2 annotation(s) with a missing timestamp"
+                   in line for line in lines), lines
+        assert any("elan: tier words dropped 1 of 2 annotation(s) with a non-finite timestamp"
+                   in line for line in lines), lines
+
+    def test_a_dropped_row_is_counted_and_the_projection_is_untouched(self, tmp_path: Path
+                                                                     ) -> None:
+        """Two drop rules and a re-cut in one tier, each reported by its own mechanism.
+
+        The projection counts rows that were placed and shared an instant; the record counts rows
+        that were refused. Feeding both to one number would report a producer defect as a layout
+        choice, so this pins the three numbers apart: 3 rows in, 1 refused, 2 placed, 3 bars out.
+        """
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / ARTIFACT_LAYOUT["speech_segments"], [
+            _segment_row("seg-0", 0.0, 2.0, "first"),
+            _segment_row("seg-1", 1.0, 3.0, "second"),
+            _segment_row("seg-2", None, 4.0, "no time"),
+        ])
+        eaf, report = build_eaf(root, video, log=lambda *a, **k: None)
+        assert elan_core.drop_counts(report) == {"segments_src": {"missing_time": 1,
+                                                                 "non_finite": 0}}
+        assert projection_of(eaf)["segments_src"]["logical_row_count"] == 2
+        assert projection_of(eaf)["segments_src"]["final_annotation_count"] == 3
+        assert tier_counts(eaf)["segments_src"] == 3
+        assert report["dropped"]["segments_src"]["rows"] == 3
+
+    def test_the_corpus_carries_no_dropped_rows_and_the_counters_are_still_reported(
+            self) -> None:
+        """Measured: zero on every dataset on this disk, and the record says so per tier.
+
+        An honest negative. The non-zero path is proven by the tests above against fixtures the
+        corpus does not contain; what this test establishes is that the seven real clips pay
+        nothing for the guard, and that a clean run still reports a counter for every built tier
+        rather than reporting nothing at all.
+        """
+        checked = 0
+        for root in corpus_datasets():
+            _eaf, report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
+            assert elan_core.drop_counts(report) == {}, root.name
+            assert report["dropped"], root.name
+            checked += 1
+        assert checked, "no corpus datasets on this disk; the loop proved nothing"
