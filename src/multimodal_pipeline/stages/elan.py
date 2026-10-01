@@ -37,9 +37,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from ..elan import (ALL_INPUTS, COVERAGE_EXPORTED, COVERAGE_PROPERTY, COVERAGE_STATES,
-                    COVERAGE_SUMMARISED, COVERAGE_VERSION, SECONDARY_INPUTS, TIERS, build_eaf,
-                    coverage_of, drop_counts, overlap_projection, tier_counts)
+from ..elan import (ALL_INPUTS, COVERAGE_EXPORTED, COVERAGE_PRESENT_NOT_EXPORTED,
+                    COVERAGE_PROPERTY, COVERAGE_STATES, COVERAGE_SUMMARISED, COVERAGE_VERSION,
+                    OVERLAP_PROJECTION_PROPERTY, SECONDARY_INPUTS, TIERS, build_eaf, coverage_of,
+                    drop_counts, overlap_projection, tier_counts)
 from ..exceptions import ValidationError
 from .base import Stage, StageContext
 
@@ -175,12 +176,17 @@ class ElanStage(Stage):
         vanished between them is worth failing loudly for), or a source video that is not on
         disk (the media descriptor is the one part of the export nothing can recover later).
 
-        Three parts of the record exist so that a question about the clip can be answered from
-        ``status.json``: ``skipped_tiers`` and ``coverage`` for "is this signal missing because of
-        the video or because of the export"; ``projected_tiers`` for "why are there more bars than
-        rows"; and ``dropped_rows`` for the opposite — "why are there fewer". The latter two are
-        read back out of the built document and its report rather than accumulated here, so what
-        the record claims is what the file carries.
+        Three parts of the record exist so that a question about the clip can be answered without
+        opening the XML. Two of them travel through :meth:`validate`, because that return value is
+        the only stage output the orchestrator persists: ``coverage_states`` and
+        ``coverage_not_exported`` for "is this signal missing because of the video or because of the
+        export", and ``projected_tiers`` for "why are there more bars than rows". The third,
+        ``skipped_tiers``, is in the run log and in the run's provenance block only — the
+        orchestrator keeps ``tool_version``, ``model_version``, ``command``, ``executable``,
+        ``exit_code`` and the validation result, and nothing else from this dict (measured: no
+        ``status.json`` on this corpus has ever contained ``tier_counts`` or ``coverage``, for any
+        stage). The projected counts are read back out of the built document rather than accumulated
+        here, so what the record claims is what the file carries.
         """
         missing = [name for name in TRANSCRIPT_ARTIFACTS if not ctx.artifact(name).is_file()]
         if len(missing) == len(TRANSCRIPT_ARTIFACTS):
@@ -210,17 +216,21 @@ class ElanStage(Stage):
             "tiers": len(counts),
             "annotations": sum(counts.values()),
             "tier_counts": dict(sorted(counts.items())),
-            # Named in the record, not only in the log: "this dataset has no person tier" should
-            # be answerable from status.json without opening the .eaf.
+            # Named in the record and in the log: "this dataset has no person tier" is answered by
+            # the log line and by the .eaf's own coverage property. It is *not* answered by
+            # status.json — see the method docstring for what the orchestrator actually persists.
             "skipped_tiers": [spec.tier for spec in TIERS if spec.tier not in counts],
             "projected_tiers": {tier: {"logical_rows": document["logical_row_count"],
                                        "emitted": document["final_annotation_count"]}
                                 for tier, document in sorted(projection.items())},
             # The other direction of the same question. A tier can show fewer bars than its table
             # has rows because two rows shared an instant and were re-cut (above), or because rows
-            # carried no usable time and were refused. Only the second is a producer defect, and
-            # until now it lived only in the run log — so the honest answer to "this tier shows 20
-            # bars for 24 rows" depended on nobody having rotated the log.
+            # carried no usable time and were refused. Only the second is a producer defect. These
+            # counts are in the run log and in this returned block; they are *not* in status.json,
+            # because they come from the build report and not from the document, and `validate`
+            # (which is what gets persisted) reads only the document. Measured on this corpus every
+            # tier dropped zero rows, so nothing here is currently answering a real question — the
+            # counters exist for the day a producer starts writing null timestamps.
             "dropped_rows": drop_counts(report),
             # Read back out of the document rather than recomputed here, exactly like the tier
             # counts and the projection: the record's coverage *is* the file's coverage, so the two
@@ -349,7 +359,65 @@ class ElanStage(Stage):
         if issues:
             raise ValidationError(self.name, issues)
         return {"tiers": len(tiers), "media_descriptors": len(descriptors),
-                "bytes": path.stat().st_size}
+                "bytes": path.stat().st_size, **self._reported_state(root)}
+
+    @staticmethod
+    def _reported_state(root: Any) -> dict[str, Any]:
+        """What the document says about itself, read out of its own properties.
+
+        This exists because of how the orchestrator persists a stage. ``execute`` returns a rich
+        provenance block, but only ``tool_version``, ``model_version``, ``command``, ``executable``,
+        ``exit_code`` and **this function's return value** reach ``status.json`` — measured on this
+        corpus, no ``status.json`` has ever held ``tier_counts``, ``coverage`` or ``projected_tiers``
+        for any stage. So either the questions the export promises to answer are answered here, or
+        the promise belongs in the run log instead of in the record.
+
+        Both halves are read from the parsed document rather than remembered from the build, for the
+        reason :meth:`_check_independent_tiers` gives for the bars: a value carried in from the run
+        that wrote the file is a memory, and a hand-edited file would keep being described by it.
+        Reading them here means the record describes the artifact that was just validated.
+
+        State *counts* plus the not-exported names, not the whole 22-entry inventory: the detail
+        lives in the file, and the record only has to say how to route the question. Absent keys are
+        reported as absent rather than as an empty claim, so a document written before a property
+        existed does not gain one.
+        """
+        properties: dict[str, str] = {}
+        for element in root.iter("PROPERTY"):
+            name = element.attrib.get("NAME")
+            if name in (COVERAGE_PROPERTY, OVERLAP_PROJECTION_PROPERTY):
+                properties[name] = (element.text or "").strip()
+
+        reported: dict[str, Any] = {}
+        raw_coverage = properties.get(COVERAGE_PROPERTY, "")
+        if raw_coverage:
+            try:
+                document = json.loads(raw_coverage)
+            except ValueError:
+                document = None
+            artifacts = document.get("artifacts") if isinstance(document, dict) else None
+            if isinstance(artifacts, dict):
+                states = {name: entry.get("state") for name, entry in artifacts.items()
+                          if isinstance(entry, dict)}
+                counts: dict[str, int] = {}
+                for state in states.values():
+                    counts[str(state)] = counts.get(str(state), 0) + 1
+                reported["coverage_states"] = dict(sorted(counts.items()))
+                reported["coverage_not_exported"] = sorted(
+                    name for name, state in states.items() if state == COVERAGE_PRESENT_NOT_EXPORTED)
+        raw_projection = properties.get(OVERLAP_PROJECTION_PROPERTY, "")
+        if raw_projection:
+            try:
+                document = json.loads(raw_projection)
+            except ValueError:
+                document = None
+            tiers = document.get("tiers") if isinstance(document, dict) else None
+            if isinstance(tiers, dict):
+                reported["projected_tiers"] = {
+                    tier: {"logical_rows": entry.get("logical_row_count"),
+                           "emitted": entry.get("final_annotation_count")}
+                    for tier, entry in sorted(tiers.items()) if isinstance(entry, dict)}
+        return reported
 
     @staticmethod
     def _check_media(ctx: StageContext, descriptor: Any, *, eaf_dir: Path) -> list[str]:

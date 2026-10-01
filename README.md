@@ -427,7 +427,7 @@ Now the files, with what those numbers mean:
 | `speaker/fusion_{pyannote,nemotron}.parquet` | 2 / 1 | One row per diarization turn per engine: the turn's times plus what the face evidence said about it, as a verdict in `agreement` and the arithmetic behind it in `agreement_detail`. On this clip both engines answer `no_face_visible` — "a voice with nothing visible" — which is the correct reading of a test pattern, not a failure to decide. |
 | `speaker/active_speaker_frames.parquet` | 249 | Dense on the 25 FPS grid, and on this clip the grid *is* the source grid. Every row is `face_status='no_face'`, `frame_reason='no_face'`, `score_imputed=False`, `is_active_speaker=False`, `track_id=None`. |
 | `speaker/active_speaker_tracks.parquet` | 0 | No track, because no face was ever located. |
-| `elan/annotations.eaf` | 12 tiers / 59 annotations *(on disk)* | The ELAN export of the tiers above: fixed flat tiers, the video linked by both an absolute and a relative URL, per-frame signals collapsed into runs. It is XML, so the count is annotations and tiers rather than rows, and it is a **summary** — label text and run boundaries are derived, so this is not a row-for-row copy of the tables. **These two numbers are what the file on this disk holds, and the file is historical:** it was written when the export had twelve tiers, and the current code measures **17 tiers / 86 annotations** against these same tables in memory (the four linguistic tiers add 26: `spacy_source_tokens` 23, `spacy_source_sentences` 1, `spacy_english_tokens` 1, `spacy_english_sentences` 1; the acoustic segment tier adds 1, this clip's single `seg000001`). Nothing was regenerated — see the table under [ELAN export](#elan-export-elan) for the on-disk vs measured split. Measured here, both then and now: `words` 23, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
+| `elan/annotations.eaf` | 17 tiers / 86 annotations *(on disk)* | The ELAN export of the tiers above: fixed flat tiers, the video linked by both an absolute and a relative URL, per-frame signals collapsed into runs. It is XML, so the count is annotations and tiers rather than rows, and it is a **summary** — label text and run boundaries are derived, so this is not a row-for-row copy of the tables. **Regenerated on 2026-10-01** by `--only-stage elan`, so the file on this disk now matches what the current code builds (it held 12 tiers / 59 annotations while five code changes had landed since it was written; see the table under [ELAN export](#elan-export-elan) for the before/after of that refresh). Measured on this clip: `words` 23, `spacy_source_tokens` 26 logical rows emitted as 23 bars, `spacy_english_tokens` 28 coincident context rows in **1** bar, `acoustic_segments` 1, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
 | `provenance/{config,tools,processing}.json` | — | Resolved config with secrets masked, the machine inventory, and every stage's exact command, hashes and duration. |
 
 One row read straight out of `speech/words.parquet`, which is the row every other modality
@@ -1242,26 +1242,33 @@ bar holding four labels). What the segments cannot carry — each producer row's
 ids, its text, and which segments it ended up in — goes into the document's
 `pipeline-overlap-projection` property, per affected tier only, alongside
 `logical_row_count` (rows the table carried) and `final_annotation_count` (bars the tier emits).
-Those are two different facts, the tier census counts only the second, and the stage's own run
-record repeats both under `projected_tiers` so the difference is answerable from `status.json`
-without opening the XML. The property is what
+Those are two different facts, the tier census counts only the second, and `validate` reads both
+back out of the document and returns them as `projected_tiers`, which is how the difference reaches
+`status.json` — that return value is the only thing the orchestrator persists from this stage, so it
+is where a claim about the record has to be made or dropped. The property is what
 makes the mapping from row to bars checkable after a split. `ElanStage.validate` then checks the
 rule against the XML's own `TIME_SLOT` values — not against that property, because a metadata block
 written by the same code that wrote the bars is not evidence about them — and reports same-tier
 overlap, an unresolvable slot reference, and any interval with `start >= end`.
 
-Measured on the corpus, annotations per dataset. **The "on disk" columns are read straight out of
-the `.eaf` files sitting here, and they are historical.** Five changes to the tier code are not in
-them: the ASD label split (every imputed-tail frame gets its own run), the person tier becoming
-sighting runs instead of one span per id, the independent-tier projection, the four linguistic
-tiers, and the acoustic segment summary tier. The rebuild column is what the same tables produce
-today, measured in memory against these
-files with no write — the export is regenerated by a pipeline run and the corpus `.eaf` files are
-the operator's to regenerate. **Read the two columns as a before/after of the export's code, never
-as a change in what was measured:** not one value in any Parquet table moved, and every added
-annotation is a split of a run that was already there, a segment of rows that already shared the
-time, a linguistic tier that did not exist when the file was written, or one bar per row of the
-per-segment acoustic table. La-1's `person_tracks`
+Measured on the corpus, annotations per dataset. **The file on disk is now the current export:** the
+seven `.eaf` files were regenerated on 2026-10-01 by `multimodal-pipeline run --only-stage elan`
+(7 completed, 0 failed, 14 s). The "before" columns are the same files read before that refresh —
+historical then, and the reason the refresh was not cosmetic: four of the seven **failed
+`validate`** because their bars overlapped inside a tier, which is what the projection rule (below)
+exists to prevent. Five code changes were missing from those files: the ASD label split (every
+imputed-tail frame gets its own run), the person tier becoming sighting runs instead of one span per
+id, the independent-tier projection, the four linguistic tiers, and the acoustic segment summary
+tier. **Read the two groups as a before/after of the export's code, never as a change in what was
+measured:** compared with the inventory taken before the refresh, 166 files under `data/` changed and
+**0 of them were a measurement** — 130 stage logs, 7 `.eaf`, 7 `status.json`, 7 `manifest.json`, 14
+provenance files and the batch report. All 154 Parquet tables and all 42 raw/media files (JSONL,
+WAV, PNG, CSV, PKL, and the seven videos) kept their SHA256. Re-exporting a second time changed every
+`.eaf`'s bytes and nothing else: the only difference is the document's own `DATE` attribute, which is
+the one thing in the file that is a fact about the run rather than about the data.
+Every added annotation is a split of a run that was already there, a segment of rows that already
+shared the time, a linguistic tier that did not exist when the file was written, or one bar per row
+of the per-segment acoustic table. La-1's `person_tracks`
 stays 9 because one trajectory breaks in two (id 10, source frames 114 → 144) while its eight ids
 stay eight; `person_demo`'s 75 ids become 138 logical sightings (110 runs and 28 single-frame marks)
 emitted as 157 bars, and KABC's 3 become 11 logical sightings emitted as 17. KABC and La-1 also
@@ -1280,15 +1287,19 @@ rows, so those two totals are unchanged from before B4 for the same reason the l
 empty (0 stays 0). No dataset's acoustic tier was projected: measured across all seven, the
 segment rows never overlap on this disk, so each is written exactly as measured.
 
-| dataset | tiers on disk | annotations on disk | rebuild now | note |
-|---|---|---|---|---|
-| KABC | 12 | 49 | 94 | `asd_speaking` 3 → 4 blocks; `person_tracks` 3 → 11 logical / 17 emitted; `turns_nemotron` and `fusion_nemotron` 3 → 4 each; `pose_presence` = 1 (0→4204 ms); **linguistic +26** — source tokens 24 logical → 20 bars, English tokens 23 logical → 2, sentences 2 + 2; **acoustic +2** |
-| CNN | 12 | 36 | 51 | projected `person_tracks` 4 logical → 1 bar (four ids sighted together); every visual tier unchanged; **linguistic +16** — source tokens 15 → 13, English tokens 15 → 1, sentences 1 + 1; **acoustic +1** |
-| La-1 | 12 | 86 | 129 | 7 → 11 ASD blocks; `person_tracks` 8 → 9; `turns_nemotron`/`fusion_nemotron` 4 → 6 each; `face_tracks` 4 → 5; **linguistic +29** — source tokens 21 → 17, English tokens 25 → 4, sentences 4 + 4; **acoustic +4** |
-| `person_demo` | 12 | 94 | 177 | transcript tiers are **empty**: its words table has 0 rows; 138 logical sightings → 157 bars; the four linguistic tiers are **empty too** (0 rows each) and so is `acoustic/segment_features.parquet`, so this total is unchanged from before B3 |
-| `pipeline_demo` | 12 | 59 | 86 | its persons tables have 0 rows, so `person_tracks` is an **empty tier** here too — 0 stays 0; **linguistic +26** — source tokens 26 logical → 23 bars, English tokens 28 → 1, English sentences 2 → 1; **acoustic +1** |
-| `pipeline_demo_ntsc` | 12 | 59 | 86 | same tables, same projection: 26 → 23, 28 → 1, 2 → 1; **acoustic +1** |
-| `pipeline_silent` | 12 | 1 | 1 | the silence case: one block, no transcript, empty linguistic tables, and an **empty** acoustic segment table (0 rows, but the frame table still parses) |
+| dataset | tiers before | annotations before | tiers now | annotations now | note |
+|---|---|---|---|---|---|
+| KABC | 12 | 49 | 17 | 94 | `asd_speaking` 3 → 4 blocks; `person_tracks` 3 → 11 logical / 17 emitted; `turns_nemotron` and `fusion_nemotron` 3 → 4 each; `pose_presence` = 1 (0→4204 ms); **linguistic +26** — source tokens 24 logical → 20 bars, English tokens 23 logical → 2, sentences 2 + 2; **acoustic +2** |
+| CNN | 12 | 36 | 17 | 51 | projected `person_tracks` 4 logical → 1 bar (four ids sighted together); every visual tier unchanged; **linguistic +16** — source tokens 15 → 13, English tokens 15 → 1, sentences 1 + 1; **acoustic +1** |
+| La-1 | 12 | 86 | 17 | 129 | 7 → 11 ASD blocks; `person_tracks` 8 → 9; `turns_nemotron`/`fusion_nemotron` 4 → 6 each; `face_tracks` 4 → 5; **linguistic +29** — source tokens 21 → 17, English tokens 25 → 4, sentences 4 + 4; **acoustic +4** |
+| `person_demo` | 12 | 94 | 17 | 177 | transcript tiers are **empty**: its words table has 0 rows; 138 logical sightings → 157 bars; the four linguistic tiers are **empty too** (0 rows each) and so is `acoustic/segment_features.parquet`, so this total is unchanged from before B3 |
+| `pipeline_demo` | 12 | 59 | 17 | 86 | its persons tables have 0 rows, so `person_tracks` is an **empty tier** here too — 0 stays 0; **linguistic +26** — source tokens 26 logical → 23 bars, English tokens 28 → 1, English sentences 2 → 1; **acoustic +1** |
+| `pipeline_demo_ntsc` | 12 | 59 | 17 | 86 | same tables, same projection: 26 → 23, 28 → 1, 2 → 1; **acoustic +1** |
+| `pipeline_silent` | 12 | 1 | 17 | 1 | the silence case: one block, no transcript, empty linguistic tables, and an **empty** acoustic segment table (0 rows, but the frame table still parses) |
+
+All seven now pass `validate`, and the projection was checked on the files rather than in memory:
+across the 21 projected tiers, **415 logical rows and 0 labels lost** — every label the property
+records appears in some emitted bar, and no logical interval has a millisecond no bar covers.
 
 Seven things the export does that are worth knowing before you open one:
 - **The file says what it left out, and "left out" is two states.** An opened `.eaf` proves what
@@ -1321,14 +1332,15 @@ Seven things the export does that are worth knowing before you open one:
   dependency hash identical, and the reuse check would keep a file that now says `absent` about a
   table that exists. Flags, not contents: unread bytes cannot move a state.
 - **A tier with fewer bars than its table has rows says which rule took them.** `projected_tiers`
-  answers "why are there more" (two rows shared an instant and were re-cut — a layout choice).
-  `dropped_rows` answers the opposite: per tier, `missing_time` and `non_finite`, the two states the
-  export already counted and already printed as two log lines and now also returns in the record.
-  Rows are refused, never placed at `t=0`, so the count is the only trace the refused rows leave;
-  before this it lived in a terminal buffer. Measured on all seven datasets: **zero rows dropped in
-  every tier** — no producer on this disk writes a null or NaN timestamp, so the record reads
-  `dropped_rows: {}` everywhere and the counters cost nothing here. The non-zero path is proven by
-  fixtures the corpus does not contain (`test_a_built_tier_reports_its_two_drop_counters`,
+  answers "why are there more" (two rows shared an instant and were re-cut — a layout choice), and it
+  reaches `status.json` through `validate`. The opposite question is answered by two counters,
+  `missing_time` and `non_finite`, counted per tier and printed as two log lines: rows are refused,
+  never placed at `t=0`, so the count is the only trace the refused rows leave. Those two are **run
+  log and run output only** — they come from the build, not from the document, and `validate` reads
+  the document, so nothing about them reaches `status.json`. Say plainly: on this corpus the answer
+  is in `logs/elan.log`, and measured across all seven datasets every tier dropped **zero** rows, so
+  no log line had to be read to find that out. The non-zero path is proven by fixtures the corpus
+  does not contain (`test_a_built_tier_reports_its_two_drop_counters`,
   `test_the_record_reports_dropped_rows_only_for_the_tiers_that_refused_some`,
   `test_the_two_drop_states_are_never_summed_into_one_number`). Nothing about the drop rule changed:
   same two exceptions, same two log lines, same refusal.
@@ -1931,7 +1943,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1856 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1859 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1988,7 +2000,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1856 tests
+tests/unit/                1859 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
