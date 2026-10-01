@@ -32,9 +32,19 @@ missing. An empty tier would be ambiguous between "nobody
 spoke", "no face was on screen" and "this engine never ran", which is the collapse the
 pipeline has refused everywhere else (§17's ``face_status``, §20.2's person counts).
 
-Eight things are not obvious from reading the code — four about the format, one about what a
+What that rule does *not* answer is the other half of the question, and the half an operator
+cannot recover from an opened file: "this clip has no person data" and "this export never
+represents pose" both leave a tier missing. :data:`COVERAGE_PROPERTY` answers it by naming every
+normalised Parquet artifact in the registry and giving it exactly one of four states — exported,
+summarised, present and not exported, absent — derived from :data:`ARTIFACT_LAYOUT`,
+:data:`TIERS` and :data:`SECONDARY_INPUTS` plus one stat() per file. So the inventory is a
+function of the same objects this function iterates, and a future artifact appears in it without
+anyone editing a list.
+
+Nine things are not obvious from reading the code — four about the format, one about what a
 tier is *for*, one about what a person tier is entitled to claim, one about what a linguistic
-tier's bar is entitled to claim, one about what a tier of numbers is entitled to claim:
+tier's bar is entitled to claim, one about what a tier of numbers is entitled to claim, one
+about what an inventory of a file's own contents is entitled to claim:
 
 * **Time slots are integer milliseconds, ``start < end`` is a hard requirement, and a row with no
   usable time is not exported at all.** See :func:`seconds_to_ms` and :func:`interval_ms`. ELAN has
@@ -96,6 +106,18 @@ tier's bar is entitled to claim, one about what a tier of numbers is entitled to
   while the producers' logical intervals and their segment membership go into the
   ``pipeline-overlap-projection`` property. Nothing is staggered, nothing is dropped, and no
   offset is invented.
+* **The document states what it left out, and "left out" is two states, not one.** See
+  :func:`coverage_inventory`. An opened ``.eaf`` proves what it contains; nothing in it proves
+  what was never exported. A reader who finds no pose tier cannot tell a clip with no person in
+  frame from a table with 16,799 unread rows, and the second reading is the one that costs an
+  afternoon, because it ends the investigation. So every normalised Parquet artifact in the
+  registry is inventoried as ``exported`` (a tier is named after it), ``summarised`` (a tier
+  reads it as support), ``present, not exported`` (the file is there and nothing reads it) or
+  ``absent`` (no file, so nothing could have been exported). The last two are the distinction the
+  whole property exists to keep, because both look like a missing tier and only one is a decision
+  made here: ``present, not exported`` carries a specific reason naming what was deferred, and
+  ``absent`` deliberately carries none — a file that was never written has no export-side decision
+  to explain, and inventing one would be the same fabrication as a timestamp at second zero.
 """
 
 from __future__ import annotations
@@ -655,6 +677,56 @@ def project_independent_tier(tier: str, rows: Sequence[dict[str, Any]]
     return emitted, {"version": OVERLAP_PROJECTION_VERSION, "tiers": {tier: projection}}
 
 
+#: Document property naming what this export represents and what it left out.
+COVERAGE_PROPERTY = "pipeline-coverage"
+
+#: States of :data:`COVERAGE_PROPERTY`. Named constants because the four words are the claim:
+#: `present, not exported` (a file exists and nothing reads it) and `absent` (no file) are the
+#: pair a reader must not be able to collapse into one "not in the file".
+COVERAGE_EXPORTED = "exported"
+COVERAGE_SUMMARISED = "summarised"
+COVERAGE_PRESENT_NOT_EXPORTED = "present, not exported"
+COVERAGE_ABSENT = "absent"
+
+#: The four states as a set, so a reader of the property can tell "not a state we know" from
+#: "a state we know this document has". Ordered as exported → summarised → unread → absent.
+COVERAGE_STATES: tuple[str, ...] = (COVERAGE_EXPORTED, COVERAGE_SUMMARISED,
+                                    COVERAGE_PRESENT_NOT_EXPORTED, COVERAGE_ABSENT)
+
+#: Shape/version marker of the property's JSON, so a later re-shaping is visible in the file.
+COVERAGE_VERSION = 1
+
+#: Why one artifact has no tier, keyed by registry artifact name.
+# Only the artifacts that really go unread are here, and each entry states what the export
+# declines to represent rather than advertising a future tier. `pose_hands` and `pose_face` are
+# the same deferral in two tables, so they share one string — written once so the two cannot drift
+# apart and claim a table is deferred for a reason the other is not.
+#
+# Each wording names the table a tier *does* read, because that is the checkable half of the
+# sentence: `pose_presence_rows` reads `pose/body.parquet` and two columns of it
+# (`timestamp`, `confidence`), so no bar here can reach the hands, the face, or a normalised
+# coordinate. Naming that keeps the reason falsifiable — a later tier that started reading one of
+# these files would make its own sentence false, which is what the state map then catches.
+POSE_DENSE_TRACK_REASON = (
+    "dense per-joint numeric tracks are not represented by this export: no tier reads this table, "
+    "and the pose tier (`pose_presence`) blocks over pose/body.parquet's timestamps and "
+    "confidences alone, so these joints' coordinates stay in the Parquet table")
+
+TIER_ABSENT_REASONS: dict[str, str] = {
+    "pose_hands": POSE_DENSE_TRACK_REASON,
+    "pose_face": POSE_DENSE_TRACK_REASON,
+    "pose_normalized": (
+        "dense per-joint numeric tracks are not represented by this export, and this table is a "
+        "change of basis over the same BODY_25 keypoints the pose tier already blocks over — "
+        "`pose_presence` reads pose/body.parquet's timestamps and confidences and never a "
+        "coordinate, so neither x_norm/y_norm nor the basis columns here have a bar to reach"),
+}
+
+#: A reason the export could not name specifically says so, rather than going silent.
+COVERAGE_REASON_UNKNOWN = (
+    "no specific reason is recorded for this artifact being left out; the export writes no tier "
+    "from it")
+
 # ------------------------------------------------------------------ display vocabulary
 
 #: What "there is no value here" looks like inside a tier label.
@@ -831,7 +903,17 @@ TIER_SEMANTICS: str = (
     "export may place, so it is dropped and counted rather than widened by the display rule and "
     "given a full set of statistics over a bar no audio spans. "
     "Coverage: this document is a summary of the dataset's tables, not every number in them "
-    "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement."
+    "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement. "
+    "What represents each normalised table is named per artifact in the " + COVERAGE_PROPERTY
+    + " property, because a missing tier alone cannot tell a reader whether the data is missing "
+    "or the export never represents it: exported means a tier of this document is built from that "
+    "table, summarised means a tier reads it as support for rows built from another table "
+    "(persons/frames.parquet places the sighting bars and no bar is built from it), 'present, not "
+    "exported' means the file is on disk and no tier reads it — with the reason naming what was "
+    "deferred — and absent means the producer never wrote the file, which carries no reason "
+    "because no export decision was involved. 'present, not exported' and absent are different "
+    "states on purpose and are never merged: the first is a fact about this export, the second is "
+    "a fact about this dataset. "
 )
 
 
@@ -2182,6 +2264,130 @@ SECONDARY_INPUTS: dict[str, tuple[str, ...]] = {
 ALL_INPUTS: tuple[str, ...] = tuple(spec.artifact for spec in TIERS) + tuple(
     name for names in SECONDARY_INPUTS.values() for name in names)
 
+# ------------------------------------------------------------------ coverage inventory
+
+# The state names and their reasons live above :data:`TIER_SEMANTICS`, which quotes them; the
+# functions that compute an inventory live here, next to :data:`ALL_INPUTS`, because two of the
+# four states are derived from the objects in it. See :func:`coverage_inventory`.
+
+
+def normalized_artifact_names() -> tuple[str, ...]:
+    """Every normalised Parquet artifact in the registry, in :data:`ALL_INPUTS` order.
+
+    The set is **derived from the registry**, not listed here: the registry is the one place a
+    dataset-relative path is defined, and a hand-written list of the 22 tables would age into a
+    coverage inventory that silently omits the 23rd. What is kept out is equally derived — any
+    path not ending in ``.parquet`` is a raw tool output, a directory, or document/file
+    (``manifest.json``, ``source/metadata.json``, ``pose/raw/``, ``elan/annotations.eaf``), and
+    this inventory is about the normalised tables the export is a summary **of**.
+
+    Order is tier order first (:data:`ALL_INPUTS`), so a reader scanning the property meets the
+    exported tables in the sequence the tiers are written, and the unread ones after them.
+    """
+    from .artifacts import ARTIFACT_LAYOUT
+
+    parquet = {name for name, relative in ARTIFACT_LAYOUT.items()
+               if relative.endswith(".parquet")}
+    ordered = [name for name in ALL_INPUTS if name in parquet]
+    # Anything the registry has that no tier or secondary input names, appended in name order so
+    # the property is stable across runs. A brand-new registry key lands here, and its state is
+    # then decided by whether the file is on disk — `absent` or `present, not exported`.
+    ordered.extend(sorted(parquet - set(ordered)))
+    return tuple(ordered)
+
+
+def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None) -> dict[str, Any]:
+    """One state per normalised Parquet artifact: what represents it in this document, or nothing.
+
+    The point is the pair a reader of an opened ``.eaf`` cannot otherwise distinguish. "This clip
+    has no person data" and "this export never represents pose" both leave a tier missing from
+    the grid; one of them is a fact about the video and the other is a fact about this file, and
+    only the first is answerable from what is on screen. So the inventory names every table in
+    the registry and gives each exactly one state:
+
+    * ``absent`` — no file on disk, so nothing could have been exported from it whatever the tier
+      set said. Carries **no** reason, on purpose.
+    * ``exported`` — the file is there and a tier in :data:`TIERS` is named after it; the entry
+      carries that tier's name.
+    * ``summarised`` — the file is there and :data:`SECONDARY_INPUTS` has a tier reading it as
+      support; the entry carries the consuming tier. `persons/frames.parquet` is the example: it
+      places every sighting bar and no bar is built *from* it.
+    * ``present, not exported`` — the file is there and no tier reads it at all. Carries a reason
+      naming what the export declines to represent.
+
+    **The disk is consulted first, and that ordering is the claim.** `absent` outranks the other
+    three: a dataset whose translation stage never ran has no `gloss_en` tier because no file was
+    ever written, and calling `translation_segments` `exported` — because some tier is named after
+    it in the abstract — would tell the reader the opposite of what the empty grid means. Two of
+    the four states are decided from the same objects :func:`build_eaf` iterates
+    (:data:`TIERS`, :data:`SECONDARY_INPUTS`), so the inventory cannot drift from the export's own
+    tier list; the other two need one ``is_file()`` per artifact and nothing else.
+
+    Whether a tier ended up **empty** because its table had no rows is deliberately not a fifth
+    state — that is a fact about the clip, it is already in the tier census and in
+    :func:`tier_counts`, and folding it in here would put two overlapping answers about one tier
+    in a single document. A tier **skipped for a reason other than absence** (its table was
+    unreadable, or a secondary dependency was not there) is still `exported`: a tier that reads a
+    table and fails is not a table this export never represents, and the skip is named in
+    `skipped_tiers` and in the run log rather than reported by silently relabelling the artifact.
+
+    **Why ``absent`` carries no reason, and why that is not an omission.** A reason is a claim
+    about a decision the export made, and an artifact that was never produced involved no such
+    decision: the ``openpose`` stage never ran, so "this export declines to represent dense pose
+    tracks" would be a true sentence about a table this dataset does not have, printed where a
+    reader would take it as the cause of the absence. The state already carries the whole truth:
+    there was no file to read. ``present, not exported`` is the only state with something to
+    explain, and a :data:`TIER_ABSENT_REASONS` gap there prints
+    :data:`COVERAGE_REASON_UNKNOWN` rather than staying silent or borrowing a neighbouring
+    artifact's wording.
+    """
+    root = Path(dataset_dir)
+    exported = {spec.artifact: spec.tier for spec in TIERS}
+    summarised: dict[str, str] = {}
+    for tier, artifacts in SECONDARY_INPUTS.items():
+        for artifact in artifacts:
+            # First consumer wins, and `SECONDARY_INPUTS` is keyed by tier, so the map is
+            # deterministic. Nothing in this pipeline has a second consumer today; if one is
+            # added, a single name would be a false claim and this is where it gets widened.
+            summarised.setdefault(artifact, tier)
+
+    inventory: dict[str, Any] = {}
+    for name in (normalized_artifact_names() if names is None else names):
+        relative = artifact_path(name)
+        if not (root / relative).is_file():
+            # First, and deliberately: with no file there was nothing to export, whatever the tier
+            # set says about this name. See the docstring's ordering rule.
+            inventory[name] = {"state": COVERAGE_ABSENT, "path": relative}
+        elif name in exported:
+            inventory[name] = {"state": COVERAGE_EXPORTED, "tier": exported[name],
+                               "path": relative}
+        elif name in summarised:
+            inventory[name] = {"state": COVERAGE_SUMMARISED, "tier": summarised[name],
+                               "path": relative}
+        else:
+            entry: dict[str, Any] = {"state": COVERAGE_PRESENT_NOT_EXPORTED, "path": relative}
+            entry["reason"] = TIER_ABSENT_REASONS.get(name, COVERAGE_REASON_UNKNOWN)
+            inventory[name] = entry
+    return inventory
+
+
+def coverage_of(eaf: Any) -> dict[str, Any]:
+    """The coverage document stored in a built or reopened Eaf (``{}`` if none).
+
+    Same shape as :func:`overlap_projection`: one reader so a consumer never parses the property
+    by hand, and a document written before the property existed reads as "nothing inventoried"
+    rather than raising. The ``artifacts`` map is returned rather than the whole envelope, so the
+    version marker stays with the writer.
+    """
+    raw = dict(eaf.properties).get(COVERAGE_PROPERTY)
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw).get("artifacts", {})
+    except (ValueError, AttributeError):  # a hand-edited property is no inventory we can report
+        return {}
+
+
 #: Mimetype by suffix. pympi's own guess table covers wav/mpg/mpeg/xml and nothing else, so
 #: leaving an .mp4 to the library raises KeyError; and ELAN will not open a linked file whose
 #: MIME type it has no player for, so this is the value it expects rather than a decoration.
@@ -2274,8 +2480,16 @@ def add_media_descriptor(eaf: Any, *, dataset_dir: Path, video_path: Path) -> di
     return {"media_url": absolute, "relative_media_url": relpath, "mimetype": mimetype}
 
 
-def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = print) -> Any:
-    """Read a dataset's tables and return a populated :class:`pympi.Elan.Eaf`.
+def build_eaf(dataset_dir: Path, video_path: Path,
+              log: Callable[..., None] = print) -> tuple[Any, dict[str, Any]]:
+    """Read a dataset's tables and return ``(Eaf, report)``.
+
+    The second value is what the export knows that the document does not carry as bars:
+    ``{"dropped": {tier: {"missing_time": n, "non_finite": n, "rows": n}}}`` for every tier that
+    was built (see :func:`drop_counts`). Returning it beside the document, rather than only
+    logging the same numbers, is what lets ``stages/elan.py`` put them in the stage record — a
+    reader of ``status.json`` must be able to ask "why does this tier show 20 bars for 24 rows"
+    without the run log.
 
     The stage writes the file; this function only builds it, so the whole mapping runs in a
     test with no stage, no config and no output directory.
@@ -2322,6 +2536,22 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     the same argument the manifest makes in JSON. The census counts what was **emitted**; where a
     tier was projected, its logical row count is a different number and lives in the projection
     property rather than here.
+
+    The census and :data:`COVERAGE_PROPERTY` are two halves of the same answer and neither is a
+    copy of the other. The census names the tiers that got bars; the inventory names every table
+    in the registry and says what represents it, including the ones no tier reads. The inventory
+    is computed from :data:`TIERS` and :data:`SECONDARY_INPUTS` **before** the tier loop reads a
+    single table, plus one stat() per artifact: it is an answer about this export and this
+    dataset's files, not a restatement of which tiers happened to end up with bars. A tier skipped
+    because its producer never ran therefore reads `absent` rather than `exported`, and a tier
+    skipped because its table could not be read stays `exported` — see
+    :func:`coverage_inventory` for why those two are the right way round.
+
+    Rows dropped for having no usable time are **returned as well as logged**, per tier and as
+    two separate counters. The log line reaches whoever watched the run; ``status.json`` is what
+    reaches the person wondering why a tier shows 20 bars for the 24 rows in the table. Nothing
+    about the drop rule changes here: the same two exceptions, the same two counts, the same two
+    log lines.
     """
     from pympi.Elan import Eaf
 
@@ -2337,6 +2567,12 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     # that was skipped has no provenance to report — writing `unknown` for it would read as "a
     # table with no model was exported" rather than "no table was there".
     linguistic: dict[str, Any] = {}
+    # Computed before any table is opened, from the tier declarations themselves — see the
+    # docstring. It is the one part of the document that describes the export rather than the clip.
+    coverage = coverage_inventory(dataset_dir)
+    # Per-tier drop counters, returned with the document. Two states, two counters, never summed:
+    # the run log prints them on two lines and the record has to keep them as far apart.
+    drops: dict[str, dict[str, int]] = {}
 
     for spec in TIERS:
         relative = artifact_path(spec.artifact)
@@ -2401,6 +2637,12 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
                         "variant": _variant_of(item),
                         "spacy_model": spacy_model_of(item),
                     }
+                # Recorded whether or not either counter is non-zero, so the record's shape does
+                # not depend on the data. `rows` is the count the log line prints its ratio
+                # against, and it is the tier builder's logical row count *before* the drops —
+                # not the projection's logical count, which is a different denominator.
+                drops[spec.tier] = {"missing_time": missing_time, "non_finite": non_finite,
+                                    "rows": len(rows)}
                 if missing_time:
                     log(f"elan: tier {spec.tier} dropped {missing_time} of {len(rows)} "
                         f"annotation(s) with a missing timestamp (no time is exported rather "
@@ -2421,6 +2663,13 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     # costs nothing and cannot drift from a clip.
     eaf.add_property("pipeline-tier-semantics", TIER_SEMANTICS)
     eaf.add_property("pipeline-media", f"{media['media_url']} | {media['relative_media_url']}")
+    # Always written, including when every state is `exported`: "nothing was left out" is a claim
+    # worth carrying, and a property that appeared only when something was missing would make a
+    # document with no property ambiguous between "nothing left out" and "written before this
+    # existed" — the ambiguity `absent` vs `present, not exported` exists to remove.
+    eaf.add_property(COVERAGE_PROPERTY, json.dumps(
+        {"version": COVERAGE_VERSION, "artifacts": coverage},
+        ensure_ascii=False, separators=(",", ":"), default=str))
     # Written only when something was re-cut. Compact by construction: one entry per affected
     # tier, and each logical row carries its segment list rather than a copy of the table.
     if projections:
@@ -2436,7 +2685,28 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     log(f"elan: {len(built)} tier(s), {sum(built.values())} annotation(s) for "
         f"{Path(video_path).name}; skipped {len(skipped)} "
         f"({', '.join(sorted(skipped)) or 'none'})")
-    return eaf
+    return eaf, {"dropped": drops}
+
+
+def drop_counts(report: Any) -> dict[str, dict[str, int]]:
+    """The per-tier drop counters from a :func:`build_eaf` report, with zero rows kept out.
+
+    One reader for the report's shape, for the same reason :func:`overlap_projection` exists: a
+    consumer should not be unpacking ``report["dropped"][tier]["missing_time"]`` in three places
+    and inventing three answers to "what if the key is not there".
+
+    **Only the non-zero tiers are returned.** `build_eaf` records every built tier so the report
+    is uniform in memory, and the record keeps only the tiers with something to account for, so
+    ``dropped_rows: {}`` reads as "no row was refused" rather than as seventeen tiers each
+    reporting zero. A tier that was **skipped** is absent from this map as well: a skipped tier
+    dropped no rows, it never read any — its answer is in `skipped_tiers`, and counting its
+    unread rows as drops would report a producer defect that did not happen.
+    """
+    dropped = (report or {}).get("dropped", {})
+    return {tier: {"missing_time": int(counts["missing_time"]),
+                   "non_finite": int(counts["non_finite"])}
+            for tier, counts in sorted(dropped.items())
+            if counts["missing_time"] or counts["non_finite"]}
 
 
 def tier_counts(eaf: Any) -> dict[str, int]:

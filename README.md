@@ -279,7 +279,7 @@ data/processed/<video_id>/
 │   ├── fusion_nemotron.parquet         ← same fusion, Nemotron turns, if that engine is selected
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── elan/
-│   └── annotations.eaf             ← ELAN export: 17 fixed summary tiers, video linked (see below)
+│   └── annotations.eaf             ← ELAN export: 17 fixed summary tiers over 19 of the 22 tables, video linked (see below)
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
     ├── config.json               ← resolved config, secrets masked, config hash
@@ -999,10 +999,9 @@ depend on the data and two datasets could no longer be compared tier-for-tier. T
 acoustic aggregate has a tier of its own (`acoustic_segments`) and it is a flat peer of
 `voiced_blocks`, not its child: the two tables are filtered differently (below) and a hierarchy
 would make the file's shape depend on which of the two a run produced. What still gets no
-tier is `pose/hands`, `pose/face` and `pose/normalized`. A
-tier is never silently renamed to cover them
-(`manifest.artifacts_not_generated` is where absence is declared, and what still belongs there is
-classified with the coverage refresh, not here). Two diarizers and two fusions
+tier is `pose/hands`, `pose/face` and `pose/normalized` — and the file
+says so. A tier is never silently renamed to cover them
+(`manifest.artifacts_not_generated` is where absence is declared). Two diarizers and two fusions
 are why seventeen tiers is more tiers than producers: an absent engine is an absent tier, not a
 shared one.
 
@@ -1291,8 +1290,48 @@ segment rows never overlap on this disk, so each is written exactly as measured.
 | `pipeline_demo_ntsc` | 12 | 59 | 86 | same tables, same projection: 26 → 23, 28 → 1, 2 → 1; **acoustic +1** |
 | `pipeline_silent` | 12 | 1 | 1 | the silence case: one block, no transcript, empty linguistic tables, and an **empty** acoustic segment table (0 rows, but the frame table still parses) |
 
-Four more things the export does that are worth knowing before you open one:
-
+Seven things the export does that are worth knowing before you open one:
+- **The file says what it left out, and "left out" is two states.** An opened `.eaf` proves what
+  it contains; nothing in it proves what was never exported. So a missing tier is ambiguous between
+  "this clip has no person data" and "this export never represents pose", and only the first is a
+  fact about the video. The `pipeline-coverage` property therefore names **every normalised Parquet
+  table in the registry** — all 22, not the 19 the export reads — and gives each exactly one state:
+  `exported` (a tier of this document is built from it, and the entry carries the tier's name),
+  `summarised` (a tier reads it as support: `persons/frames.parquet` places every sighting bar and
+  no bar is built *from* it), `present, not exported` (the file is on disk, nothing reads it, and the
+  entry carries the reason), or `absent` (no file, so nothing could have been exported whatever the
+  tier set said). Measured on this corpus: **17 exported, 2 summarised, 3 present-not-exported, 0
+  absent** in all seven datasets, because every producer ran here. The `absent` state is exercised by
+  the synthetic fixtures instead — a table with 0 rows is `present, not exported`, not `absent`, and
+  that distinction is what keeps "the stage ran and found nothing" from reading as "the stage never
+  ran". Two rules keep the property honest. It is **derived** from `ARTIFACT_LAYOUT`, `TIERS` and
+  `SECONDARY_INPUTS` rather than typed into a list, so a table added to the registry tomorrow appears
+  in it with the right state and no edit to a coverage list; and it consults the **disk first**, so a
+  tier that exists in the code but whose producer never ran cannot report its table as `exported`.
+  `absent` deliberately carries no reason: an artifact nobody wrote involved no export decision, and
+  a reason there would be a true sentence about a deferral printed where a reader would take it for
+  the cause of the absence. `present, not exported` carries a specific one — `pose_face` and
+  `pose_hands`: *dense per-joint numeric tracks are not represented by this export* — and
+  `pose_normalized` gets its own wording, because it is a change of basis over the same BODY_25
+  keypoints `pose_presence` already blocks over, not a third set of joints. A table that is unread
+  with no specific reason recorded says *that*, rather than borrowing a neighbour's sentence. Those
+  three unread tables are not inputs to the stage — nothing is read from them — so the fingerprint
+  also carries `inventory_present`, their existence flags. Without it, `pose/face.parquet` appearing
+  would change what the document claims while leaving every config value, every table digest and the
+  dependency hash identical, and the reuse check would keep a file that now says `absent` about a
+  table that exists. Flags, not contents: unread bytes cannot move a state.
+- **A tier with fewer bars than its table has rows says which rule took them.** `projected_tiers`
+  answers "why are there more" (two rows shared an instant and were re-cut — a layout choice).
+  `dropped_rows` answers the opposite: per tier, `missing_time` and `non_finite`, the two states the
+  export already counted and already printed as two log lines and now also returns in the record.
+  Rows are refused, never placed at `t=0`, so the count is the only trace the refused rows leave;
+  before this it lived in a terminal buffer. Measured on all seven datasets: **zero rows dropped in
+  every tier** — no producer on this disk writes a null or NaN timestamp, so the record reads
+  `dropped_rows: {}` everywhere and the counters cost nothing here. The non-zero path is proven by
+  fixtures the corpus does not contain (`test_a_built_tier_reports_its_two_drop_counters`,
+  `test_the_record_reports_dropped_rows_only_for_the_tiers_that_refused_some`,
+  `test_the_two_drop_states_are_never_summed_into_one_number`). Nothing about the drop rule changed:
+  same two exceptions, same two log lines, same refusal.
 - **The video is linked twice.** The `MEDIA_DESCRIPTOR` carries both an absolute `file://`
   URL and a `RELATIVE_MEDIA_URL` (`../../../input_videos/<name>` — relative to the `.eaf`
   itself in `elan/`, which is the base ELAN resolves against), because neither alone
@@ -1322,8 +1361,24 @@ Four more things the export does that are worth knowing before you open one:
 - **`validate` checks the bars, not the export's story about them.** It resolves the document's own
   `TIME_SLOT` values and reports same-tier overlap, a slot reference that names no slot, and any
   interval with `start >= end` — while pointedly *not* reading `pipeline-overlap-projection`, which
-  is the writer's account of the same file. Since `validate` is also the reuse gate, a document that
-  overlaps (an old export, or one edited by hand) is re-exported rather than reused.
+  is the writer's account of the same file. It does cross-check `pipeline-coverage` against the
+  document's own `TIER` elements — every tier the file declares must be claimed by some entry, and
+  an entry must either name a tier or state one of the four known words — and that is the one
+  property it reads, because the check is *internal* consistency rather than a claim about the
+  tables. **One direction only, on purpose:** an entry naming a tier the document omits is what a
+  *skipped* tier looks like (a table that exists but cannot be parsed loses its tier and keeps its
+  artifact `exported`), and refusing that would put the reuse gate into a rerun loop over a partial
+  export the writer produces deliberately. The census check already reports a tier deleted from the
+  document, with the tier's name. An entry whose `tier` is a list or an object is reported as an
+  unreadable claim rather than acted on: the value comes out of JSON and goes into a set, so without
+  that guard a hand edit raised `TypeError: unhashable type` out of `validate` — and since `validate`
+  is the reuse gate, that crash stopped the pipeline where "no, rebuild it" was the answer that
+  repairs the file. The registry is never consulted: the tree
+  changes when a stage reruns, and a finished export must not become unvalidateable because a
+  producer later wrote one more file. A missing property fails nothing (a document written before
+  coverage existed still opens); a property that is not JSON, or a version this code cannot read,
+  is refused. Since `validate` is also the reuse gate, a document that overlaps (an old export, or
+  one edited by hand) is re-exported rather than reused.
 
 Reuse works like every derived stage: its fingerprint mixes the digests of the tables it
 reads **and** the Python that builds the tiers (§31), so editing `elan.py` re-runs it and an
@@ -1876,7 +1931,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1811 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1856 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -1933,7 +1988,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1811 tests
+tests/unit/                1856 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

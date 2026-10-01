@@ -869,7 +869,17 @@ class PersonsConfig(_Model):
 
 
 class ElanConfig(_Model):
-    """Export the dataset as one ELAN ``.eaf`` with one flat tier per module (T22).
+    """Export the dataset as one ELAN ``.eaf`` of seventeen fixed flat tiers (T22).
+
+    Seventeen tiers, and **not** one per module: two diarizers and two fusions account for four
+    of them, and the seventeen read nineteen of the twenty-two normalised Parquet tables the
+    pipeline publishes — `person_frames` and `source/frame_index.parquet` are read as support for
+    the sightings tier rather than having tiers of their own, while `pose/hands.parquet`,
+    `pose/face.parquet` and `pose/normalized.parquet` are read by nothing. Which table is in which
+    state is not a claim a reader has to take on trust: the export writes that inventory into every
+    file and into this stage's record, so "this clip has no pose data" and "this export never
+    represents pose" stay two answerable questions. See
+    :func:`~multimodal_pipeline.elan.coverage_inventory`.
 
     A *derived export*, not a new measurement: it reads the Parquet tables every other stage
     already wrote and writes no table of its own, so nothing here can change a number in the
