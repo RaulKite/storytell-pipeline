@@ -35,6 +35,7 @@ import pytest
 from multimodal_pipeline import elan as elan_core
 from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
 from multimodal_pipeline.elan import (
+    ABSENT_DISPLAY,
     ADJACENCY_NO_INDEX,
     ADJACENCY_SPLIT,
     ADJACENCY_UNVERIFIED,
@@ -43,13 +44,26 @@ from multimodal_pipeline.elan import (
     ASD_NOT_EVALUATED,
     ASD_NOT_SPEAKING,
     ENGINE_NS,
+    ENGLISH_TRANSLATION_TEXT,
     FACE_TRACK_NS,
+    LINGUISTIC_NO_TIMING,
+    LINGUISTIC_PROVENANCE_PROPERTY,
     PTS_TOLERANCE_SECONDS,
     SECONDARY_INPUTS,
     SEGMENT_NS,
     SPEAKER_NS,
+    SPACY_ENGLISH_SENTENCES,
+    SPACY_ENGLISH_TOKENS,
+    SPACY_SENTENCE_COLUMNS,
+    SPACY_SOURCE_SENTENCES,
+    SPACY_SOURCE_TOKENS,
+    SPACY_TOKEN_COLUMNS,
     TIERS,
     TIER_SEMANTICS,
+    TIMING_SEGMENT_CONTEXT,
+    TIMING_TOKEN_ALIGNED,
+    TIMING_TOKEN_REPORTED,
+    UNKNOWN_DISPLAY,
     UNKNOWN_MIME_TYPE,
     WORD_NS,
     MissingTimestamp,
@@ -72,9 +86,11 @@ from multimodal_pipeline.schemas import (
     PERSON_FRAMES_SCHEMA,
     PERSON_TRACKS_SCHEMA,
     SEGMENTS_SCHEMA,
+    SENTENCES_SCHEMA,
     SPEAKER_FUSION_SCHEMA,
     SPEAKER_TURNS_NEMOTRON_SCHEMA,
     SPEAKER_TURNS_SCHEMA,
+    TOKENS_SCHEMA,
     TRANSLATION_SCHEMA,
     WORDS_SCHEMA,
     read_table,
@@ -192,7 +208,8 @@ class TestTimeConversion:
             # independent calls cannot: 0.0006 -> 1 ms, 0.0009 -> 1 ms.
             (0.0006, 0.0009, (1, 2)),
             (0.0, 0.04, (0, 40)),
-            (-0.5, 0.5, (0, 500)),
+            # A start inside rounding noise of zero is clamped, so the pair survives.
+            (-1e-06, 0.5, (0, 500)),
         ],
     )
     def test_an_interval_always_satisfies_start_less_than_end(self, start: Any, end: Any,
@@ -201,19 +218,83 @@ class TestTimeConversion:
         assert got == expected
         assert got[0] < got[1], "ELAN refuses an annotation whose start is not before its end"
 
+    @pytest.mark.parametrize("start,end,label", [
+        (-2.0, -1.0, "both-negative"),
+        (-0.5, 0.5, "straddles-zero"),
+        (-3.0, -3.0, "zero-width-negative"),
+        (0.5, -0.5, "end-negative"),
+        (-0.002, 5.0, "start-two-ms-negative"),
+    ], ids=["both-negative", "straddles-zero", "zero-width-negative", "end-negative",
+            "start-two-ms-negative"])
+    def test_an_interval_refuses_a_materially_negative_endpoint(self, start: float, end: float,
+                                                               label: str) -> None:
+        """A negative time is refused like a missing one, in **every** tier.
+
+        `(-2.0, -1.0)` used to come back as `(0, 1)`: the converter's clamp put the row over the
+        first millisecond of the clip, which is a fact no producer measured and the same invented
+        placement `build_eaf` already drops a null for. `(-0.5, 0.5)` → `(0, 500)` was worse in the
+        other direction — a half-second bar that starts a fifth of a second before the clip
+        exists. Both are refused with :class:`MissingTimestamp`, the exception `build_eaf` already
+        counts, so no tier needs new plumbing and no new bar is invented.
+
+        The tolerance is what keeps this from costing real data: the boundary case is
+        :func:`test_an_interval_keeps_a_negative_within_the_tolerance_at_zero`.
+        """
+        with pytest.raises(MissingTimestamp):
+            interval_ms(start, end)
+
+    @pytest.mark.parametrize("start,end,expected", [
+        # The producer that subtracts an offset and emits -1e-6 for its first frame.
+        (-1e-06, 0.4, (0, 400)),
+        # Half a millisecond of noise either side of t=0 still rounds to 0 ms.
+        (-0.0004, 0.0004, (0, 1)),
+        # The tolerance is one millisecond, so -0.0005 s is still noise, not a placement.
+        (-0.0005, 1.0, (0, 1000)),
+    ], ids=["one-microsecond", "four-hundredths-of-ms", "half-a-ms"])
+    def test_an_interval_keeps_a_negative_within_the_tolerance_at_zero(
+            self, start: float, end: float, expected: tuple[int, int]) -> None:
+        """Rounding noise at t=0 stays a real row, clamped to zero.
+
+        Dropping every negative would drop rows whose time is 0 as far as a millisecond grid can
+        tell, and the row's content (a word, a sighting, a token) is worth more than the sign bit
+        that a subtraction put there. `NEGATIVE_TOLERANCE_SECONDS` is the line.
+        """
+        assert interval_ms(start, end) == expected
+
+    def test_the_negative_tolerance_is_narrower_than_one_millisecond(self) -> None:
+        """The tolerance may not swallow a millisecond, or it would move a real boundary.
+
+        A value beyond it is refused rather than rounded, so the widest change the rule can make
+        to a placed interval is the sub-millisecond it started with.
+        """
+        tolerance = elan_core.NEGATIVE_TOLERANCE_SECONDS
+        assert 0.0 < tolerance < 0.001
+        assert interval_ms(-tolerance, 1.0) == (0, 1000)
+        with pytest.raises(MissingTimestamp):
+            interval_ms(-tolerance * 2.0, 1.0)
+
     def test_no_interval_ever_comes_out_negative_or_inverted(self) -> None:
         """The property, over a sweep — the pair rule has to hold for every input.
 
         Parametrised cases show the interesting ones; this one says the rule is total, which
         is what the format actually requires. Includes values that round to zero width and
-        values whose end precedes their start.
+        values whose end precedes their start. Materially negative pairs are excluded from the
+        sweep because they now raise, and are covered by
+        :func:`test_an_interval_refuses_a_materially_negative_endpoint`.
         """
-        values = [-3.0, -0.0004, 0.0, 0.0004, 0.0006, 0.0009, 0.01, 0.039999, 1.0, 4.169999]
+        values = [-0.0004, 0.0, 0.0004, 0.0006, 0.0009, 0.01, 0.039999, 1.0, 4.169999]
         for start in values:
             for end in values:
                 low, high = interval_ms(start, end)
                 assert low >= 0, (start, end)
                 assert high > low, (start, end, low, high)
+        tolerance = elan_core.NEGATIVE_TOLERANCE_SECONDS
+        material = [-3.0, -0.002, -0.5]
+        for start in material + values:
+            for end in material + values:
+                if start < -tolerance or end < -tolerance:
+                    with pytest.raises(MissingTimestamp):
+                        interval_ms(start, end)
 
 
 class TestCollapseRuns:
@@ -524,7 +605,7 @@ def logical_texts(eaf: Any, tier: str) -> list[str]:
 
 
 class TestBuildEaf:
-    """The twelve tiers, built from real Parquet and read back out of real XML."""
+    """The sixteen tiers, built from real Parquet and read back out of real XML."""
 
     def test_only_the_tiers_with_input_files_are_present(self, dataset: dict[str, Path]) -> None:
         eaf = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
@@ -545,12 +626,15 @@ class TestBuildEaf:
         build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: lines.append(str(a[0])))
         # "skipped (" and not bare "skipped": the closing census line also reports the count,
         # and counting it would make this assertion pass at seven tiers or at seventy.
+        # Eleven, not seven: the four linguistic tables join the absent set, because the synthetic
+        # clip writes five producers' tables and no linguistic one.
         skipped = [line for line in lines if "skipped (" in line]
-        assert len(skipped) == 7, skipped
+        assert len(skipped) == 11, skipped
+        assert len([line for line in skipped if "linguistic/" in line]) == 4, skipped
         assert sum(1 for line in skipped if "gloss_en" in line) == 1
         assert any("translation/segments_en.parquet not produced" in line for line in skipped)
         # The census line agrees with the per-tier lines rather than restating a constant.
-        assert any(line.startswith("elan: 5 tier(s)") and "skipped 7" in line for line in lines)
+        assert any(line.startswith("elan: 5 tier(s)") and "skipped 11" in line for line in lines)
 
     def test_a_known_word_lands_on_the_expected_millisecond_pair(self,
                                                                 dataset: dict[str, Path]
@@ -885,6 +969,76 @@ class TestBuildEaf:
         assert [line for line in lines if "words" in line and "1 of 3" in line
                 and "non-finite" in line], lines
 
+    @pytest.mark.parametrize("start,end", [
+        (-2.0, -1.0),
+        (-0.5, 0.5),
+        (-3.0, -1.0),
+    ], ids=["both-negative", "straddles-zero", "wide-negative"])
+    def test_a_word_with_a_materially_negative_time_is_dropped_and_not_placed_at_zero(
+            self, tmp_path: Path, start: float, end: float) -> None:
+        """The non-linguistic tiers laundered a negative into a bar at second zero.
+
+        B2 put the refusal in :func:`interval_ms`, but the check only covered *nulls*: a negative
+        endpoint fell through to :func:`seconds_to_ms` and its clamp, so ``(-2.0, -1.0)`` reopened
+        as a ``[0, 1)`` ms word and ``(-0.5, 0.5)`` as a half-second bar starting before the clip,
+        with **no** drop log at all — the tier looked complete. The clamp is right for a converter
+        and wrong for a placement: ELAN cannot tell that bar from one measured at t=0. Both shapes
+        are now refused on the existing missing-timestamp line.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("good", 0.0, 0.4),
+            _word("negative", start, end),
+        ])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [(s, e) for s, e, _t in annotations(eaf, "words")] == [(0, 400)], (start, end)
+        assert [line for line in lines if "words" in line and "1 of 2" in line
+                and "missing timestamp" in line], (start, end, lines)
+
+    def test_a_word_time_inside_rounding_noise_of_zero_is_kept_and_clamped(self,
+                                                                          tmp_path: Path
+                                                                          ) -> None:
+        """The legitimate half of the rule: `-1e-6` at t=0 is noise, and the row is real.
+
+        A producer that subtracts an offset emits such a value for its first frame; dropping it
+        would cost a measured word to buy a sign bit nobody read. It lands at 0 ms, which is where
+        the millisecond grid puts it anyway.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("first", -1e-06, 0.4),
+        ])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [(s, e) for s, e, _t in annotations(eaf, "words")] == [(0, 400)]
+        assert not [line for line in lines if "missing timestamp" in line], lines
+
+    def test_a_negative_endpoint_is_refused_on_a_second_tier_and_its_sibling_survives(
+            self, tmp_path: Path) -> None:
+        """The refusal sits in the export's one time path, so no tier needs its own guard.
+
+        Written against the turn tier rather than a copy of the word test: the point is that
+        `build_eaf` — not a builder — decides, which is what keeps a future tier from
+        re-introducing the clamp by omission. One bad row costs one bar; the tier stays.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [
+            {"schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
+             "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+             "diarization_type": "exclusive"},
+            {"schema_version": "1.0", "video_id": "clip", "turn_id": "t-1",
+             "speaker_id": "SPEAKER_00", "start_time": -4.0, "end_time": -2.0,
+             "duration": 2.0, "diarization_type": "exclusive"},
+        ])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [(s, e) for s, e, _t in annotations(eaf, "turns_pyannote")] == [(0, 1000)]
+        assert [line for line in lines if "turns_pyannote" in line and "1 of 2" in line
+                and "missing timestamp" in line], lines
+        assert dict(eaf.properties)["pipeline-tiers"] == "turns_pyannote=1 words=1"
+
     def test_the_document_is_well_formed_xml_and_reloads(self, dataset: dict[str, Path]
                                                          ) -> None:
         """ELAN reads bytes, not this object: write, parse, and read it back."""
@@ -932,7 +1086,7 @@ class TestBuildEaf:
 class TestSegmentIdentityLinksTiers:
     """Every text tier carries the producer's own id, so a reader can link across tiers.
 
-    The twelve tiers used to print prose only: a word, a source segment, an English segment.
+    The first twelve tiers used to print prose only: a word, a source segment, an English segment.
     Nothing in the file said which segment a word belonged to or which source line a
     translation answered, so linking them in ELAN meant eyeballing timestamps — and the ids
     that do the linking already exist in the tables (`WORDS_SCHEMA.segment_id` / `word_id`,
@@ -1492,7 +1646,7 @@ class TestTierSemanticsProperty:
         assert FACE_TRACK_NS in text
         assert "same" in text
 
-    def test_the_semantics_are_about_the_twelve_tiers_this_file_writes(
+    def test_the_semantics_are_about_the_tiers_this_file_writes(
             self, dataset: dict[str, Path]) -> None:
         """No tier name in the property that the tier list does not contain.
 
@@ -1605,11 +1759,13 @@ def eaf_of(dataset: dict[str, Path]) -> Any:
 class TestTierRegistration:
     """Every tier reads a registered artifact; no file name is invented here."""
 
-    def test_the_twelve_tiers_are_the_ones_the_design_named(self) -> None:
+    def test_the_sixteen_tiers_are_the_ones_the_design_named(self) -> None:
         assert [spec.tier for spec in TIERS] == [
             "words", "segments_src", "gloss_en", "turns_pyannote", "turns_nemotron",
             "fusion_pyannote", "fusion_nemotron", "asd_speaking", "face_tracks",
-            "person_tracks", "pose_presence", "voiced_blocks"]
+            "person_tracks", "pose_presence", "voiced_blocks",
+            "spacy_source_tokens", "spacy_source_sentences",
+            "spacy_english_tokens", "spacy_english_sentences"]
 
     def test_every_tier_input_is_a_registered_artifact(self) -> None:
         unregistered = sorted({spec.artifact for spec in TIERS} - set(ARTIFACT_LAYOUT))
@@ -1675,6 +1831,109 @@ class TestAgainstTheCorpus:
     CORPUS = PROCESSED / "2017-12-30_0735_US_KABC_Jimmy_Kimmel_Live_1120_696_1124_896_hear"
     VIDEO = (ROOT / "data" / "input_videos"
              / "2017-12-30_0735_US_KABC_Jimmy_Kimmel_Live_1120.696_1124.896_hear.mp4")
+
+    def test_the_corpus_linguistic_tiers_print_no_invented_states(self, tmp_path: Path) -> None:
+        """The corpus, asked the two questions the synthetic fixtures cannot answer.
+
+        On this disk the collapse is not hypothetical: 228 of the 231 tokens across all four
+        linguistic tables of every dataset carry a null `ent_type` and **zero** carry an empty one,
+        because `workers/spacy_worker.py` writes ``token.ent_type_ or None``. So "the corpus never
+        prints `ent unknown`" is the measurement of defect 1, and "no `[0, 1)` bar calls itself
+        token aligned" is the measurement of defect 2 on real data — the corpus has no negative
+        token time, which is exactly why the synthetic fixtures carry those cases.
+
+        Written to ``tmp_path`` like every other corpus test; no table under ``data/processed/``
+        is opened for anything but reading.
+        """
+        if not self.CORPUS.is_dir():
+            pytest.skip(f"corpus dataset not present under {PROCESSED}")
+        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        ent_none = ent_unknown = 0
+        for artifact, tier in ((SPACY_SOURCE_TOKENS, "spacy_source_tokens"),
+                               (SPACY_ENGLISH_TOKENS, "spacy_english_tokens")):
+            if tier not in tier_counts(eaf):
+                continue
+            table = read_table(self.CORPUS / ARTIFACT_LAYOUT[artifact],
+                               columns=["token_id", "ent_type", "token_start_time",
+                                        "token_end_time", "segment_start_time",
+                                        "segment_end_time"]).to_pylist()
+            assert sum(1 for row in table if row["ent_type"] is None) > 0, artifact
+            assert not [row for row in table if row["ent_type"] == ""], artifact
+            for text in logical_texts(eaf, tier):
+                fragment = [part for part in text.split(" · ") if part.startswith("ent ")]
+                assert len(fragment) == 1, text
+                value = fragment[0].split(" ", 1)[1]
+                ent_none += value == ABSENT_DISPLAY
+                ent_unknown += value == UNKNOWN_DISPLAY
+            # Every emitted bar of a linguistic tier is placed on a pair this export is willing
+            # to name: a finite, ordered, non-negative one.
+            for start_ms, end_ms, _text in annotations(eaf, tier):
+                # The shape the clamp used to produce: a 1 ms bar at second zero.
+                assert not (start_ms == 0 and end_ms == 1), (tier, start_ms, end_ms)
+            for row in logical_rows(eaf, tier):
+                if set(row["text"].split(" · ")) & {TIMING_TOKEN_ALIGNED,
+                                                    TIMING_TOKEN_REPORTED}:
+                    assert not (row["start_ms"] == 0 and row["end_ms"] == 1), row["text"]
+        assert ent_unknown == 0, ent_unknown
+        assert ent_none > 0, ent_none
+
+    def test_the_corpus_english_tiers_never_deny_the_bounds_their_bars_span(self) -> None:
+        """Measured, not assumed: the corpus's English rows really do sit on segment bounds.
+
+        Each English logical row is joined back to its own table row by `token_id` — the id the
+        label prints, not a positional guess — and the label's placement fragment is checked
+        against the interval that row was measured over. If the corpus ever starts writing token
+        times for the translation, this is the check that catches a label disagreeing with its own
+        bar on real data rather than on a fixture.
+        """
+        if not self.CORPUS.is_dir():
+            pytest.skip(f"corpus dataset not present under {PROCESSED}")
+        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        if "spacy_english_tokens" not in tier_counts(eaf):
+            pytest.skip("corpus has no English linguistic table")
+        table = {row["token_id"]: row for row in read_table(
+            self.CORPUS / ARTIFACT_LAYOUT[SPACY_ENGLISH_TOKENS],
+            columns=["token_id", "segment_start_time", "segment_end_time",
+                     "token_start_time", "token_end_time"]).to_pylist()}
+        rows = logical_rows(eaf, "spacy_english_tokens")
+        assert rows
+        for row in rows:
+            # The id is read out of the label rather than the projection metadata, because a tier
+            # with no same-tier overlap has no projection and its logical rows carry no `source`.
+            token_id = re.search(r"token (\S+) · ", row["text"])
+            assert token_id, row["text"]
+            source = table.get(token_id.group(1))
+            assert source is not None, row["text"]
+            parts = row["text"].split(" · ")
+            if TIMING_SEGMENT_CONTEXT in parts:
+                assert source["segment_start_time"] is not None, row["text"]
+                assert (row["start_ms"], row["end_ms"]) == (
+                    seconds_to_ms(source["segment_start_time"]),
+                    seconds_to_ms(source["segment_end_time"], end=True)), row["text"]
+        # And the reason the synthetic case is defensive rather than a corpus case, stated as a
+        # measurement so this test cannot quietly stop meaning anything:
+        assert not [row for row in table.values() if row["token_start_time"] is not None], \
+            "the corpus now writes English token times; the placement rule needs a corpus case"
+
+    def test_the_corpus_lexical_flags_never_report_a_measured_none_for_an_unread_row(
+            self) -> None:
+        """Counted on the corpus: how many rows would have been mislabelled by `null → False`.
+
+        Every table here measures all four flags, so the fragment stays `none`/a list of names and
+        no row prints `flags unknown`. That is the measurement, not an assumption: if a future
+        table leaves them unread the assertion still holds because the two states differ.
+        """
+        if not self.CORPUS.is_dir():
+            pytest.skip(f"corpus dataset not present under {PROCESSED}")
+        eaf = build_eaf(self.CORPUS, self.VIDEO, log=lambda *a, **k: None)
+        table = read_table(self.CORPUS / ARTIFACT_LAYOUT[SPACY_SOURCE_TOKENS],
+                           columns=["is_alpha", "is_stop", "is_digit", "like_num"]).to_pylist()
+        all_null = sum(1 for row in table
+                       if all(row[key] is None for key in
+                              ("is_alpha", "is_stop", "is_digit", "like_num")))
+        texts = logical_texts(eaf, "spacy_source_tokens")
+        assert sum(1 for text in texts if text.endswith(f"flags {UNKNOWN_DISPLAY}")) == all_null
+        assert sum(1 for text in texts if text.startswith(f"flags {UNKNOWN_DISPLAY}")) == 0
 
     def test_the_corpus_export_has_every_tier_and_real_words(self, tmp_path: Path) -> None:
         """The real tables, so the column names stop being this file's invention.
@@ -2194,7 +2453,7 @@ class TestPersonSightings:
 
         Both columns are nullable in ``PERSON_FRAMES_SCHEMA``, and the schema's own comment says
         why a null there is a missing measurement rather than a zero. Neither may crash the tier
-        (that would lose all twelve sibling tiers through the per-tier guard's log line), neither
+        (that would lose all fifteen sibling tiers through the per-tier guard's log line), neither
         may be counted as a sighting of somebody, and the row that has a time but no frame still
         belongs in the file as a mark that cannot be placed.
         """
@@ -2694,7 +2953,7 @@ class TestIndependentTierProjection:
                                                          ) -> None:
         """The synthetic clip has no same-tier overlap, so it gets no property at all.
 
-        Checked by absence rather than by an empty dict per tier: a document that lists twelve
+        Checked by absence rather than by an empty dict per tier: a document that lists sixteen
         unaffected tiers is a document where a reader cannot see which two were rewritten.
         """
         eaf = eaf_of(dataset)
@@ -2917,3 +3176,985 @@ class TestIndependentTierProjection:
                                for start, end, _v, _svg in annotations_of_tier.values())
                 assert all(pairs[i][1] <= pairs[i + 1][0]
                            for i in range(len(pairs) - 1)), f"{name}/{tier}: {pairs}"
+
+
+# ------------------------------------------------- linguistic tiers (B3)
+
+
+#: artifact key -> dataset-relative path, read from the registry rather than restated here, so a
+#: moved artifact cannot make a fixture write a file no tier reads.
+LINGUISTIC_PATHS = {
+    SPACY_SOURCE_TOKENS: ARTIFACT_LAYOUT[SPACY_SOURCE_TOKENS],
+    SPACY_SOURCE_SENTENCES: ARTIFACT_LAYOUT[SPACY_SOURCE_SENTENCES],
+    SPACY_ENGLISH_TOKENS: ARTIFACT_LAYOUT[SPACY_ENGLISH_TOKENS],
+    SPACY_ENGLISH_SENTENCES: ARTIFACT_LAYOUT[SPACY_ENGLISH_SENTENCES],
+}
+
+
+def _spacy_token(text: str, *, segment_id: str = "seg-0",
+                 sentence_id: str = "seg-0-s001", token_id: Any = _DEFAULT,
+                 token_index: int = 0, start: Any = _DEFAULT, end: Any = _DEFAULT,
+                 seg_start: Any = 0.0, seg_end: Any = 1.0, status: Any = "aligned",
+                 conf: Any = 1.0, speaker_id: Any = "SPEAKER_00", **extra: Any
+                 ) -> dict[str, Any]:
+    """One ``linguistic/*/tokens.parquet`` row, as `workers/spacy_worker.py` writes it.
+
+    The defaults are the *aligned source* case — finite token times, a real confidence — because
+    that is the state a test has to depart from deliberately rather than by accident. `_DEFAULT`
+    means "the token's own times equal its segment's", which keeps a fixture from silently testing
+    the segment-context path when it meant to test the aligned one. The analysis columns are
+    keyword overrides so a test can ask for the two states that look alike and are not:
+    ``morph=""`` (the producer answered "no morphology") and ``morph=None`` (nothing reached the
+    column).
+    """
+    return {
+        "schema_version": "1.0", "video_id": "clip", "segment_id": segment_id,
+        "sentence_id": sentence_id, "token_id": (f"{sentence_id}-t{token_index + 1:04d}"
+                                                if token_id is _DEFAULT else token_id),
+        "token_index": token_index, "speaker_id": speaker_id, "text": text,
+        "lower": text.lower(), "lemma": text.lower(), "pos": "NOUN", "tag": "NN",
+        "morph": "Number=Sing", "dep": "nsubj", "head_token_id": f"{sentence_id}-t0001",
+        "head_text": "head", "head_pos": "VERB", "ent_type": "PERSON",
+        "is_alpha": True, "is_stop": False, "is_digit": False, "like_num": False,
+        "shape": "Xxxx", "char_start": 0, "char_end": len(text),
+        "segment_start_time": seg_start, "segment_end_time": seg_end,
+        "token_start_time": (seg_start if start is _DEFAULT else start),
+        "token_end_time": (seg_end if end is _DEFAULT else end),
+        "timestamp_alignment_status": status, "timestamp_alignment_confidence": conf,
+        **extra,
+    }
+
+
+def _spacy_sentence(text: str, *, segment_id: str = "seg-0",
+                    sentence_id: str = "seg-0-s001", sentence_index: int = 0,
+                    token_count: int = 3, seg_start: Any = 0.0, seg_end: Any = 1.0,
+                    speaker_id: Any = "SPEAKER_00", **extra: Any) -> dict[str, Any]:
+    """One ``linguistic/*/sentences.parquet`` row: text, count, and only the segment's times."""
+    return {
+        "schema_version": "1.0", "video_id": "clip", "segment_id": segment_id,
+        "sentence_id": sentence_id, "sentence_index": sentence_index,
+        "speaker_id": speaker_id, "text": text, "token_count": token_count,
+        "char_start": 0, "char_end": len(text),
+        "segment_start_time": seg_start, "segment_end_time": seg_end, **extra,
+    }
+
+
+def _write_linguistic(root: Path, artifact: str, rows: list[dict[str, Any]],
+                      *, schema: Any = TOKENS_SCHEMA, model: Any = "en_core_web_lg"
+                      ) -> Path:
+    """Write one linguistic table, with the metadata the spaCy stages actually attach.
+
+    ``model=None`` writes the table with no ``spacy_model`` key at all — the state a table from
+    before that metadata existed, or one written by a different normalizer, is really in. The
+    variant/model metadata is what :func:`spacy_model_of` reads, so a fixture that omitted it
+    everywhere could never tell "absent" from "present".
+    """
+    extra = ({"variant": ("source" if "source" in artifact else "english"),
+              "spacy_model": str(model), "video_id": "clip"} if model is not None else None)
+    path = root / LINGUISTIC_PATHS[artifact]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_table(path, pa.Table.from_pylist(rows, schema=schema), schema, extra_metadata=extra)
+    return path
+
+
+def linguistic_clip(tmp_path: Path, *, source_tokens: list[dict[str, Any]] | None = None,
+                    source_sentences: list[dict[str, Any]] | None = None,
+                    english_tokens: list[dict[str, Any]] | None = None,
+                    english_sentences: list[dict[str, Any]] | None = None,
+                    model: Any = "en_core_web_lg") -> tuple[Path, Path]:
+    """A transcript plus whichever linguistic tables the caller names.
+
+    Absent-by-default is the point: per-tier isolation is a B3 requirement, and a fixture that
+    wrote all four tables every time could not make one of them missing without deleting a file.
+    """
+    root, video = _clip(tmp_path)
+    _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+    for artifact, rows, schema in (
+            (SPACY_SOURCE_TOKENS, source_tokens, TOKENS_SCHEMA),
+            (SPACY_SOURCE_SENTENCES, source_sentences, SENTENCES_SCHEMA),
+            (SPACY_ENGLISH_TOKENS, english_tokens, TOKENS_SCHEMA),
+            (SPACY_ENGLISH_SENTENCES, english_sentences, SENTENCES_SCHEMA)):
+        if rows is not None:
+            _write_linguistic(root, artifact, rows, schema=schema, model=model)
+    return root, video
+
+
+def one_token_clip(tmp_path: Path, row: dict[str, Any], **kwargs: Any) -> tuple[Path, Path]:
+    """A clip whose source-token table is exactly one row — the shape label assertions want."""
+    return linguistic_clip(tmp_path, source_tokens=[row], **kwargs)
+
+
+class TestLinguisticTiers:
+    """Four flat tiers over the spaCy tables, placed by whatever time each row really carries.
+
+    The risk this class exists for is a confident bar: ELAN can only put a bar somewhere, and a
+    token is a span of *text* — an English token has no word timings at all, a source token's times
+    can be unmatched, and a sentence row carries only its segment's endpoints. Each test below
+    therefore asks two questions: where did the bar land, and does the label say so.
+    """
+
+    def test_the_placement_wording_is_pinned_to_the_phrase_that_denies_alignment(
+            self, tmp_path: Path) -> None:
+        """The exact words, not just the constant.
+
+        Every other test in this class compares a label against :data:`TIMING_SEGMENT_CONTEXT`, so a
+        rewrite of that constant to something vaguer — `placed on segment`, or `segment` — would keep
+        the whole class green while quietly dropping the clause that tells a reader the bar is *not*
+        a token boundary. Since the disclaimer is the entire reason the fallback is honest, the
+        literal phrase is asserted here as well, on a real label and in the semantics property.
+        """
+        assert TIMING_SEGMENT_CONTEXT == "placement=segment context (not token aligned)"
+        assert LINGUISTIC_NO_TIMING == "variant no_timing"
+        root, video = one_token_clip(tmp_path, _spacy_token("hombre", start=None, end=None,
+                                                           status="unmatched", conf=0.0))
+        eaf = eaf_of({"dir": root, "video": video})
+        assert "placement=segment context (not token aligned)" in annotations(
+            eaf, "spacy_source_tokens")[0][2]
+        semantics = dict(eaf.properties)["pipeline-tier-semantics"]
+        assert "'segment context (not token aligned)'" in semantics
+
+    def test_the_linguistic_tiers_read_registry_keys_and_not_schema_aliases(self) -> None:
+        """``spacy_*`` are the artifact keys; ``linguistic_*`` are TABLE_SCHEMAS aliases.
+
+        The two registries are different namespaces. Building a tier on the schema alias would
+        resolve to a file that does not exist and skip silently through the per-tier guard, i.e.
+        four tiers that never appear in any file and no error anywhere.
+        """
+        from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
+        from multimodal_pipeline.schemas import TABLE_SCHEMAS
+
+        artifacts = [spec.artifact for spec in TIERS if spec.tier.startswith("spacy_")]
+        assert artifacts == [SPACY_SOURCE_TOKENS, SPACY_SOURCE_SENTENCES,
+                             SPACY_ENGLISH_TOKENS, SPACY_ENGLISH_SENTENCES]
+        for artifact in artifacts:
+            assert artifact in ARTIFACT_LAYOUT
+            assert artifact not in TABLE_SCHEMAS, "artifact/schema-alias namespaces merged"
+        assert {name for name in TABLE_SCHEMAS
+                if name.startswith("linguistic_")} - set(artifacts)
+
+    def test_the_new_artifacts_are_inputs_so_reuse_and_fingerprint_see_them(self) -> None:
+        """A table that changes the .eaf must be in `ALL_INPUTS` or the export looks reusable.
+
+        This is the §31 argument in its concrete form: the stage declares `ALL_INPUTS` and hashes
+        every key in it, so a tier reading a table that is not listed would export new contents
+        under a hash that still says "valid previous result".
+        """
+        from multimodal_pipeline.stages.elan import ElanStage
+
+        for artifact in (SPACY_SOURCE_TOKENS, SPACY_SOURCE_SENTENCES, SPACY_ENGLISH_TOKENS,
+                         SPACY_ENGLISH_SENTENCES):
+            assert artifact in elan_core.ALL_INPUTS
+            assert artifact in ElanStage.inputs
+
+    def test_every_linguistic_column_the_builders_read_exists_in_its_schema(self) -> None:
+        """The silent failure: a projected read of a renamed column kills the tier in the guard."""
+        assert set(SPACY_TOKEN_COLUMNS) <= {field.name for field in TOKENS_SCHEMA}
+        assert set(SPACY_SENTENCE_COLUMNS) <= {field.name for field in SENTENCES_SCHEMA}
+
+    # ------------------------------------------------------------- the label's contents
+
+    def test_the_label_leads_with_the_human_readable_text_and_the_labeled_ids(
+            self, tmp_path: Path) -> None:
+        root, video = one_token_clip(tmp_path, _spacy_token("hello"))
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        assert text.startswith("hello · SPEAKER_00 · source · token seg-0-s001-t0001 · "
+                               "sentence seg-0-s001 · [seg-0] · ")
+        for fragment in ("lemma hello", "pos NOUN", "tag NN", "morph Number=Sing",
+                         "dep nsubj", "dep head head (VERB) [seg-0-s001-t0001]",
+                         "ent PERSON", "char 0-5", "alignment=aligned conf=1.000"):
+            assert fragment in text, fragment
+
+    @pytest.mark.parametrize("column,prefix,exclude", [
+        ("lemma", "lemma ", ""), ("pos", "pos ", ""), ("tag", "tag ", ""),
+        ("morph", "morph ", ""), ("dep", "dep ", "dep head "),
+        ("head_text", "dep head ", ""), ("head_pos", "dep head ", ""),
+        ("ent_type", "ent ", ""),
+    ])
+    def test_each_analysis_field_is_printed_from_the_column_named_by_the_schema(
+            self, tmp_path: Path, column: str, prefix: str, exclude: str) -> None:
+        """Schema-backed, one case per column: the label fragment comes from that field.
+
+        Asserting the whole label once would let a field be printed from the wrong column and stay
+        green (``pos`` rendering ``tag``'s value reads identically for this fixture). Each case
+        changes exactly one column and requires SENTINEL inside the fragment that names it.
+        """
+        row = _spacy_token("hello", **{column: "SENTINEL"})
+        root, video = one_token_clip(tmp_path, row)
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        parts = [part for part in text.split(" · ")
+                 if part.startswith(prefix) and not (exclude and part.startswith(exclude))]
+        assert len(parts) == 1, f"{column}: {parts}"
+        assert "SENTINEL" in parts[0], f"{column} did not reach its fragment: {parts[0]}"
+
+    @pytest.mark.parametrize("column,fragment,null_means", [
+        # The two columns are written by two different expressions and the same word cannot
+        # mean two things across them: `str(token.morph)` answers "" for "this token has no
+        # morphology", while `token.ent_type_ or None` collapses "this token is inside no named
+        # entity" into None, so a null *is* the producer's answer there. A real entity name
+        # never reaches the display helper, so the branch is not ambiguous.
+        ("morph", "morph", ABSENT_DISPLAY),
+        ("ent_type", "ent", ABSENT_DISPLAY),
+    ])
+    def test_an_empty_value_is_the_producers_answer_and_reaches_the_display_as_none(
+            self, tmp_path: Path, column: str, fragment: str, null_means: str) -> None:
+        """Each column's *answered absence* prints `none`, in that column's own fragment.
+
+        Per-column, because the producers differ: for ``morph`` the answered absence arrives as
+        the empty string; for ``ent_type`` the worker's ``or None`` means it arrives as a null.
+        One word for both states across both columns is the collapse §17 refuses everywhere
+        else, and it is what made every null-`ent_type` token on this corpus — 228 of its 231
+        linguistic tokens, across all seven datasets — print "ent unknown".
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token("hello", **{column: ""}))
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        assert f"{fragment} {ABSENT_DISPLAY}" in text
+        assert f"{fragment} {UNKNOWN_DISPLAY}" not in text
+
+    def test_a_null_ent_type_is_the_producers_answer_that_no_entity_was_found(
+            self, tmp_path: Path) -> None:
+        """``token.ent_type_ or None`` makes a null the *measured* "no entity here".
+
+        The worker has no way to write "empty" into that column, so an empty entity type reaches
+        the table as a null and a null has to print as the checked-and-absent answer. The corpus
+        makes the cost concrete: 23 of its 24 source tokens are that state and none of them is
+        an unread column, so printing `unknown` there reported a missing measurement 23 times and
+        never once a real one.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token("hello", ent_type=None))
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        parts = [part for part in text.split(" · ") if part.startswith("ent ")]
+        assert parts == [f"ent {ABSENT_DISPLAY}"], text
+
+    def test_a_null_morph_is_still_an_unread_column_while_a_null_ent_is_answered(
+            self, tmp_path: Path) -> None:
+        """Two nulls, two words: only the column the producer collapses may say `none`.
+
+        ``morph`` is written as ``str(token.morph)``, which is never null when the analysis ran,
+        so a null there really is "nothing reached the table". Asserted on one row carrying both
+        nulls so the two answers have to be distinguished *in the same label* rather than by two
+        fixtures that could each be satisfied by one global rule.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token("hello", morph=None,
+                                                            ent_type=None))
+        parts = [part for part in annotations(eaf_of({"dir": root, "video": video}),
+                                              "spacy_source_tokens")[0][2].split(" · ")
+                 if part.startswith(("morph ", "ent "))]
+        assert parts == [f"morph {UNKNOWN_DISPLAY}", f"ent {ABSENT_DISPLAY}"], parts
+
+    def test_a_measured_zero_confidence_is_not_unknown(self, tmp_path: Path) -> None:
+        """The worker writes conf 0.0 for every unmatched/no_timing row, and 0.0 is a measurement.
+
+        Printing `unknown` there would be the mirror image of the empty-vs-null error: a producer's
+        explicit "no confidence in this pairing" replaced by a word meaning no value exists.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token("hola", status="unmatched",
+                                                           conf=0.0, start=None, end=None))
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        assert "alignment=unmatched conf=0.000" in text
+        assert "conf unknown" not in text
+
+    def test_the_lexical_flags_are_named_and_the_absence_of_all_four_says_none(
+            self, tmp_path: Path) -> None:
+        """``is_alpha`` and friends are four independent booleans, printed as names."""
+        alpha, video = one_token_clip(tmp_path, _spacy_token("hello"))
+        text = annotations(eaf_of({"dir": alpha, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        assert "flags alpha" in text and "stop" not in text.split("flags ")[1]
+
+        numeric, video2 = one_token_clip(
+            tmp_path / "num",
+            _spacy_token("12", is_alpha=False, is_stop=False, is_digit=True, like_num=True))
+        text2 = annotations(eaf_of({"dir": numeric, "video": video2}),
+                            "spacy_source_tokens")[0][2]
+        assert "flags digit num" in text2
+
+        bare, video3 = one_token_clip(
+            tmp_path / "bare",
+            _spacy_token(",", is_alpha=False, is_stop=False, is_digit=False, like_num=False))
+        text3 = annotations(eaf_of({"dir": bare, "video": video3}),
+                            "spacy_source_tokens")[0][2]
+        assert text3.endswith(f"flags {ABSENT_DISPLAY}")
+
+    def test_four_null_lexical_flags_say_unknown_rather_than_measured_false(
+            self, tmp_path: Path) -> None:
+        """`flags none` is an answer; `flags unknown` is the absence of one.
+
+        All four columns are nullable in ``TOKENS_SCHEMA``, and the old ``null → False`` mapping
+        made an unread row print exactly what a measured-false row prints. Cheap fix, no per-flag
+        bloat: the fragment changes only when *every* flag is null, and one measured flag is
+        enough to make the fragment an answer about that row.
+        """
+        unread, video = one_token_clip(tmp_path, _spacy_token("hello", is_alpha=None,
+                                                              is_stop=None, is_digit=None,
+                                                              like_num=None))
+        assert annotations(eaf_of({"dir": unread, "video": video}),
+                           "spacy_source_tokens")[0][2].endswith(f"flags {UNKNOWN_DISPLAY}")
+
+        # One measured flag out of four is a measurement, and it prints as one.
+        mixed, video2 = one_token_clip(tmp_path / "mixed",
+                                       _spacy_token("hello", is_stop=None, is_digit=None,
+                                                    like_num=None))
+        text2 = annotations(eaf_of({"dir": mixed, "video": video2}),
+                            "spacy_source_tokens")[0][2]
+        assert text2.endswith("flags alpha") and not text2.endswith(f"flags {UNKNOWN_DISPLAY}")
+
+    def test_a_null_char_span_says_unknown_rather_than_a_span_at_the_start_of_the_text(
+            self, tmp_path: Path) -> None:
+        """`char_start`/`char_end` are nullable, and ``0-0`` is a wrong answer, not a missing one.
+
+        Character offsets are the one span a linguistic row always has, so they are the fragment a
+        reader uses to find the token inside the sentence text. A null printed as ``char 0-0``
+        claims the token sits at the very start of the segment and occupies nothing — the same
+        mistake as placing an untimed row at second zero, one column over.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token("hola", char_start=None,
+                                                            char_end=None))
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        assert "char unknown" in text.split(" \u00b7 ")
+        assert "char 0-0" not in text
+
+    def test_a_measured_zero_char_offset_still_prints_as_zero(self, tmp_path: Path) -> None:
+        """The first token of a segment genuinely starts at offset 0, and 0 is a measurement."""
+        root, video = one_token_clip(tmp_path, _spacy_token("hola", char_start=0, char_end=4))
+        text = annotations(eaf_of({"dir": root, "video": video}),
+                           "spacy_source_tokens")[0][2]
+        assert "char 0-4" in text.split(" \u00b7 ")
+
+    # --------------------------------------------------------------------- the four timings
+
+    def test_a_finite_aligned_token_is_placed_on_its_own_times(self, tmp_path: Path) -> None:
+        """The aligned case: the bar is the token's, not its segment's."""
+        root, video = one_token_clip(tmp_path, _spacy_token(
+            "hola", start=1.5, end=1.75, seg_start=0.0, seg_end=9.0))
+        (start, end, text) = annotations(eaf_of({"dir": root, "video": video}),
+                                         "spacy_source_tokens")[0]
+        assert (start, end) == (1500, 1750)
+        parts = text.split(" · ")
+        assert TIMING_TOKEN_ALIGNED in parts
+        assert TIMING_SEGMENT_CONTEXT not in parts
+        assert "alignment=aligned conf=1.000" in text
+
+    def test_an_approximate_token_keeps_its_times_and_says_the_pairing_is_borrowed(
+            self, tmp_path: Path) -> None:
+        """"approximate" is the worker's own verdict and must not be laundered into aligned.
+
+        The times are real, so the bar uses them; the pairing is not provable, so the label says
+        which of the two claims it is entitled to make.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token(
+            "hombre", start=2.0, end=2.4, status="approximate", conf=0.75))
+        (start, end, text) = annotations(eaf_of({"dir": root, "video": video}),
+                                         "spacy_source_tokens")[0]
+        assert (start, end) == (2000, 2400)
+        assert TIMING_TOKEN_REPORTED in text.split(" · ")
+        assert TIMING_TOKEN_ALIGNED not in text.split(" · ")
+        assert "alignment=approximate conf=0.750" in text
+
+    @pytest.mark.parametrize("start,end,label", [
+        (None, None, "both null"),
+        (float("nan"), float("nan"), "both NaN"),
+        (None, 2.0, "start null"),
+        (2.0, None, "end null"),
+        (float("inf"), 3.0, "start infinite"),
+        (3.0, float("-inf"), "end infinite"),
+        (5.0, 5.0, "zero width"),
+        (6.0, 4.0, "reversed"),
+    ], ids=["null-both", "nan-both", "null-start", "null-end", "inf-start", "-inf-end",
+            "zero-width", "reversed"])
+    def test_a_token_without_usable_times_uses_the_segment_and_says_it_is_not_aligned(
+            self, tmp_path: Path, start: Any, end: Any, label: str) -> None:
+        """Every way a token's own times can fail lands on the same, explicitly-labelled fallback.
+
+        The bar is the enclosing segment, the label calls it context rather than alignment, and the
+        row's own alignment status and confidence survive — the export neither improves them nor
+        discards them. Zero-width and reversed are included because :func:`interval_ms` widens a
+        *measured* zero-width pair by a millisecond, which a fallback must not borrow: a segment
+        whose bounds are equal is not an interval to place by.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token(
+            "hombre", start=start, end=end, seg_start=1.0, seg_end=4.0,
+            status="unmatched", conf=0.0))
+        eaf = eaf_of({"dir": root, "video": video})
+        rows = annotations(eaf, "spacy_source_tokens")
+        assert [(s, e) for s, e, _t in rows] == [(1000, 4000)], label
+        text = logical_texts(eaf, "spacy_source_tokens")[0]
+        assert TIMING_SEGMENT_CONTEXT in text, label
+        # Structural, not substring: `placement=segment context (not token aligned)` *contains*
+        # the aligned marker as English, so only the fragment list can tell the two apart.
+        parts = text.split(" · ")
+        assert TIMING_SEGMENT_CONTEXT in parts, label
+        assert not set(parts) & {TIMING_TOKEN_ALIGNED, TIMING_TOKEN_REPORTED}, label
+        assert "alignment=unmatched conf=0.000" in text, label
+
+    @pytest.mark.parametrize("start,end", [
+        (-2.0, -1.0),
+        (-0.5, 0.5),
+        (-2.0, 3.0),
+    ], ids=["both-negative", "straddles-zero", "negative-start-wide"])
+    def test_a_token_with_a_negative_endpoint_is_never_placed_as_aligned(
+            self, tmp_path: Path, start: Any, end: Any) -> None:
+        """A negative time is a producer defect, and clamping it is laundering.
+
+        :func:`seconds_to_ms` clamps a negative to 0 — right for a converter, wrong for a
+        placement decision — so ``(-2.0, -1.0)`` used to satisfy the "usable token span" test and
+        be exported over ``[0, 1) ms`` labelled `token aligned` while its segment sat at
+        ``[10, 20)`` s. The row lands on the segment instead, says so, and keeps its own
+        alignment verdict.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token(
+            "hombre", start=start, end=end, seg_start=10.0, seg_end=20.0,
+            status="aligned", conf=1.0))
+        (start_ms, end_ms, text) = annotations(eaf_of({"dir": root, "video": video}),
+                                               "spacy_source_tokens")[0]
+        assert (start_ms, end_ms) == (10000, 20000)
+        parts = text.split(" · ")
+        assert TIMING_SEGMENT_CONTEXT in parts
+        assert not set(parts) & {TIMING_TOKEN_ALIGNED, TIMING_TOKEN_REPORTED}, parts
+
+    def test_a_token_whose_only_time_is_negative_is_dropped_and_counted(
+            self, tmp_path: Path) -> None:
+        """No usable token pair and no usable segment pair is one drop, not a bar at zero.
+
+        Both pairs negative is the state the clamp used to hide completely: the row was exported
+        over ``[0, 1) ms`` — the exact shape B2 removed from the export for sightings and words.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[
+            _spacy_token("hello", token_index=0),
+            _spacy_token("bad", token_index=1, start=-2.0, end=-1.0,
+                         seg_start=-20.0, seg_end=-10.0, status="aligned", conf=1.0)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert [(s, e) for s, e, _t in annotations(eaf, "spacy_source_tokens")] == [(0, 1000)]
+        assert [line for line in lines if "spacy_source_tokens" in line
+                and "1 of 2" in line and "missing timestamp" in line], lines
+
+    def test_a_segment_pair_with_a_negative_endpoint_is_not_a_usable_context(
+            self, tmp_path: Path) -> None:
+        """The same rule applies to the fallback, or the defect just moves one branch over."""
+        root, video = one_token_clip(tmp_path, _spacy_token(
+            "hombre", start=None, end=None, seg_start=-5.0, seg_end=5.0, status="unmatched",
+            conf=0.0))
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert annotations(eaf, "spacy_source_tokens") == []
+        assert [line for line in lines if "spacy_source_tokens" in line
+                and "1 of 1" in line and "missing timestamp" in line], lines
+
+    def test_a_token_time_inside_rounding_noise_of_zero_stays_token_aligned(
+            self, tmp_path: Path) -> None:
+        """The tolerance applies to a token's own times too, or one rule answers two questions.
+
+        A producer that emits `-1e-6` at t=0 has the same defect whether the row is a word or a
+        token, and the export must not answer "clamped to zero" for the word and "no usable time,
+        here is your segment instead" for the token. The row keeps its own span and its own
+        `token aligned` wording.
+        """
+        root, video = one_token_clip(tmp_path, _spacy_token(
+            "inicio", start=-1e-06, end=0.4, seg_start=5.0, seg_end=9.0, status="aligned",
+            conf=1.0))
+        (start, end, text) = annotations(eaf_of({"dir": root, "video": video}),
+                                         "spacy_source_tokens")[0]
+        assert (start, end) == (0, 400)
+        parts = text.split(" · ")
+        assert TIMING_TOKEN_ALIGNED in parts, parts
+        assert TIMING_SEGMENT_CONTEXT not in parts, parts
+
+    def test_the_linguistic_usable_pair_rule_and_the_export_time_rule_agree(self) -> None:
+        """Whatever the token tier calls usable, `interval_ms` must be willing to place.
+
+        The two checks read the same numbers from different places — one decides whether a row's
+        own times may carry the bar, the other is the only path that writes a `TIME_VALUE` — and
+        they are allowed exactly one disagreement in direction: `interval_ms` refuses strictly
+        more than it must, never less. A pair the builder placed a bar on and the exporter then
+        dropped would cost a row and its log line both.
+        """
+        values = [-3.0, -0.002, -0.0005, -1e-06, 0.0, 0.0004, 0.4, 1.0, 2.0, 5.0]
+        for start in values:
+            for end in values:
+                usable = elan_core._valid_pair(start, end)
+                if not usable:
+                    continue
+                low, high = interval_ms(start, end)
+                assert low >= 0 and high > low, (start, end, low, high)
+
+    def test_english_rows_have_no_timing_and_null_token_times_and_are_not_word_alignment(
+            self, tmp_path: Path) -> None:
+        """The English variant is never word-aligned to anything; the label has to say so.
+
+        The worker receives no word list for this variant at all (its temporal identity is its
+        source segment), so two English bars over one second are two words of a translation, not
+        two words spoken in that second.
+        """
+        root, video = linguistic_clip(tmp_path, english_tokens=[
+            _spacy_token("hello", start=None, end=None, status="no_timing", conf=0.0),
+            _spacy_token("world", start=None, end=None, status="no_timing", conf=0.0,
+                         token_index=1)],
+            english_sentences=[_spacy_sentence("Hello world.", token_count=2)])
+        eaf = eaf_of({"dir": root, "video": video})
+        # Both rows share their segment's interval, so the independent tier partitions the
+        # coincident pair into one bar that carries both labels (B2a's rule, unchanged).
+        emitted = annotations(eaf, "spacy_english_tokens")
+        assert [(s, e) for s, e, _t in emitted] == [(0, 1000)]
+        assert sorted(json.loads(emitted[0][2])) == sorted(
+            logical_texts(eaf, "spacy_english_tokens"))
+        for text in logical_texts(eaf, "spacy_english_tokens"):
+            assert LINGUISTIC_NO_TIMING in text
+            assert TIMING_SEGMENT_CONTEXT in text
+            assert "not word alignment to the source" in text
+            assert "alignment=no_timing conf=0.000" in text
+        english_parts = {part for text in logical_texts(eaf, "spacy_english_tokens")
+                         for part in text.split(" · ")}
+        assert not english_parts & {TIMING_TOKEN_ALIGNED, TIMING_TOKEN_REPORTED}
+        # The English *sentence* tier is the same case one level up: neither timed by its own
+        # tokens nor aligned to the source line it translates.
+        sentence = logical_texts(eaf, "spacy_english_sentences")[0]
+        assert LINGUISTIC_NO_TIMING in sentence.split(" · ")
+        assert TIMING_SEGMENT_CONTEXT in sentence.split(" · ")
+        assert annotations(eaf, "spacy_english_sentences")[0][:2] == (0, 1000)
+
+    def test_an_english_sentence_label_says_its_text_translates_the_source(self,
+                                                                         tmp_path: Path) -> None:
+        """The README and the semantics property both promise this claim on English rows.
+
+        `spacy_english_sentences` was the one tier that did not deliver it: the tier said
+        `variant no_timing · placement=segment context (not token aligned)` and stopped, while the
+        document's own semantics text and the README said every English row states that its text
+        is a translation and not a word alignment to the source. A translated *sentence* is exactly
+        as little an alignment as a translated *token* — there is no word list for either — so the
+        label, not the prose, is what was wrong. Checked as a fragment of the label and as the
+        claim the property makes about it, so the two cannot drift apart again in one direction.
+        """
+        root, video = linguistic_clip(tmp_path, english_sentences=[
+            _spacy_sentence("Hello world."),
+            _spacy_sentence("Second line.", sentence_id="seg-0-s002", sentence_index=1)])
+        eaf = eaf_of({"dir": root, "video": video})
+        texts = logical_texts(eaf, "spacy_english_sentences")
+        assert len(texts) == 2
+        for text in texts:
+            parts = text.split(" · ")
+            assert ENGLISH_TRANSLATION_TEXT in parts, text
+            assert TIMING_SEGMENT_CONTEXT in parts, text
+            assert LINGUISTIC_NO_TIMING in parts, text
+        # The claim belongs to English rows only: a source sentence translates nothing.
+        source_root, source_video = linguistic_clip(tmp_path, source_sentences=[
+            _spacy_sentence("Hola mundo.")])
+        source = logical_texts(eaf_of({"dir": source_root, "video": source_video}),
+                               "spacy_source_sentences")[0]
+        assert ENGLISH_TRANSLATION_TEXT not in source.split(" · "), source
+        # And the document's semantics text keeps naming the claim it now always honours.
+        clause = dict(eaf.properties)["pipeline-tier-semantics"]
+        clause = clause[clause.index("Linguistic tiers:"):clause.index("Coverage:")]
+        assert ENGLISH_TRANSLATION_TEXT in clause
+        assert "spacy_english_sentences" in clause
+
+    def test_an_english_row_with_finite_token_times_says_where_its_bar_really_is(
+            self, tmp_path: Path) -> None:
+        """The English placement fragment is decided by the bar, not by the variant.
+
+        The English override used to overwrite the fragment unconditionally, so a row carrying
+        finite token times was drawn over *token* bounds while its label denied it — "segment
+        context (not token aligned)" under a bar that was not segment context. The corpus's
+        English worker never writes token times today, so this is a defensive case; it is still
+        the difference between a label that can be trusted and one that happens to be true.
+        The "translation text, not word alignment" claim is unaffected: it is about what the text
+        is, not about where the bar sits.
+        """
+        root, video = linguistic_clip(tmp_path, english_tokens=[
+            _spacy_token("hello", start=1.0, end=1.4, seg_start=0.0, seg_end=9.0,
+                         status="approximate", conf=0.5)])
+        (start, end, text) = annotations(eaf_of({"dir": root, "video": video}),
+                                         "spacy_english_tokens")[0]
+        assert (start, end) == (1000, 1400)
+        parts = text.split(" · ")
+        assert TIMING_SEGMENT_CONTEXT not in parts, parts
+        assert LINGUISTIC_NO_TIMING not in parts, parts
+        assert TIMING_TOKEN_REPORTED in parts, parts
+        assert "not word alignment to the source" in text
+        assert "alignment=approximate conf=0.500" in text
+
+    def test_an_english_row_with_token_bounds_and_aligned_status_does_not_claim_alignment(
+            self, tmp_path: Path) -> None:
+        """A translated word is not word alignment whatever its columns say.
+
+        Only the *placement* wording follows the bar on this tier; the variant's own status
+        travels on the row unchanged, and the claim about the text stays on every English row.
+        """
+        root, video = linguistic_clip(tmp_path, english_tokens=[
+            _spacy_token("hello", start=2.0, end=2.5, seg_start=0.0, seg_end=9.0,
+                         status="aligned", conf=1.0)])
+        parts = annotations(eaf_of({"dir": root, "video": video}),
+                            "spacy_english_tokens")[0][2].split(" · ")
+        assert TIMING_TOKEN_ALIGNED in parts, parts
+        assert TIMING_SEGMENT_CONTEXT not in parts, parts
+        assert any("not word alignment to the source" in part for part in parts), parts
+
+    def test_a_source_tier_next_to_english_keeps_its_own_aligned_timing(
+            self, tmp_path: Path) -> None:
+        """The variants are independent tiers: one is never placed by the other's times.
+
+        The failure this guards is the tempting one — reading a source token's word boundaries onto
+        the translated word that happens to sit at the same index.
+        """
+        root, video = linguistic_clip(
+            tmp_path,
+            source_tokens=[_spacy_token("hola", start=1.0, end=1.4)],
+            english_tokens=[_spacy_token("hello", start=None, end=None, status="no_timing",
+                                         conf=0.0)])
+        eaf = eaf_of({"dir": root, "video": video})
+        assert [(s, e) for s, e, _t in annotations(eaf, "spacy_source_tokens")] == [(1000, 1400)]
+        assert [(s, e) for s, e, _t in annotations(eaf, "spacy_english_tokens")] == [(0, 1000)]
+        assert "placement=segment context" not in annotations(eaf, "spacy_source_tokens")[0][2]
+
+    def test_sentences_are_placed_on_the_segment_and_never_measured_at_their_first_token(
+            self, tmp_path: Path) -> None:
+        """Several sentences in one segment all share that segment's bounds.
+
+        The sentence table carries no token times, so any narrower bar would be an invented onset.
+        Three coincident rows in one independent tier become one partitioned bar that still names
+        all three sentences.
+        """
+        root, video = linguistic_clip(tmp_path, source_sentences=[
+            _spacy_sentence("Uno. Dos. Tres.", sentence_id="seg-0-s001", sentence_index=0),
+            _spacy_sentence("Dos.", sentence_id="seg-0-s002", sentence_index=1),
+            _spacy_sentence("Tres.", sentence_id="seg-0-s003", sentence_index=2)])
+        eaf = eaf_of({"dir": root, "video": video})
+        emitted = annotations(eaf, "spacy_source_sentences")
+        assert [(s, e) for s, e, _t in emitted] == [(0, 1000)]
+        texts = logical_texts(eaf, "spacy_source_sentences")
+        assert len(texts) == 3
+        assert sorted(json.loads(emitted[0][2])) == sorted(texts)
+        for text in texts:
+            assert TIMING_SEGMENT_CONTEXT in text
+            assert "never a sentence-onset measurement" in text
+        assert not [1 for text in texts if "2000" in text or "3000" in text], texts
+
+    @pytest.mark.parametrize("seg_start,seg_end", [
+        (2.0, 2.0),
+        (3.0, 1.0),
+        (-1.0, 4.0),
+    ], ids=["zero-width", "reversed", "negative"])
+    def test_a_sentence_whose_segment_pair_is_not_usable_is_dropped_and_counted(
+            self, tmp_path: Path, seg_start: Any, seg_end: Any) -> None:
+        """The sentence tier obeys the same usable-pair rule as tokens — it has no other pair.
+
+        A sentence row carries only its segment's endpoints, so an unusable pair there leaves the
+        row with *no* honest position. Before this rule the tier placed straight through to
+        :func:`interval_ms`, which widens any inverted or equal pair to a 1 ms bar at the
+        millisecond the conversion produced: a zero-width segment at 2.0 s became ``[2000, 2001)``
+        and a reversed one at 3.0 s became ``[3000, 3001)`` — two bars whose time came from a
+        display rule. The sibling sentence in the same segment survives, so the drop costs one
+        row and not the tier.
+        """
+        root, video = linguistic_clip(tmp_path, source_sentences=[
+            _spacy_sentence("Buena.", sentence_id="seg-0-s001", sentence_index=0,
+                            seg_start=seg_start, seg_end=seg_end),
+            _spacy_sentence("Clara.", sentence_id="seg-0-s002", sentence_index=1)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        emitted = annotations(eaf, "spacy_source_sentences")
+        assert [(s, e) for s, e, _t in emitted] == [(0, 1000)]
+        texts = logical_texts(eaf, "spacy_source_sentences")
+        assert [text for text in texts if text.startswith("Clara.")], texts
+        assert not [text for text in texts if text.startswith("Buena.")], texts
+        assert [line for line in lines if "spacy_source_sentences" in line
+                and "1 of 2" in line and "missing timestamp" in line], lines
+
+    def test_a_sentence_tier_is_a_flat_peer_and_not_a_parent(self, tmp_path: Path) -> None:
+        """No hierarchy, and no per-token tier: the link is the printed ``sentence_id``.
+
+        ELAN's ``REF_ANNOTATION`` expresses a child tier pointing at a parent. Using it for a
+        dependency arc or for sentence→token would make the file's *shape* depend on the data, and
+        two datasets could no longer be compared tier-for-tier.
+        """
+        root, video = linguistic_clip(
+            tmp_path,
+            source_tokens=[_spacy_token("hola"), _spacy_token("mundo", token_index=1)],
+            source_sentences=[_spacy_sentence("Hola mundo.", token_count=2)])
+        eaf = eaf_of({"dir": root, "video": video})
+        out = root / "linguistic-flat.eaf"
+        eaf.to_file(str(out))
+        from pympi.Elan import Eaf
+
+        reopened = Eaf(str(out), suppress_version_warning=True)
+        assert not [tier for tier in reopened.tiers if reopened.tiers[tier][1]], \
+            "a REF_ANNOTATION was written: the tier is no longer flat"
+        assert not [tier for tier in reopened.tiers if re.search(r"-t\d{4}$", tier)]
+        token_texts = logical_texts(eaf, "spacy_source_tokens")
+        assert all("sentence seg-0-s001" in text for text in token_texts)
+        assert "sentence seg-0-s001" in logical_texts(eaf, "spacy_source_sentences")[0]
+
+    # ------------------------------------------------------------- no fabricated time, ever
+
+    def test_a_row_with_neither_token_nor_segment_times_is_dropped_and_counted(
+            self, tmp_path: Path) -> None:
+        """The last fallback is no bar at all, and the run log says which tier and how many.
+
+        This is the rule B2 established for sightings and words, applied to the tier most likely to
+        need it: a token whose alignment failed and whose segment also has no times has *no*
+        honest position, and ELAN has no "time unknown" annotation. Placing it at second zero would
+        report a word spoken at the start of the clip.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[
+            _spacy_token("hello"),
+            _spacy_token("nowhere", start=None, end=None, seg_start=None, seg_end=None,
+                         status="unmatched", conf=0.0, token_index=1)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        rows = annotations(eaf, "spacy_source_tokens")
+        assert [(s, e) for s, e, _t in rows] == [(0, 1000)]
+        assert "hello" in rows[0][2] and "nowhere" not in json.dumps(rows)
+        assert [line for line in lines if "spacy_source_tokens" in line
+                and "1 of 2" in line and "missing timestamp" in line], lines
+        assert dict(eaf.properties)["pipeline-tiers"].split() == [
+            "spacy_source_tokens=1", "words=1"]
+
+    def test_a_dropped_token_does_not_disturb_its_siblings_or_the_other_tiers(
+            self, tmp_path: Path) -> None:
+        """One unusable row costs one bar, in one tier, in a four-tier group."""
+        root, video = linguistic_clip(
+            tmp_path,
+            source_tokens=[_spacy_token("a", token_index=0),
+                           _spacy_token("b", token_index=1, start=None, end=None,
+                                        seg_start=None, seg_end=None),
+                           _spacy_token("c", token_index=2)],
+            source_sentences=[_spacy_sentence("A b c.")],
+            english_tokens=[_spacy_token("x", start=None, end=None, status="no_timing",
+                                         conf=0.0)],
+            english_sentences=[_spacy_sentence("X.", seg_start=0.0, seg_end=2.0)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        counts = tier_counts(eaf)
+        # `spacy_source_tokens` carries 2 rows and emits 1 bar: both remaining tokens share their
+        # segment's interval, so the independent tier partitions them into one shared bar (B2a).
+        assert counts == {"words": 1, "spacy_source_tokens": 1, "spacy_source_sentences": 1,
+                          "spacy_english_tokens": 1, "spacy_english_sentences": 1}
+        assert len(logical_texts(eaf, "spacy_source_tokens")) == 2
+        assert not [text for text in logical_texts(eaf, "spacy_source_tokens")
+                    if text.startswith("b · ")], logical_texts(eaf, "spacy_source_tokens")
+        assert [line for line in lines if "missing timestamp" in line]
+        assert sum(1 for line in lines if "missing timestamp" in line) == 1, lines
+
+    # ------------------------------------------------------- per-tier isolation of bad files
+
+    @pytest.mark.parametrize("artifact", [SPACY_SOURCE_TOKENS, SPACY_SOURCE_SENTENCES,
+                                         SPACY_ENGLISH_TOKENS, SPACY_ENGLISH_SENTENCES])
+    def test_a_missing_or_corrupt_linguistic_table_costs_only_its_own_tier(
+            self, tmp_path: Path, artifact: str) -> None:
+        """Four independent producers, four independent failures.
+
+        The tables are written by two stages and one normalizer each; a corrupt English table must
+        not make the source analysis look absent, and the missing case must name the file. Both are
+        reported as one state (see :func:`build_eaf`), because what a reader can do about either is
+        the same: go re-run that producer.
+        """
+        rows: dict[str, list[dict[str, Any]]] = {
+            SPACY_SOURCE_TOKENS: [_spacy_token("hola")],
+            SPACY_SOURCE_SENTENCES: [_spacy_sentence("Hola.")],
+            SPACY_ENGLISH_TOKENS: [_spacy_token("hello", start=None, end=None,
+                                                status="no_timing", conf=0.0)],
+            SPACY_ENGLISH_SENTENCES: [_spacy_sentence("Hello.")]}
+        fixture_names = {SPACY_SOURCE_TOKENS: "source_tokens",
+                         SPACY_SOURCE_SENTENCES: "source_sentences",
+                         SPACY_ENGLISH_TOKENS: "english_tokens",
+                         SPACY_ENGLISH_SENTENCES: "english_sentences"}
+        for broken in ("missing", "corrupt"):
+            root, video = linguistic_clip(
+                tmp_path / f"{artifact}-{broken}",
+                **{fixture_names[key]: value for key, value in rows.items()})
+            path = root / LINGUISTIC_PATHS[artifact]
+            if broken == "missing":
+                path.unlink()
+                expected = "not produced"
+            else:
+                path.write_bytes(b"not parquet at all")
+                expected = "unreadable"
+            lines: list[str] = []
+            eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+            assert artifact not in tier_counts(eaf), (artifact, broken)
+            assert [line for line in lines if f"{artifact} skipped" in line
+                    and expected in line], (artifact, broken, lines)
+            others = set(tier_counts(eaf)) - {artifact}
+            assert {"spacy_source_tokens", "spacy_english_tokens"} - {artifact} <= others
+            assert "words" in others, "one bad linguistic table must not lose the export"
+
+    def test_a_broken_linguistic_table_still_leaves_the_other_fifteen_tiers_buildable(
+            self, tmp_path: Path) -> None:
+        """The per-tier guard's whole purpose, at sixteen tiers instead of twelve."""
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
+        (root / LINGUISTIC_PATHS[SPACY_SOURCE_SENTENCES]).write_bytes(b"junk")
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        assert tier_counts(eaf) == {"words": 1, "spacy_source_tokens": 1}
+
+    # ------------------------------------------------------------------- provenance property
+
+    def test_the_model_is_recorded_once_per_table_and_never_repeated_on_every_word(
+            self, tmp_path: Path) -> None:
+        """Table-level provenance, not per-token provenance.
+
+        ``spacy_model`` is one value per file (the stage writes one selected model per run), so a
+        copy on every token would cost the scannability the labels exist for and buy nothing a
+        reader can check. The property is where the name travels with the file.
+        """
+        root, video = linguistic_clip(
+            tmp_path,
+            source_tokens=[_spacy_token("hola"), _spacy_token("mundo", token_index=1)],
+            english_tokens=[_spacy_token("hello", start=None, end=None, status="no_timing",
+                                         conf=0.0)],
+            model="es_core_news_lg")
+        eaf = eaf_of({"dir": root, "video": video})
+        document = json.loads(dict(eaf.properties)[LINGUISTIC_PROVENANCE_PROPERTY])
+        assert document["version"] == 1
+        assert document["tiers"]["spacy_source_tokens"]["spacy_model"] == "es_core_news_lg"
+        assert document["tiers"]["spacy_source_tokens"]["variant"] == "source"
+        assert document["tiers"]["spacy_english_tokens"]["variant"] == "english"
+        assert document["tiers"]["spacy_source_tokens"]["artifact"] == \
+            LINGUISTIC_PATHS[SPACY_SOURCE_TOKENS]
+        assert "es_core_news_lg" not in json.dumps(
+            logical_texts(eaf, "spacy_source_tokens"))
+
+    @pytest.mark.parametrize("model,expected", [
+        ("en_core_web_lg", "en_core_web_lg"),
+        ("blank", "blank"),
+        (None, UNKNOWN_DISPLAY),
+    ], ids=["reported", "blank-model", "metadata-absent"])
+    def test_the_recorded_model_is_the_table_own_metadata_or_unknown(
+            self, tmp_path: Path, model: Any, expected: str) -> None:
+        """Config is never read: the answer is a fact about the bytes, or it is unknown.
+
+        ``blank`` is kept verbatim even though it is not a spaCy model package: the producer wrote
+        that word into that column, and the export's job is to report it, not to editorialise about
+        whether it counts as a model.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")],
+                                      model=model)
+        document = json.loads(dict(eaf_of({"dir": root, "video": video}).properties)
+                              [LINGUISTIC_PROVENANCE_PROPERTY])
+        assert document["tiers"]["spacy_source_tokens"]["spacy_model"] == expected
+
+    def test_a_model_name_written_as_the_string_none_is_unknown(self, tmp_path: Path) -> None:
+        """``str(payload.get("selected_model"))`` puts ``None`` on disk as the word "None".
+
+        ``write_table`` drops only a real ``None``, so the four-character string survives into the
+        Parquet metadata. Reporting it as a model name would name a package nobody installed.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
+        path = root / LINGUISTIC_PATHS[SPACY_SOURCE_TOKENS]
+        table = read_table(path)
+        write_table(path, table, TOKENS_SCHEMA,
+                    extra_metadata={"variant": "source", "spacy_model": "None"})
+        document = json.loads(dict(eaf_of({"dir": root, "video": video}).properties)
+                              [LINGUISTIC_PROVENANCE_PROPERTY])
+        assert document["tiers"]["spacy_source_tokens"]["spacy_model"] == UNKNOWN_DISPLAY
+
+    def test_a_tier_that_was_never_built_has_no_provenance_entry(self, tmp_path: Path) -> None:
+        """Absence is not "unknown model": the file says nothing about a table that was not there.
+
+        An `unknown` entry for a skipped tier would read as "a table with no model was exported",
+        which is a different claim about a different producer.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
+        document = json.loads(dict(eaf_of({"dir": root, "video": video}).properties)
+                              [LINGUISTIC_PROVENANCE_PROPERTY])
+        assert list(document["tiers"]) == ["spacy_source_tokens"]
+
+    def test_a_dataset_with_no_linguistic_tables_has_no_provenance_property(
+            self, dataset: dict[str, Path]) -> None:
+        assert LINGUISTIC_PROVENANCE_PROPERTY not in dict(eaf_of(dataset).properties)
+
+    # ------------------------------------------------------------- coincident context + reopen
+
+    def test_a_reopened_document_keeps_every_token_id_of_a_context_group(self,
+                                                                        tmp_path: Path) -> None:
+        """Written, re-read by pympi, all four tokens still named — inside the shared bar.
+
+        Four English tokens land on one segment, so the independent tier partitions them into one
+        bar carrying all four labels. A reader who only counted bars would conclude the file held
+        one token, which is why the test re-opens the bytes and asks for every ``token_id``, and
+        why the projection metadata has to survive the round trip.
+        """
+        tokens = [_spacy_token(word, token_index=index, start=None, end=None,
+                               status="no_timing", conf=0.0)
+                  for index, word in enumerate(("the", "quick", "brown", "fox"))]
+        root, video = linguistic_clip(tmp_path, english_tokens=tokens)
+        eaf = eaf_of({"dir": root, "video": video})
+        out = root / "linguistic-reopen.eaf"
+        eaf.to_file(str(out))
+        ET.parse(out)
+        from pympi.Elan import Eaf
+
+        reopened = Eaf(str(out), suppress_version_warning=True)
+        assert tier_counts(reopened) == tier_counts(eaf)
+        assert json.loads(dict(reopened.properties)[LINGUISTIC_PROVENANCE_PROPERTY]) == \
+            json.loads(dict(eaf.properties)[LINGUISTIC_PROVENANCE_PROPERTY])
+        emitted = annotations(reopened, "spacy_english_tokens")
+        assert [pair[:2] for pair in emitted] == [(0, 1000)]
+        carried = json.loads(emitted[0][2])
+        assert len(carried) == 4
+        for index, word in enumerate(("the", "quick", "brown", "fox")):
+            token_id = f"seg-0-s001-t{index + 1:04d}"
+            members = [text for text in carried if f"token {token_id} " in text]
+            assert len(members) == 1, token_id
+            assert members[0].startswith(f"{word} · "), token_id
+        logical = projection_of(reopened)["spacy_english_tokens"]["logical"]
+        assert [row["source"]["token_id"] for row in logical] == \
+            [f"seg-0-s001-t{index + 1:04d}" for index in range(4)]
+        assert all(row["segments"] == [[0, 1000]] for row in logical)
+
+    def test_the_semantics_property_states_each_lexical_columns_producer_rule(
+            self, tmp_path: Path) -> None:
+        """The file has to say the rule *per column*, because the two columns differ.
+
+        One sentence covering both columns is what let the README and this property promise a
+        null-means-nothing-reached-the-table rule that ``ent_type`` did not follow: the worker
+        collapses an empty entity type into a null, so for that column a null is the answer.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Linguistic tiers:"):text.index("Coverage:")]
+        morph_rule = clause[clause.index("ent_type is written"):clause.index("A dependency head")]
+        assert "token.ent_type_ or None" in morph_rule
+        assert "str(token.morph)" in morph_rule
+        assert f"prints '{ABSENT_DISPLAY}'" in morph_rule
+        assert f"prints '{UNKNOWN_DISPLAY}'" in morph_rule
+        assert "flagged none of the four" in clause
+        assert "flags unknown" in clause
+
+    def test_the_semantics_property_explains_the_linguistic_placement(
+            self, tmp_path: Path) -> None:
+        """A reader of the file alone must be able to tell context from alignment."""
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Linguistic tiers:"):text.index("Coverage:")]
+        for tier in ("spacy_source_tokens", "spacy_source_sentences", "spacy_english_tokens",
+                     "spacy_english_sentences"):
+            assert tier in clause
+        for fragment in ("flat peer", "segment context (not token aligned)", "no_timing",
+                         "not a word", ABSENT_DISPLAY, UNKNOWN_DISPLAY, "0.000",
+                         LINGUISTIC_PROVENANCE_PROPERTY):
+            assert fragment in clause, fragment
+        assert "no tier is created per token" in clause
+
+    def test_the_semantics_property_states_the_negative_tolerance_it_actually_uses(
+            self, tmp_path: Path) -> None:
+        """The property quotes a number, so the number has to be the one `interval_ms` applies.
+
+        The clause tells a reader that a value within half a millisecond of zero is placed at 0 ms
+        and anything wider is refused. That is a checkable claim about behaviour, and it is the
+        kind that goes stale silently: somebody retuning
+        :data:`NEGATIVE_TOLERANCE_SECONDS` would leave the file explaining a rule no code follows.
+        Derived from the constant rather than typed in again.
+        """
+        root, video = linguistic_clip(tmp_path, source_tokens=[_spacy_token("hola")])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Linguistic tiers:"):text.index("Coverage:")]
+        stated_ms = elan_core.NEGATIVE_TOLERANCE_SECONDS * 1000.0
+        assert f"no further below zero than {stated_ms:g} ms" in clause, clause
+        # And the sentence that carries it still says which way the rule goes.
+        sentence = next(s for s in clause.split(". ") if "rounding noise" in s)
+        assert "placed at 0 ms" in sentence and "producer defect" in sentence
