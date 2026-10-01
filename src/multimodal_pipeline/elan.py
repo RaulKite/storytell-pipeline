@@ -4,20 +4,23 @@ Pure functions over files on disk: no stage imports, no config, no subprocess �
 whole mapping from Parquet to EAF can be driven against a synthetic dataset directory in a
 test, and ``stages/elan.py`` stays the reader, the writer and the reuse guarantee around it.
 
-Why twelve fixed flat tiers instead of a hierarchy, and why twelve is not "one per module".
+Why sixteen fixed flat tiers instead of a hierarchy, and why sixteen is not "one per module".
 ELAN's tier structure is a parent/child relation between annotation tiers, and deriving it from
 the data (one tier per speaker, one per detected face) would make the file's *shape* depend on
 what happened in a clip: two datasets could then not be compared column-for-column, and a tier
-rename would look like a new tier. Twelve tiers with fixed names are the contract every other
+rename would look like a new tier. Sixteen tiers with fixed names are the contract every other
 stage follows — the schema is known before the file is opened, and an absent producer is an
-absent tier rather than a renamed one. What they are *not* is a module list: those twelve tiers
-read fourteen of the twenty-two normalised tables, because two diarizers and two fusions account
+absent tier rather than a renamed one. What they are *not* is a module list: those sixteen tiers
+read eighteen of the twenty-two normalised tables, because two diarizers and two fusions account
 for four of them, ``person_tracks`` reads two more as **support** for its sightings (the per-frame
 detections and the clip's frame list place them; neither has a tier of its own, and neither is an
-exported analysis), and the token, sentence, per-segment-acoustic, hand, face and
-normalised-pose tables get no tier. Which tables still belong on a coverage list is settled with
-the corpus refresh, not here. A tier is a decision, so adding one is a change to this
-list rather than a name being reused for something else.
+exported analysis), and the per-segment-acoustic, hand, face and normalised-pose tables get no
+tier. The four spaCy tables (source and english, tokens and sentences) do have tiers of their own
+and they are flat peers, not a parent/child chain: see :func:`spacy_token_rows` for why the
+sentence tier is not the token tier's parent and why no tier is created per token. Which tables
+still belong on a coverage list is settled with the corpus refresh, not here. A tier is a
+decision, so adding one is a change to this list rather than a name being reused for something
+else.
 
 Absence is a named state here, exactly as ``face_status`` makes it in the ASD table. Each tier
 reads one producer's file — one, plus whatever :data:`SECONDARY_INPUTS` declares for it — and
@@ -26,14 +29,17 @@ missing. An empty tier would be ambiguous between "nobody
 spoke", "no face was on screen" and "this engine never ran", which is the collapse the
 pipeline has refused everywhere else (§17's ``face_status``, §20.2's person counts).
 
-Six things are not obvious from reading the code — four about the format, one about what a
-tier is *for*, one about what a person tier is entitled to claim:
+Seven things are not obvious from reading the code — four about the format, one about what a
+tier is *for*, one about what a person tier is entitled to claim, one about what a linguistic
+tier's bar is entitled to claim:
 
 * **Time slots are integer milliseconds, ``start < end`` is a hard requirement, and a row with no
-  time is not exported at all.** See :func:`seconds_to_ms` and :func:`interval_ms`. ELAN has no
-  "time unknown" annotation, so a null endpoint has no honest representation: the export boundary
+  usable time is not exported at all.** See :func:`seconds_to_ms` and :func:`interval_ms`. ELAN has
+  no "time unknown" annotation, so a null endpoint has no honest representation: the export boundary
   drops such a row and counts it, rather than putting it at second zero and letting it read as
-  something that happened when the clip started.
+  something that happened when the clip started. The same applies to an endpoint materially below
+  zero — only the narrow band the millisecond grid cannot tell apart from t=0 is kept, and clamping
+  anything wider would fabricate that same claim (:data:`NEGATIVE_TOLERANCE_SECONDS`).
 * **Every per-frame signal is collapsed into blocks.** The ASD, pose and acoustic tables
   are dense grids at three different rates — the ASD stage's 25 FPS working timeline, the
   source video's own PTS list, a 10 ms Praat step. One annotation per frame would put tens
@@ -58,6 +64,14 @@ tier is *for*, one about what a person tier is entitled to claim:
   no sampling grid, no record of frames looked at and found empty — so the only adjacency that
   can be checked comes from ``source/frame_index.parquet``, and everything the index cannot place
   or confirm becomes a lone mark that says so in the label.
+* **A linguistic bar is placed by whatever time its row actually carries, and says which one it
+  was.** See :func:`spacy_token_rows`. A token is a span of *text*, not an event: an English token
+  has no word timings at all (the worker is never given a word list for that variant), a source
+  token's times can be non-finite or unmatched, and a sentence row carries only its segment's
+  bounds. So a row with finite token times is placed on them, a row without them is placed on its
+  enclosing segment and labelled ``placement=segment context (not token aligned)``, and a row with
+  neither is dropped and counted rather than exported at second zero. No tier is created per token
+  and no sentence tier is a parent: the four linguistic tiers are flat peers linked by ids.
 * **Rows that overlap in time inside one tier are re-cut before they are written.** ELAN tiers are
   independent: two annotations in the same tier may not overlap, and pympi neither enforces that
   nor complains — the corpus's own tables (two people in one frame, two TalkNet tracks alive at
@@ -85,6 +99,23 @@ from .schemas import read_table
 
 #: ELAN time slots are integer milliseconds, so anything narrower lands on a single slot.
 MIN_INTERVAL_MS = 1
+
+#: How far below zero an endpoint may sit and still be treated as *this* millisecond rather than
+#: as a time the export may not place.
+#
+# The number is the width of a half slot: `seconds_to_ms` rounds half up onto a 1 ms grid, so
+# exactly the values in [-0.0005, 0] — nothing else — convert to 0 ms. A producer that subtracts an
+# offset and writes `-1e-6` for a first frame is therefore inside this band, and so is every other
+# value that a millisecond export cannot distinguish from t=0; anything past it would have rounded
+# into a slot that does not exist, which is a different claim and not noise. The pipeline's own
+# producers support the wide half of the band and nothing near its edge: the persons and pose
+# stages round their timestamps to 6 decimals (so a real first-frame value is 0.0 or a few
+# microseconds off it, 500 times inside this band) and the finest timestamp grid any stage writes is
+# the acoustic stage's 10 ms Praat step — 20 times wider than the band, and 80 times on the ASD
+# stage's 0.04 s working grid. The band is also half of the shortest interval ELAN can store, so a
+# kept value cannot move an annotation by a whole slot: the rule only decides whether a row is kept
+# (inside, clamped) or refused (:class:`MissingTimestamp`, outside).
+NEGATIVE_TOLERANCE_SECONDS = 0.0005
 
 
 class NonFiniteTimestamp(ValueError):
@@ -132,7 +163,10 @@ def seconds_to_ms(value: Any, end: bool = False) -> int:
        purpose is to make predictable.
     2. **Never negative.** A negative ``TIME_VALUE`` is not representable: ELAN refuses the
        file. Rounding at t=0 and a producer that emits ``-1e-6`` are both real, so the value is
-       clamped rather than costing the export.
+       clamped rather than costing the export. **The clamp is a converter's answer, not a
+       placement decision:** :func:`interval_ms` refuses a materially negative endpoint (see
+       :data:`NEGATIVE_TOLERANCE_SECONDS`) rather than letting this rule turn ``(-2.0, -1.0)``
+       into a bar at the start of the clip.
     3. **A zero-width interval gets +1 ms at the end.** ELAN requires ``start < end`` for
        every annotation: an interval with no width cannot be selected or dragged in its grid,
        and two annotations sharing both slots are one interval. Praat emits zero-width pitch
@@ -190,7 +224,18 @@ def interval_ms(start: Any, end: Any) -> tuple[int, int]:
     every tier, so no builder — not `words`, not `person_tracks`, not a later segment-context tier
     — can land a row at second zero because its producer wrote null. A legitimate ``start == end``
     still gets its +1 ms display width; a *missing* end does not get one, because the pair it would
-    widen is invented rather than measured.
+    widen is invented rather than measured. A materially negative endpoint is refused the same way,
+    and for the same reason: see :data:`NEGATIVE_TOLERANCE_SECONDS`.
+
+    **A materially negative endpoint raises the same way; one inside rounding noise of zero does
+    not.** :func:`seconds_to_ms` clamps a negative to 0 because a converter has to answer
+    something, and that is the right cost at t=0 and the wrong answer as a placement: it turned a
+    ``(-2.0, -1.0)`` row into a ``[0, 1) ms`` bar — a fact about the start of the clip that no
+    producer measured, in a file where a reader cannot tell it from a real first-frame annotation.
+    So the refusal lives here, the one time path `build_eaf` takes, and it is sized by
+    :data:`NEGATIVE_TOLERANCE_SECONDS`: within that of zero the value is what rounding at t=0
+    produces and stays clamped; beyond it the row has no time this export may place, and it is
+    dropped and counted on the same line as a null. No new bar is invented and no tier is lost.
 
     The two states raise two exceptions rather than one, because `build_eaf` counts them on two
     separate log lines and they describe different producer defects — the same reason B1 kept a
@@ -201,6 +246,13 @@ def interval_ms(start: Any, end: Any) -> tuple[int, int]:
     for value in (start, end):
         if not math.isfinite(float(value)):
             raise NonFiniteTimestamp(f"timestamp is {float(value)}, not a measurable time")
+    for name, value in (("start", start), ("end", end)):
+        if float(value) < -NEGATIVE_TOLERANCE_SECONDS:
+            raise MissingTimestamp(
+                f"{name} endpoint is {float(value)} s, more than "
+                f"{NEGATIVE_TOLERANCE_SECONDS} s before zero: a negative TIME_VALUE is "
+                "unrepresentable and clamping it would place this row at second zero, which no "
+                "producer measured")
     start_ms = seconds_to_ms(start)
     end_ms = seconds_to_ms(end, end=True)
     if end_ms <= start_ms:
@@ -424,6 +476,36 @@ def _id(value: Any) -> str:
     return text if text != EMPTY_TEXT_MARKER else UNKNOWN_DISPLAY
 
 
+def _field(value: Any, *, null_is_answer: bool = False) -> str:
+    """An analysis field inside a label, keeping "absent" and "unknown" two different words.
+
+    :func:`_id` and :func:`_num` both fold "there is nothing here" into :data:`UNKNOWN_DISPLAY`,
+    which is right for an id or a score. It is wrong for the spaCy analysis columns, where the
+    *expression that wrote the column* decides what a null means. `workers/spacy_worker.py`
+    writes ``morph`` as ``str(token.morph)``, so an empty string is spaCy answering "this token has
+    no morphology" and a null there really is an unanswered question. It writes ``ent_type`` as
+    ``token.ent_type_ or None``, so the producer's own "this token is inside no named entity"
+    arrives as a **null** and can never arrive as an empty string: on that column a null is the
+    answer, not the absence of one, and ``null_is_answer=True`` says so. Guessing which column
+    needs it from the value alone is impossible — that is exactly the collapse this function
+    exists to avoid — so the caller names it. A real finite ``0`` is neither state and prints
+    ``0.000`` via :func:`_num`, because a zero confidence is a measured zero.
+    """
+    if value is None:
+        return ABSENT_DISPLAY if null_is_answer else UNKNOWN_DISPLAY
+    if isinstance(value, str) and not value.strip():
+        return ABSENT_DISPLAY
+    return _text(value)
+
+
+#: Document property holding the per-table provenance of the linguistic tiers (model + variant).
+#: Named in :data:`TIER_SEMANTICS` so a reader of the file can find it without the README.
+LINGUISTIC_PROVENANCE_PROPERTY = "pipeline-linguistic-provenance"
+
+#: Shape/version marker of that property's JSON.
+LINGUISTIC_PROVENANCE_VERSION = 1
+
+
 # ----------------------------------------------------- independent-tier overlap projection
 
 #: Document property holding the logical intervals behind a tier whose rows overlapped.
@@ -571,6 +653,15 @@ UNKNOWN_DISPLAY = "unknown"
 #: An annotation value cannot be empty in ELAN (see :func:`_text`), so emptiness gets a marker.
 EMPTY_TEXT_MARKER = "(empty)"
 
+#: What "the producer wrote an empty value here" looks like, as distinct from :data:`UNKNOWN_DISPLAY`.
+#: Two states, two words, for the reason the module already gives for a null score versus a NaN one.
+#: Which state an *empty* value is is a property of the column: an empty ``morph`` (``str(token.morph)``)
+#: means "spaCy answered: no morphology on this token", and so does the null that ``token.ent_type_ or
+#: None`` produces for a token inside no named entity — see :func:`_field`, which takes that per
+#: column. Printing :data:`UNKNOWN_DISPLAY` for either would turn a checked-and-absent analysis into
+#: a missing measurement, the collapse §17 refuses everywhere else in the pipeline.
+ABSENT_DISPLAY = "none"
+
 #: Column names, quoted in :data:`TIER_SEMANTICS` and in labels, so a reader can find the
 #: column a label fragment came from. They are names of *columns*, not keys to be joined: the
 #: point of naming them is that they belong to different producers' id spaces.
@@ -656,6 +747,49 @@ TIER_SEMANTICS: str = (
     "lists per affected tier the logical_row_count (rows the tables carried) beside the "
     "final_annotation_count (annotations this tier emits), because those two numbers are "
     "different facts and only the second one is what ELAN shows. "
+    "Linguistic tiers: spacy_source_tokens, spacy_source_sentences, spacy_english_tokens and "
+    "spacy_english_sentences are four flat peer tiers, not a hierarchy — a sentence tier is not "
+    "the parent of a token tier and no tier is created per token; they link by the sentence_id "
+    "and segment_id printed on every row. A token is a span of text, not an event, so each row "
+    "says how it was placed, and the words follow the bar rather than the variant: a token whose "
+    "own token_start_time and token_end_time are finite, usable (defined below) and ordered sits "
+    "on them, "
+    "and a row without usable token times sits on its enclosing segment's bounds with a placement "
+    "fragment that says 'segment context (not token aligned)', keeping that row's own "
+    "timestamp_alignment_status and timestamp_alignment_confidence rather than improving or "
+    "discarding them. Such a bar is context, not a word boundary, and every English row — of "
+    "spacy_english_tokens and of spacy_english_sentences alike — says that its text is '"
+    # The exact text of ENGLISH_TRANSLATION_TEXT, inlined the way this property already inlines
+    # the placement fragments defined below it (a module-level constant cannot forward-reference).
+    # `test_the_semantics_property_...` checks the constant and this clause still agree.
+    "translation text, not word alignment to the source'; the status no_timing "
+    "is printed on the rows whose own column holds it, which is every English row this pipeline "
+    "writes. A sentence is never timed by its first token — the only bounds the sentence table "
+    "carries are the segment's. Usable means finite, ordered, and no further below zero than "
+    # The tolerance, in the same words the code applies: quoting a number here is a claim about
+    # behaviour, so it is formatted from the constant rather than typed twice. A test ratchets it.
+    f"{NEGATIVE_TOLERANCE_SECONDS * 1000.0:g} ms: "
+    "a value within half a millisecond of zero is rounding noise at the start of the clip and "
+    "is placed at 0 ms, "
+    "while a materially negative endpoint is a producer defect that no tier clamps onto second "
+    "zero — the refusal lives in interval_ms, the one time path every tier takes, so a negative "
+    "costs its row (dropped and counted with a missing timestamp) in words and person_tracks and "
+    "the linguistic tiers alike. A row with neither usable token times nor usable segment bounds "
+    "is dropped and "
+    "counted rather than placed at second zero. 'none' and 'unknown' are two words, and which "
+    "one a null takes is decided per column because the producer writes these columns "
+    "differently: ent_type is written as token.ent_type_ or None, so the producer's own answer "
+    "'this token is inside no named entity' arrives as a null and an empty value never reaches "
+    "that column — there a null prints 'none'; morph is written as str(token.morph), so there an "
+    "empty string prints 'none' (spaCy answered: no morphology on this token) and only a null "
+    "prints 'unknown' (nothing reached the table). The four lexical flags work the same way on "
+    "the whole fragment: a row that flagged none of the four says 'flags none', a row whose four "
+    "flag columns are all null says 'flags unknown', and a confidence the producer measured as "
+    "zero prints as a measured 0.000. A dependency head is printed as text inside its "
+    "token's own label and is never an ELAN reference relation. Which spaCy model and which "
+    "variant produced each linguistic table is recorded in the " + LINGUISTIC_PROVENANCE_PROPERTY
+    + " property, once per table rather than on every token, read from the table's own metadata; "
+    "a table that never recorded its model says 'unknown' there. "
     "Coverage: this document is a summary of the dataset's tables, not every number in them "
     "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement."
 )
@@ -1187,7 +1321,7 @@ def person_track_rows(item: TierInput) -> list[dict[str, Any]]:
       one annotation per track span: a span says something was seen at both ends and nothing
       about the frames between, and the corpus proves the gap is not theoretical (La-1's id 10
       loses a full second between source frames 114 and 144). Skipping one tier also keeps the
-      other eleven, which is the asymmetry :func:`build_eaf` already documents;
+      other fifteen, which is the asymmetry :func:`build_eaf` already documents;
     * ``frame_index`` — the clip's own frame list, the only thing that makes "adjacent" mean
       anything. Absent or unreadable, every sighting is a lone mark.
 
@@ -1313,6 +1447,419 @@ def _shift(value: Any, step: float) -> Any:
     return None if value is None else float(value) + step
 
 
+# --------------------------------------------------------------- linguistic tiers
+
+#: The four linguistic tiers' ``artifact`` keys. Named for the **registry keys** and not for the
+#: :data:`~multimodal_pipeline.schemas.TABLE_SCHEMAS` aliases ``linguistic_source_tokens`` /
+#: ``linguistic_english_sentences``: those two registries are not the same namespace, and the one
+#: this module can actually resolve a path with is ``ARTIFACT_LAYOUT`` (see
+#: :func:`artifact_path`), which spells them ``spacy_*``. Reusing the schema alias as an artifact
+#: name would fail every one of these tiers on a well-formed dataset, silently, through the
+#: per-tier skip line.
+SPACY_SOURCE_TOKENS = "spacy_source_tokens"
+SPACY_SOURCE_SENTENCES = "spacy_source_sentences"
+SPACY_ENGLISH_TOKENS = "spacy_english_tokens"
+SPACY_ENGLISH_SENTENCES = "spacy_english_sentences"
+
+#: How a linguistic annotation was placed, printed on every row of the four linguistic tiers.
+# The pipeline's other tiers are timed by the event they describe: a sighting has a PTS, a turn has
+# a diarizer's endpoints. A spaCy token is not an event — it is a span of *text* inside a segment,
+# and whether it has a time of its own depends on the variant, on the tokeniser, and on whether the
+# alignment could name the word. One word for all four cases would put a bar on the timeline and
+# leave the reader to guess which of these three claims the bar is entitled to make.
+#: The token carries its own ``token_start_time``/``token_end_time`` and they are usable (finite,
+#: non-negative, ``start < end``, per :func:`_valid_pair`), so the bar spans the interval the
+#: producer measured for that token.
+TIMING_TOKEN_ALIGNED = "token aligned"
+#: The token carries usable times, but the producer's own ``timestamp_alignment_status`` says the
+#: pairing is only a borrowing (``approximate``: the timestamp is right while the 1:1 pairing is not
+#: provable; ``unmatched``: no timestamp, so no time could be fabricated from it either). The bar is
+#: still placed on the times the table holds; the label says they are not a provable word boundary.
+TIMING_TOKEN_REPORTED = "token time as reported"
+#: No usable time for this token, so the bar spans its **segment's** endpoints. The label says the
+#: bar is segment context and not a token-aligned span, and it keeps the row's own alignment status
+#: and confidence, because those are the producer's statement about the timing and nothing here
+#: improves or discards them. Printed only of a row the export actually placed there: it names
+#: where the bar sits, so it cannot be added to a variant on the strength of what that variant
+#: usually looks like (see :data:`ENGLISH_TRANSLATION_TEXT`).
+TIMING_SEGMENT_CONTEXT = "placement=segment context (not token aligned)"
+
+#: The exact ``timestamp_alignment_status`` values this module branches on, quoted from the
+#: producer's vocabulary (`workers/spacy_worker.py`) rather than paraphrased: ``aligned`` is the one
+#: state allowed to claim a token's own span, and ``no_timing`` is what the English variant carries
+#: on every row because the worker is given no word list for a translation at all. ``unmatched`` is
+#: deliberately absent: it has no branch here — an unmatched row may still hold finite times, and
+#: this module places those and prints the producer's word unchanged.
+STATUS_ALIGNED = "aligned"
+STATUS_NO_TIMING = "no_timing"
+
+#: The linguistic tier's own words for "this row's variant has no timing to place it by", built
+#: from :data:`STATUS_NO_TIMING` so the label can never drift from the column value it names.
+#: Named rather than inlined because :data:`TIMING_SEGMENT_CONTEXT` already contains the word
+#: ``context``, so a test that looked for the bare phrase would pass on a token row. Printed on a
+#: row only when its own status column holds that value **and** the row was placed on its segment —
+#: which is every English row of every table this pipeline writes today, and still a measurement of
+#: the row rather than a property of the tier name.
+LINGUISTIC_NO_TIMING = f"variant {STATUS_NO_TIMING}"
+
+#: The English tier's claim about its own **text**, printed on every English row whatever the bar
+#: is placed on. Separate from the placement words on purpose: "this text translates a source line
+#: and is not a word-level alignment to it" is true of an English row whether or not the table
+#: happens to carry token times for it, while "segment context" is a statement about the interval
+#: and belongs only on a row the export really placed on its segment.
+ENGLISH_TRANSLATION_TEXT = "translation text, not word alignment to the source"
+
+#: The four nullable lexical-flag columns, as ``(label printed, column name)``.
+#: One list so the "all four unread" state and the "which were true" list are read off the same
+#: columns and cannot drift apart.
+LEXICAL_FLAGS: tuple[tuple[str, str], ...] = (
+    ("alpha", "is_alpha"), ("stop", "is_stop"), ("digit", "is_digit"), ("num", "like_num"))
+
+#: Parquet key/value metadata key the spaCy stages write per table
+#: (``stages/spacy_source.py::normalize``). Read from the file's own schema metadata, never from
+#: config: the export runs over whatever is on disk, and the model that produced a table is a fact
+#: about that table, not about the settings of the run that happens to be configured now.
+SPACY_MODEL_METADATA_KEY = "spacy_model"
+
+#: A model name that reaches the table as the string ``"None"``
+# ``normalize`` writes ``"spacy_model": str(payload.get("selected_model"))``, and
+# ``write_table`` drops a metadata value only when it is ``None`` — so a document with no
+# ``selected_model`` lands on disk as the four-character string "None". That is a missing value
+# written through ``str()``, not a model anybody installed, so the export reports it as
+# :data:`UNKNOWN_DISPLAY` rather than naming a model that does not exist. It is not hypothetical:
+# nothing in either spaCy stage guarantees the key.
+UNWRITE_MODEL_NAMES: frozenset[str] = frozenset({"none", "null", "", "unknown"})
+
+#: Column sets read by the two linguistic builders, exported so a test can check them against
+#: ``TOKENS_SCHEMA`` / ``SENTENCES_SCHEMA`` rather than against this file's memory of them.
+SPACY_TOKEN_COLUMNS: tuple[str, ...] = (
+    "segment_id", "sentence_id", "token_id", "token_index", "speaker_id", "text", "lemma",
+    "pos", "tag", "morph", "dep", "head_token_id", "head_text", "head_pos", "ent_type",
+    "is_alpha", "is_stop", "is_digit", "like_num", "char_start", "char_end",
+    "segment_start_time", "segment_end_time", "token_start_time", "token_end_time",
+    "timestamp_alignment_status", "timestamp_alignment_confidence",
+)
+SPACY_SENTENCE_COLUMNS: tuple[str, ...] = (
+    "segment_id", "sentence_id", "sentence_index", "speaker_id", "text", "token_count",
+    "char_start", "char_end", "segment_start_time", "segment_end_time",
+)
+
+
+def _valid_pair(start: Any, end: Any) -> bool:
+    """Do these two producer values form a time this export is allowed to print?
+
+    Finite, ``start`` no further below zero than :data:`NEGATIVE_TOLERANCE_SECONDS`, and
+    ``start < end``. Deliberately **not** the `start <= end` rule :func:`interval_ms` enforces:
+    that one widens a genuine zero-width measurement by a millisecond because ELAN cannot store a
+    zero-width bar, which is right for a real span and wrong for a segment context fallback. A row
+    whose segment bounds are equal or reversed is not a usable enclosing interval, and the honest
+    outcome is the row's own drop, not a bar whose width came from the display rule.
+
+    A **materially negative endpoint is not usable either**, which is a change from the first
+    version of this check. It used to allow negatives on the grounds that :func:`seconds_to_ms`
+    clamps them to 0; that is a converter's answer and it is the wrong one here, because the clamp
+    turns ``(-2.0, -1.0)`` into ``[0, 1) ms`` — a bar at the start of the clip, which is precisely
+    the invented placement :class:`MissingTimestamp` exists to refuse. No producer in this pipeline
+    writes negative times (`workers/spacy_worker.py` forwards WhisperX segment and word times
+    unmodified), so a negative is a producer defect, and the export's job is to drop the row and
+    count it rather than launder the defect into second zero.
+
+    The tolerance is shared with :func:`interval_ms` rather than restated as `>= 0` so the two
+    rules answer one question the same way: a token whose first frame time is `-1e-6` keeps **its
+    own** span instead of being demoted to segment context over a rounding artefact. This check can
+    therefore never call usable a pair the export would then refuse.
+    """
+    try:
+        first, second = float(start), float(end)
+    except (TypeError, ValueError):
+        return False
+    return (math.isfinite(first) and math.isfinite(second)
+            and first >= -NEGATIVE_TOLERANCE_SECONDS and second > first)
+
+
+def _alignment_fragment(row: dict[str, Any]) -> str:
+    """The producer's own alignment verdict, verbatim, with the confidence as a measured number.
+
+    The status is :func:`_field`-formatted, so a null says ``unknown`` and an empty string says
+    ``none`` rather than both saying ``unknown``. The confidence is :func:`_num`-formatted, so a
+    real ``0.0`` prints ``0.000`` and not ``unknown``: the worker writes 0.0 as a *measured* "no
+    confidence in this pairing" for every ``unmatched`` and ``no_timing`` row, and hiding it behind
+    the word for "no measurement" would be the opposite collapse from the one :func:`_field` avoids.
+    """
+    return (f"alignment={_field(row.get('timestamp_alignment_status'))} "
+            f"conf={_num(row.get('timestamp_alignment_confidence'), 3)}")
+
+
+def _char_span(row: dict[str, Any]) -> str:
+    """The token's own character span inside the segment text, or ``char unknown``.
+
+    Character offsets are not a time and are never used to place a bar; they are printed because
+    they are the one span a linguistic row always has, and they let a reader find the token in the
+    sentence the same producer wrote. A null is not turned into ``0`` — ``char 0-0`` would claim
+    the token sits at the very start of the text.
+    """
+    start, end = row.get("char_start"), row.get("char_end")
+    if start is None or end is None:
+        return "char unknown"
+    return f"char {_id(start)}-{_id(end)}"
+
+
+def _flags_fragment(row: dict[str, Any]) -> str:
+    """The four nullable lexical flags as one fragment, with "unread" kept distinct from "all false".
+
+    ``is_alpha``/``is_stop``/``is_digit``/``like_num`` are nullable in ``TOKENS_SCHEMA``, and the
+    :func:`_flag` reading (null behaves like false) is right for the ASD boolean it was written
+    for and wrong for the label: a row whose flags were never measured printed exactly what a row
+    measured false on all four prints. So the fragment says ``unknown`` only when **all four**
+    columns are null, and otherwise names the ones that hold — one word of cost, no per-flag
+    commentary, because the pair of states worth separating is "answered none" and "not asked".
+    """
+    if all(row.get(key) is None for _label, key in LEXICAL_FLAGS):
+        return f"flags {UNKNOWN_DISPLAY}"
+    names = " ".join(label for label, key in LEXICAL_FLAGS if _flag(row, key))
+    return f"flags {names if names else ABSENT_DISPLAY}"
+
+
+def _time_value(value: Any) -> str:
+    """A producer's seconds as the millisecond this export actually writes.
+
+    Rendered through :func:`seconds_to_ms` rather than printed as seconds, so the fragment can be
+    compared against the document's own ``TIME_VALUE``. A non-finite value says ``non-finite`` and a
+    null says ``unknown``: neither reaches the file, because the row is dropped, but the fragment is
+    built before that decision and must not print a 0 that no bar carries.
+    """
+    if value is None:
+        return "unknown"
+    try:
+        if not math.isfinite(float(value)):
+            return "non-finite"
+    except (TypeError, ValueError):
+        return "non-finite"
+    return f"{seconds_to_ms(value)} ms"
+
+
+def _variant_of(item: TierInput) -> str:
+    """The variant a linguistic table holds, from the artifact key that named it.
+
+    Read from the registry key rather than the table's own ``variant`` column: the column is
+    populated by the normalizer (``stages/spacy_source.py`` stamps it), but the *tier* is chosen by
+    which file is being read, and a label must not disagree with the file it came from. ``None``
+    means this is not a linguistic tier, and no caller in the registry reaches it.
+    """
+    return {SPACY_SOURCE_TOKENS: "source", SPACY_SOURCE_SENTENCES: "source",
+            SPACY_ENGLISH_TOKENS: "english", SPACY_ENGLISH_SENTENCES: "english"}.get(item.artifact)
+
+
+def spacy_model_of(item: TierInput) -> str:
+    """The model that produced one table, read from that table's own Parquet metadata.
+
+    One value per **table**, written once into the document's provenance property rather than
+    repeated on every annotation: the stage writes the same ``spacy_model`` for a whole file
+    (``normalize`` passes one ``selected_model`` per run), so a per-word copy would cost the
+    scannability the labels exist to keep and buy nothing a reader can check.
+
+    Three states, and only the first is a name: the key present and non-empty (the corpus's own
+    tables carry ``en_core_web_lg`` / ``es_core_news_lg`` / ``blank``, all of them reported exactly
+    as written); the key absent (a table written before the metadata existed, or by a different
+    normalizer) → :data:`UNKNOWN_DISPLAY`; the key present but holding the string ``"None"``
+    (``normalize`` formats it with ``str()``, and ``write_table`` drops only a real ``None``) →
+    :data:`UNKNOWN_DISPLAY`, because "None" is a missing value wearing a model name.
+
+    Config is never read. This function takes a table, not a context, and the answer it gives is a
+    fact about the bytes on disk: a dataset re-exported after somebody edited the config keeps the
+    model that actually produced its tokens.
+
+    An unreadable file yields :data:`UNKNOWN_DISPLAY` rather than raising: this is provenance about
+    a tier that was read successfully (the rows are read separately, under the per-tier guard), and
+    losing the model name is not a reason to lose the tier a second time.
+    """
+    try:
+        # The footer's schema metadata, not the rows: this answers "what did the writer record about
+        # this file", and a tokens table on a long clip is thousands of rows read for one key.
+        import pyarrow.parquet as pq
+
+        metadata = pq.read_schema(item.path).metadata or {}
+    except Exception:  # noqa: BLE001 - provenance is not worth a second tier failure
+        return UNKNOWN_DISPLAY
+    raw = metadata.get(SPACY_MODEL_METADATA_KEY.encode())
+    if raw is None:
+        raw = metadata.get(SPACY_MODEL_METADATA_KEY)
+    if raw is None:
+        return UNKNOWN_DISPLAY
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    text = " ".join(str(raw).split())
+    if text.lower() in UNWRITE_MODEL_NAMES:
+        return UNKNOWN_DISPLAY
+    return text
+
+
+def spacy_token_rows(item: TierInput) -> list[dict[str, Any]]:
+    """One annotation per spaCy token: the text first, then the analysis that describes it.
+
+    The word leads for the reason :func:`words_rows` gives for its own: this is the tier an analyst
+    reads, and a row that opened with ``seg000001-s001-t0003`` would put every token a page-turn
+    away. Everything after it is a ``key value`` pair with a name, because the parts of a spaCy row
+    that are easy to misread — which ``head`` is meant literally, whether an empty ``morph`` means
+    "no morphology" or "no analysis", whether a bar over ``[1.0, 2.0)`` ms is *the token's* time or
+    its segment's — have to be stated rather than inferred from column order.
+
+    The head is labelled ``dep head`` and never drawn as an ELAN relation: ELAN's
+    ``REF_ANNOTATION`` points a *child tier* at a parent's annotation, which is the hierarchy this
+    module refuses on purpose (see the module docstring and :func:`spacy_sentence_rows`). A
+    dependency arc inside one tier has no representation in the format that is not a hierarchy, so
+    the arc travels as text.
+
+    Timing is decided per row and printed as one of the :data:`TIMING_TOKEN_ALIGNED` /
+    :data:`TIMING_TOKEN_REPORTED` / :data:`TIMING_SEGMENT_CONTEXT` states:
+
+    * finite, non-negative, valid ``token_start_time``/``token_end_time`` → the bar spans **those**
+      times. The producer's own ``timestamp_alignment_status`` still rides on the label, so an
+      ``approximate`` borrowing reads as one instead of being laundered into a word boundary;
+    * token times missing, non-finite, negative or not a span → the bar spans the **enclosing
+      segment's** bounds, labelled :data:`TIMING_SEGMENT_CONTEXT`, with the row's original
+      alignment status and confidence preserved so the label does not claim more than the token's
+      own row did;
+    * neither pair usable → the row carries ``start = end = None`` and :func:`interval_ms` raises
+      :class:`MissingTimestamp` in `build_eaf`, which drops the row and counts it. No time is
+      invented here, and no time is invented at zero.
+
+    The fragment therefore follows **the bar**, on every variant including English. The English
+    tier used to overwrite it unconditionally with the no-timing/segment-context wording, on the
+    reasoning that the worker is given no word list for a translation and so every row lands on its
+    segment — true of every table this pipeline writes today, and still not a licence to print a
+    placement the row does not have: a row that ever carried finite token times was drawn over the
+    token's bounds while its own label denied it. What the English tier states unconditionally is
+    :data:`ENGLISH_TRANSLATION_TEXT`, because that is a claim about the *text*, and
+    :data:`LINGUISTIC_NO_TIMING` is printed whenever the row's own status really holds
+    :data:`STATUS_NO_TIMING` **and** the row was placed on its segment.
+
+    The sort is segment-first rather than time-first, and that is not an oversight. English rows all
+    share their segment's interval, so a time sort would order them by Parquet's accident; segment
+    then ``token_index`` is the order the sentence was written in, and for a source token it
+    disagrees with a time sort only where the producer's own alignment says the pairing is loose.
+    """
+    rows = item.rows(SPACY_TOKEN_COLUMNS)
+    # From the artifact key the tier was registered under, so a label can never disagree with the
+    # file it came from (see :func:`_variant_of`).
+    variant = _variant_of(item) or UNKNOWN_DISPLAY
+    rows.sort(key=lambda row: (_seconds(row.get("segment_start_time")),
+                               str(row.get("segment_id") or ""),
+                               -1 if row.get("token_index") is None else int(row["token_index"])))
+    annotations: list[dict[str, Any]] = []
+    for row in rows:
+        token_ok = _valid_pair(row.get("token_start_time"), row.get("token_end_time"))
+        segment_ok = _valid_pair(row.get("segment_start_time"), row.get("segment_end_time"))
+        status = row.get("timestamp_alignment_status")
+        if token_ok:
+            start, end = row["token_start_time"], row["token_end_time"]
+            timing = (TIMING_TOKEN_ALIGNED if status == STATUS_ALIGNED
+                      else TIMING_TOKEN_REPORTED)
+        elif segment_ok:
+            start, end = row["segment_start_time"], row["segment_end_time"]
+            timing = TIMING_SEGMENT_CONTEXT
+            if status == STATUS_NO_TIMING:
+                # The producer's own word for "this variant had no timing to place by", printed
+                # from the column and only on the rows placed where that leaves them.
+                timing = f"{LINGUISTIC_NO_TIMING} · {timing}"
+        else:
+            # No fabricated time: build_eaf drops this row and counts the reason.
+            start, end = None, None
+            timing = "no usable timing (token and segment bounds both unusable)"
+        if item.artifact == SPACY_ENGLISH_TOKENS:
+            # What an English row states about itself whatever the bar is placed on: the text is a
+            # translation of a source line, not a word aligned to a word in it. Naming that on the
+            # row is what stops a reader from reading two English bars over the same second as two
+            # words that were spoken in that second.
+            timing = f"{timing} · {ENGLISH_TRANSLATION_TEXT}"
+        analysis = (f"lemma {_field(row.get('lemma'))} · pos {_field(row.get('pos'))} · "
+                    f"tag {_field(row.get('tag'))} · morph {_field(row.get('morph'))} · "
+                    f"dep {_field(row.get('dep'))} · "
+                    f"dep head {_field(row.get('head_text'))} ({_field(row.get('head_pos'))}) "
+                    f"[{_id(row.get('head_token_id'))}] · "
+                    f"ent {_field(row.get('ent_type'), null_is_answer=True)}")
+        flags = _flags_fragment(row)
+        annotations.append({
+            "start": start,
+            "end": end,
+            "text": _text(f"{_text(row.get('text'))} · {_id(row.get('speaker_id'))} · "
+                          f"{variant} · "
+                          f"token {_id(row.get('token_id'))} · sentence "
+                          f"{_id(row.get('sentence_id'))} · [{_id(row.get('segment_id'))}] · "
+                          f"{analysis} · {_char_span(row)} · {timing} · "
+                          f"placed {_time_value(start)}-{_time_value(end)} · "
+                          f"{_alignment_fragment(row)} · "
+                          f"{flags}"),
+            "_id_keys": ("token_id", "sentence_id", SEGMENT_NS, SPEAKER_NS),
+            **{key: row[key] for key in ("token_id", "sentence_id", "segment_id", "speaker_id")},
+        })
+    return annotations
+
+
+def spacy_sentence_rows(item: TierInput) -> list[dict[str, Any]]:
+    """One annotation per spaCy sentence, always placed by its segment's bounds.
+
+    A sentence has no timing of its own anywhere in the pipeline: ``SENTENCES_SCHEMA`` carries only
+    ``segment_start_time``/``segment_end_time``, so the only interval a sentence row can honestly
+    print is its enclosing segment's. The label says so, and nothing here measures a sentence's
+    onset by its first token: that would turn the *tokeniser's* idea of a boundary into an event on
+    the timeline, and for the English variant there is no word timing to take an onset from in the
+    first place.
+
+    That makes the segment pair the tier's **only** candidate, so it goes through the same
+    :func:`_valid_pair` check the token tier uses rather than straight to :func:`interval_ms`.
+    The difference is one row's worth of time: `interval_ms` exists to keep a *measured* interval
+    storable, so it widens an equal or reversed pair to a 1 ms bar at whatever millisecond the
+    conversion produced — a zero-width segment at 2.0 s used to export as ``[2000, 2001)`` and a
+    reversed one at 3.0 s as ``[3000, 3001)``, and a negative pair was clamped onto second zero.
+    All three are the row having no usable time, and the honest outcome is the drop
+    :func:`interval_ms` performs for a null or a materially negative endpoint, reached here by
+    checking the pair first (see :func:`spacy_token_rows`).
+
+    The tier is a flat peer of the token tier, not its parent. Making it a parent would put ELAN's
+    ``REF_ANNOTATION`` hierarchy into the file — a shape two datasets could no longer compare
+    column-for-column, and one this module has refused since the first tier list. The link between
+    them is the ``sentence_id`` printed on both, exactly as ``segment_id`` links `words` to
+    `segments_src`.
+
+    What an English **sentence** states about its own text is the same claim an English token
+    states: :data:`ENGLISH_TRANSLATION_TEXT`. The prose and the document's semantics property both
+    promised that on every English row, and this tier was the one that did not deliver it — a
+    translated sentence is exactly as little a word alignment to the source as a translated token
+    is, and the worker is given no word list for either. It travels with the variant prefix, so it
+    is a property of the table being read (one constant, not a per-row inference) rather than of
+    where the bar happens to sit.
+    """
+    rows = item.rows(SPACY_SENTENCE_COLUMNS)
+    variant = _variant_of(item) or UNKNOWN_DISPLAY
+    # The English sentence table is the one whose text is not what anybody said, so its rows carry
+    # the variant marker and the claim about that text ahead of the placement fragment. Built once,
+    # not per row, because the tier is chosen by the file being read and cannot vary inside it.
+    english_prefix = (f"{LINGUISTIC_NO_TIMING} · {ENGLISH_TRANSLATION_TEXT} · "
+                      if item.artifact == SPACY_ENGLISH_SENTENCES else "")
+    rows.sort(key=lambda row: (_seconds(row.get("segment_start_time")),
+                               str(row.get("segment_id") or ""),
+                               -1 if row.get("sentence_index") is None
+                               else int(row["sentence_index"])))
+    annotations: list[dict[str, Any]] = []
+    for row in rows:
+        usable = _valid_pair(row.get("segment_start_time"), row.get("segment_end_time"))
+        annotations.append({
+            # Unusable pair → no time at all, so build_eaf drops the row and counts the reason.
+            "start": row["segment_start_time"] if usable else None,
+            "end": row["segment_end_time"] if usable else None,
+            "text": _text(f"{_text(row.get('text'))} · {_id(row.get('speaker_id'))} · "
+                          f"{variant} sentence {_id(row.get('sentence_id'))} · "
+                          f"tokens {_id(row.get('token_count'))} · "
+                          f"[{_id(row.get('segment_id'))}] · {_char_span(row)} · "
+                          f"{english_prefix}{TIMING_SEGMENT_CONTEXT} · the only bounds this "
+                          f"table carries are the segment's, never a sentence-onset "
+                          f"measurement"),
+            "_id_keys": ("sentence_id", SEGMENT_NS, SPEAKER_NS),
+            **{key: row[key] for key in ("sentence_id", "segment_id", "speaker_id")}})
+    return annotations
+
+
 #: Registry artifact key -> dataset-relative path.
 def artifact_path(artifact: str) -> str:
     """The dataset-relative path of a registry artifact, read from the registry each call.
@@ -1338,9 +1885,12 @@ class TierSpec:
     note: str = ""
 
 
-#: The twelve tiers, in the order they are written. Declared here so the tier set is one
-#: list a reviewer can count and a test can assert against, rather than twelve calls
+#: The sixteen tiers, in the order they are written. Declared here so the tier set is one
+#: list a reviewer can count and a test can assert against, rather than sixteen calls
 #: scattered through a build function.
+# The four linguistic tiers are appended rather than interleaved: the twelve existing names and
+# their order are the contract every other stage and every existing .eaf follows, and a tier that
+# moves is indistinguishable from a tier that was renamed.
 TIERS: tuple[TierSpec, ...] = (
     TierSpec("words", "speech_words", words_rows, "word-level transcript"),
     TierSpec("segments_src", "speech_segments", segments_rows, "source-text segments"),
@@ -1355,7 +1905,22 @@ TIERS: tuple[TierSpec, ...] = (
     TierSpec("person_tracks", "person_tracks", person_track_rows, "YOLO person sightings"),
     TierSpec("pose_presence", "pose_body", pose_presence_rows, "body-present blocks"),
     TierSpec("voiced_blocks", "acoustic_frames", voiced_rows, "voiced blocks"),
+    TierSpec("spacy_source_tokens", SPACY_SOURCE_TOKENS, spacy_token_rows,
+             "source-language tokens"),
+    TierSpec("spacy_source_sentences", SPACY_SOURCE_SENTENCES, spacy_sentence_rows,
+             "source-language sentences"),
+    TierSpec("spacy_english_tokens", SPACY_ENGLISH_TOKENS, spacy_token_rows,
+             "English tokens"),
+    TierSpec("spacy_english_sentences", SPACY_ENGLISH_SENTENCES, spacy_sentence_rows,
+             "English sentences"),
 )
+
+#: The four linguistic artifact keys, in tier order.
+# Used by `build_eaf` to decide which tiers carry per-table provenance, and exported so a test can
+# assert the set rather than re-listing it: a fifth linguistic tier that forgot to register here
+# would be written into the file with no model recorded beside it.
+LINGUISTIC_ARTIFACTS: tuple[str, ...] = (
+    SPACY_SOURCE_TOKENS, SPACY_SOURCE_SENTENCES, SPACY_ENGLISH_TOKENS, SPACY_ENGLISH_SENTENCES)
 
 #: Artifacts a tier reads besides its own, keyed by the tier that reads them.
 # A tier's primary artifact is what names it and what its absence skips it for. Some tiers need
@@ -1484,7 +2049,7 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
 
     A file that exists but cannot be read is skipped too, with its exception named. That is a
     deliberate asymmetry with the stage's own ``validate``: one corrupt table should cost its
-    own tier and not the eleven that were already built correctly, and a .eaf with eleven
+    own tier and not the fifteen that were already built correctly, and a .eaf with fifteen
     tiers and one logged line is worth more to a user than no .eaf at all.
 
     One row with an unusable timestamp costs **that row**, not its tier, and the two unusable
@@ -1493,14 +2058,16 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     checked, and a null is a measurement the producer never took. The tier's other rows were
     measured and belong in the file.
 
-    **A missing endpoint drops the row; it is never placed at t=0.** The rule used to be the
-    opposite — "a null lands at zero so the annotation stays visible next to its siblings" — and
-    that put a false fact in a file an analyst trusts: ELAN has no "time unknown" annotation, so an
-    untimed row looked like something that happened when the clip started. The check lives here, at
-    the one place every tier's rows pass through :func:`interval_ms`, so no builder (word timing,
-    person sightings, or a future segment-context tier) can invent a time by omission. The counts
-    are logged, so a tier that dropped half its rows says so in the run output — the difference
-    between "this clip has few words" and "the words table has no times in it" stays readable.
+    **A missing or materially negative endpoint drops the row; it is never placed at t=0.** The rule
+    used to be the opposite — "a null lands at zero so the annotation stays visible next to its
+    siblings" — and that put a false fact in a file an analyst trusts: ELAN has no "time unknown"
+    annotation, so an untimed row looked like something that happened when the clip started. The
+    check lives here, at the one place every tier's rows pass through :func:`interval_ms`, so no
+    builder (word timing, person sightings, or a future segment-context tier) can invent a time by
+    omission — and the same placement covers a negative, because :func:`seconds_to_ms`'s clamp would
+    otherwise hand a ``(-2.0, -1.0)`` row to the same invented bar at second zero. The counts are
+    logged, so a tier that dropped half its rows says so in the run output — the difference between
+    "this clip has few words" and "the words table has no times in it" stays readable.
 
     Overlap is resolved **here**, after the two drop rules and never inside a builder: a tier's
     rows are converted to integer milliseconds, rows with no usable time are dropped and counted,
@@ -1524,8 +2091,13 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     built: dict[str, int] = {}
     skipped: dict[str, str] = {}
     # Only the tiers that actually had to be re-cut, so the property names the exceptions instead
-    # of restating twelve unaffected tiers.
+    # of restating sixteen unaffected tiers.
     projections: dict[str, Any] = {}
+    # Per-table provenance for the linguistic tiers: which model and which variant produced the
+    # bytes this tier was built from. One entry per table that was actually read, because a tier
+    # that was skipped has no provenance to report — writing `unknown` for it would read as "a
+    # table with no model was exported" rather than "no table was there".
+    linguistic: dict[str, Any] = {}
 
     for spec in TIERS:
         relative = artifact_path(spec.artifact)
@@ -1540,10 +2112,10 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
             except TierDependencyMissing as exc:
                 # The tier's own table was there; a file it needs in order to be truthful was
                 # not. Same one logged line as an absent primary input, and the same decision:
-                # lose this tier, keep the other eleven.
+                # lose this tier, keep the other fifteen.
                 reason = f"requires {exc}"
                 rows = []
-            except Exception as exc:  # noqa: BLE001 - one bad table must not lose eleven
+            except Exception as exc:  # noqa: BLE001 - one bad table must not lose fifteen
                 reason = f"{path.name} unreadable ({type(exc).__name__}: {exc})"
                 rows = []
             if not reason:
@@ -1582,6 +2154,14 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
                     eaf.add_annotation(spec.tier, annotation["start_ms"],
                                        annotation["end_ms"], annotation["value"])
                 built[spec.tier] = len(emitted)
+                if spec.artifact in LINGUISTIC_ARTIFACTS:
+                    item = TierInput(tier=spec.tier, artifact=spec.artifact, path=path,
+                                     dataset_dir=dataset_dir)
+                    linguistic[spec.tier] = {
+                        "artifact": relative,
+                        "variant": _variant_of(item),
+                        "spacy_model": spacy_model_of(item),
+                    }
                 if missing_time:
                     log(f"elan: tier {spec.tier} dropped {missing_time} of {len(rows)} "
                         f"annotation(s) with a missing timestamp (no time is exported rather "
@@ -1608,6 +2188,12 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
         eaf.add_property(OVERLAP_PROJECTION_PROPERTY, json.dumps(
             {"version": OVERLAP_PROJECTION_VERSION, "tiers": projections},
             ensure_ascii=False, separators=(",", ":"), default=str))
+    # Written only when a linguistic table was read. The model name is a property of the table, not
+    # of the annotation, so it appears once per table here rather than on every token bar.
+    if linguistic:
+        eaf.add_property(LINGUISTIC_PROVENANCE_PROPERTY, json.dumps(
+            {"version": LINGUISTIC_PROVENANCE_VERSION, "tiers": linguistic},
+            ensure_ascii=False, separators=(",", ":"), default=str))
     log(f"elan: {len(built)} tier(s), {sum(built.values())} annotation(s) for "
         f"{Path(video_path).name}; skipped {len(skipped)} "
         f"({', '.join(sorted(skipped)) or 'none'})")
@@ -1622,8 +2208,8 @@ def tier_counts(eaf: Any) -> dict[str, int]:
     always 4 and would report a confident, wrong number in every provenance record).
 
     ``default`` is excluded because it is not one of this module's tiers: pympi creates it for
-    every document and nothing writes into it. Leaving it in would report thirteen tiers for
-    twelve, and a count off by one is the kind of claim a reader believes.
+    every document and nothing writes into it. Leaving it in would report seventeen tiers for
+    sixteen, and a count off by one is the kind of claim a reader believes.
 
     These are the **emitted** counts. Where a tier was projected (:func:`overlap_projection`),
     the number of producer rows behind those annotations is a different number and lives in that
