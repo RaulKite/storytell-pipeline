@@ -12,9 +12,11 @@ rename would look like a new tier. Twelve tiers with fixed names are the contrac
 stage follows — the schema is known before the file is opened, and an absent producer is an
 absent tier rather than a renamed one. What they are *not* is a module list: those twelve tiers
 read fourteen of the twenty-two normalised tables, because two diarizers and two fusions account
-for four of them, ``person_tracks`` reads two more to place its sightings, and the token,
-sentence, per-segment-acoustic, hand, face and normalised-pose tables are simply not exported
-yet. A tier is a decision, so adding one is a change to this
+for four of them, ``person_tracks`` reads two more as **support** for its sightings (the per-frame
+detections and the clip's frame list place them; neither has a tier of its own, and neither is an
+exported analysis), and the token, sentence, per-segment-acoustic, hand, face and
+normalised-pose tables get no tier. Which tables still belong on a coverage list is settled with
+the corpus refresh, not here. A tier is a decision, so adding one is a change to this
 list rather than a name being reused for something else.
 
 Absence is a named state here, exactly as ``face_status`` makes it in the ASD table. Each tier
@@ -24,7 +26,7 @@ missing. An empty tier would be ambiguous between "nobody
 spoke", "no face was on screen" and "this engine never ran", which is the collapse the
 pipeline has refused everywhere else (§17's ``face_status``, §20.2's person counts).
 
-Five things are not obvious from reading the code — three about the format, one about what a
+Six things are not obvious from reading the code — four about the format, one about what a
 tier is *for*, one about what a person tier is entitled to claim:
 
 * **Time slots are integer milliseconds, ``start < end`` is a hard requirement, and a row with no
@@ -56,10 +58,20 @@ tier is *for*, one about what a person tier is entitled to claim:
   no sampling grid, no record of frames looked at and found empty — so the only adjacency that
   can be checked comes from ``source/frame_index.parquet``, and everything the index cannot place
   or confirm becomes a lone mark that says so in the label.
+* **Rows that overlap in time inside one tier are re-cut before they are written.** ELAN tiers are
+  independent: two annotations in the same tier may not overlap, and pympi neither enforces that
+  nor complains — the corpus's own tables (two people in one frame, two TalkNet tracks alive at
+  once, two diarizer turns a second apart) already produced files ELAN cannot render. See
+  :func:`project_independent_tier`: the emitted intervals become the disjoint segments of a
+  boundary sweep over the producers' *own* endpoints, each carrying every label active in it,
+  while the producers' logical intervals and their segment membership go into the
+  ``pipeline-overlap-projection`` property. Nothing is staggered, nothing is dropped, and no
+  offset is invented.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections.abc import Callable, Sequence
@@ -129,6 +141,10 @@ def seconds_to_ms(value: Any, end: bool = False) -> int:
        moved, because shifting a start forward deletes when something began.
 
     ``end`` exists only for rule 3, and applies to a null end too.
+
+    The pair this returns is what :func:`project_independent_tier` re-cuts, so the +1 ms display
+    width is already in the endpoints a sweep is built from: a segment's boundaries are always
+    endpoints some row actually owns.
 
     **``None`` becomes 0 here, and that is a converter answer, not an export policy.**
     :func:`interval_ms` — the only time path `build_eaf` takes — refuses a missing endpoint with
@@ -408,6 +424,140 @@ def _id(value: Any) -> str:
     return text if text != EMPTY_TEXT_MARKER else UNKNOWN_DISPLAY
 
 
+# ----------------------------------------------------- independent-tier overlap projection
+
+#: Document property holding the logical intervals behind a tier whose rows overlapped.
+#: Named in :data:`TIER_SEMANTICS` so a reader of the file can find it without the README.
+OVERLAP_PROJECTION_PROPERTY = "pipeline-overlap-projection"
+
+#: Shape/version marker of that property's JSON, so a later re-shaping is visible in the file.
+OVERLAP_PROJECTION_VERSION = 1
+
+#: A segment carrying more than one label is a JSON list, not a delimiter-joined string.
+# A readable delimiter (" · ", already the label's own separator) would be ambiguous the moment
+# a producer's own text contained it — transcripts and Nemotron turns do contain it — so the
+# membership would depend on metadata nobody can check while reading a bar. JSON round-trips any
+# text, including quotes, newlines-as-spaces and Unicode, and `json.loads` recovers the exact
+# member list without a delimiter to disagree about.
+
+
+def intervals_overlap(rows: Sequence[dict[str, Any]]) -> bool:
+    """Does any pair of these already-converted intervals genuinely overlap?
+
+    Half-open, so two rows that merely touch (`[0, 1000)`, `[1000, 2000)`) are not an overlap:
+    ELAN renders them side by side and nothing has to be split. Coincident rows are the narrowest
+    real case (two people sighting in one frame, two TalkNet tracks over one turn) and two rows
+    that rounded onto one pair of time slots land here too.
+
+    Sorts a copy of the pairs and carries the running maximum end, so it is `O(n log n)` on the
+    tier's rows rather than a pass over every pair.
+    """
+    ordered = sorted((int(row["start_ms"]), int(row["end_ms"])) for row in rows)
+    furthest_end = None
+    for start, end in ordered:
+        if furthest_end is not None and start < furthest_end:
+            return True
+        furthest_end = end if furthest_end is None else max(furthest_end, end)
+    return False
+
+
+def project_independent_tier(tier: str, rows: Sequence[dict[str, Any]]
+                             ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Re-cut one tier's rows into the disjoint segments ELAN's independent tiers require.
+
+    Returns ``(rows_to_emit, projection_or_None)``. Every returned dict carries ``value`` — the
+    text to write — and is otherwise the caller's row. A tier with no same-tier overlap is returned
+    **with its rows unchanged and in the builder's own order**, and ``None`` as its metadata:
+    almost every tier in every dataset has no overlap, and rewriting its intervals into a sweep of
+    itself would move bytes for no reason and hide the tiers that really were re-cut.
+
+    When a tier *does* overlap:
+
+    * the boundaries are the rows' own converted millisecond endpoints and nothing else — no grid
+      step, no offset, no rounding pass; consecutive boundaries become half-open segments, and a
+      stretch of the timeline no row covers stays empty rather than being bridged;
+    * a segment's value is the single active row's text when exactly one row is active (so an
+      unaffected annotation keeps the exact label this module always wrote), or a JSON list of
+      every active row's text when several are — see the note on
+      :data:`OVERLAP_PROJECTION_PROPERTY` for why not a delimiter. Every text reaching here has
+      been through :func:`_text`, so no member can carry a newline into the list;
+    * group order is ``(text, source order)``, which is the same list whichever order Parquet
+      returned the rows in. Two rows carrying the same text stay two members: identities are never
+      equated and text is never deduplicated, because two diarizer turns with the same words are
+      two turns;
+    * emitted order is time order. The builders' orders (person ids in the order the clip
+      introduced them) are a property of the *rows*; once rows are re-cut, one row's segment and
+      its neighbour's interleave in time, so no row-level order describes the segments. The
+      logical order survives in the metadata.
+
+    The metadata names each logical row (``<tier>:<position in the tier's own row list>``), its
+    producer ids when the builder supplied them (the row's ``source`` dict — the id columns that
+    tier actually read, never a cross-walk), its interval in the producer's own seconds *and* in
+    milliseconds, its text, and the segments it was cut into — so the union of a row's segments
+    recovers that row's emitted range and the text/ID mapping survives the split even when one
+    source interval is now three bars. Rows dropped upstream for a missing or non-finite timestamp
+    never reach here, so they are neither emitted nor counted.
+
+    The work is one boundary sweep: every row is added at its own start boundary and removed at
+    its own end boundary, so cost is `O(n log n + s)` for `n` rows and `s` segments, never a step
+    over milliseconds.
+    """
+    if not intervals_overlap(rows):
+        return [dict(row, value=row["text"]) for row in rows], None
+
+    points = sorted({int(row["start_ms"]) for row in rows} | {int(row["end_ms"]) for row in rows})
+    position = {point: index for index, point in enumerate(points)}
+    adds: list[list[dict[str, Any]]] = [[] for _ in points]
+    removes: list[list[dict[str, Any]]] = [[] for _ in points]
+    for row in rows:
+        adds[position[int(row["start_ms"])]].append(row)
+        removes[position[int(row["end_ms"])]].append(row)
+
+    emitted: list[dict[str, Any]] = []
+    segments_of: dict[Any, list[list[int]]] = {}
+    active: dict[Any, dict[str, Any]] = {}
+    for index in range(len(points) - 1):
+        # Remove before add: the intervals are half-open, so a row ending on this boundary is not
+        # active in the segment that starts here while a row starting here is. `interval_ms` keeps
+        # every row's converted end at least 1 ms past its start, so no row is added and removed at
+        # the same boundary and this ordering cannot lose one.
+        for row in removes[index]:
+            active.pop(row["_row_id"], None)
+        for row in adds[index]:
+            active[row["_row_id"]] = row
+        start, end = points[index], points[index + 1]
+        if not active:
+            continue
+        members = sorted(active.values(), key=lambda row: (row["text"], row["_row_id"]))
+        if len(members) == 1:
+            value = members[0]["text"]
+        else:
+            # `default=str` covers a producer id of a type json has never seen (a Decimal score, a
+            # date); it cannot change a str/int/float/bool, so the common path is unaffected.
+            value = json.dumps([member["text"] for member in members], ensure_ascii=False,
+                               separators=(",", ":"), default=str)
+        emitted.append({"start_ms": start, "end_ms": end, "value": value})
+        for member in members:
+            segments_of.setdefault(member["_row_id"], []).append([start, end])
+
+    logical = [{
+        "row_id": row["_row_id"],
+        **({"source": row["source"]} if row.get("source") else {}),
+        "start_seconds": row["start"],
+        "end_seconds": row["end"],
+        "start_ms": int(row["start_ms"]),
+        "end_ms": int(row["end_ms"]),
+        "text": row["text"],
+        "segments": segments_of.get(row["_row_id"], []),
+    } for row in rows]
+    projection = {
+        "logical_row_count": len(rows),
+        "final_annotation_count": len(emitted),
+        "logical": logical,
+    }
+    return emitted, {"version": OVERLAP_PROJECTION_VERSION, "tiers": {tier: projection}}
+
+
 # ------------------------------------------------------------------ display vocabulary
 
 #: What "there is no value here" looks like inside a tier label.
@@ -494,6 +644,18 @@ TIER_SEMANTICS: str = (
     "established anywhere here even where the grouping is verified: the detection table records "
     "what was seen and never which frames were looked at, so absence of a sighting is not "
     "evidence that nobody was there. "
+    "Independent tiers: annotations inside one tier may not overlap, and the producers' tables do "
+    "overlap — two people sighted in one frame, two face tracks alive at once, two diarizer turns "
+    "a second apart. Where they do, the emitted intervals are re-cut into the disjoint half-open "
+    "segments of a sweep over those rows' own millisecond endpoints, and each segment carries the "
+    "text of every row active in it: one text as a plain label, several as a JSON list. Those "
+    "segments are a projection of what the tables already said, not new events and not new "
+    "measurements — nothing is staggered, dropped, merged or shifted by an offset, and a tier with "
+    "no overlap is written exactly as its rows were measured. The producers' own intervals, ids, "
+    "texts and segment membership are in the " + OVERLAP_PROJECTION_PROPERTY + " property, which "
+    "lists per affected tier the logical_row_count (rows the tables carried) beside the "
+    "final_annotation_count (annotations this tier emits), because those two numbers are "
+    "different facts and only the second one is what ELAN shows. "
     "Coverage: this document is a summary of the dataset's tables, not every number in them "
     "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement."
 )
@@ -511,12 +673,17 @@ def words_rows(item: TierInput) -> list[dict[str, Any]]:
     a word belongs to, so linking `words` to `segments_src` or `gloss_en` means eyeballing
     timestamps. The row is *not* rendered as a JSON dump of the record — the whole tier has to
     stay scannable, and only these two columns earn a place.
+
+    The ids are also listed under `_id_keys` for the overlap projection's `source` map: this tier
+    reads them, so they are what lets a reader trace a split word back to its row.
     """
     rows = item.sorted_rows(("start_time", "end_time", "word", "word_id", "segment_id",
                              "speaker_id"), "start_time", "end_time")
     return [{"start": row["start_time"], "end": row["end_time"],
              "text": _text(f"{row['word']} · {_id(row['speaker_id'])} · "
-                           f"{_id(row['word_id'])} · [{_id(row['segment_id'])}]")}
+                           f"{_id(row['word_id'])} · [{_id(row['segment_id'])}]"),
+             "_id_keys": ("word_id", SEGMENT_NS, SPEAKER_NS),
+             **{key: row[key] for key in ("word_id", "segment_id", "speaker_id")}}
             for row in rows]
 
 
@@ -533,7 +700,9 @@ def segments_rows(item: TierInput) -> list[dict[str, Any]]:
                             "start_time", "end_time")
     return [{"start": row["start_time"], "end": row["end_time"],
              "text": _text(f"{_id(row['speaker_id'])}: {row['text']} · "
-                           f"[{_id(row['segment_id'])}]")} for row in rows]
+                           f"[{_id(row['segment_id'])}]"),
+             "_id_keys": (SEGMENT_NS, SPEAKER_NS),
+             **{key: row[key] for key in ("segment_id", "speaker_id")}} for row in rows]
 
 
 def translation_rows(item: TierInput) -> list[dict[str, Any]]:
@@ -558,7 +727,9 @@ def translation_rows(item: TierInput) -> list[dict[str, Any]]:
                              "segment_id"), "start_time", "end_time")
     return [{"start": row["start_time"], "end": row["end_time"],
              "text": _text(f"{_id(row['speaker_id'])}: {row['english_text']} · "
-                           f"[{_id(row['segment_id'])}]")} for row in rows]
+                           f"[{_id(row['segment_id'])}]"),
+             "_id_keys": (SEGMENT_NS, SPEAKER_NS),
+             **{key: row[key] for key in ("segment_id", "speaker_id")}} for row in rows]
 
 
 def turn_rows_factory(engine: str) -> Callable[[TierInput], list[dict[str, Any]]]:
@@ -582,7 +753,13 @@ def turn_rows_factory(engine: str) -> Callable[[TierInput], list[dict[str, Any]]
         return [{"start": row["start_time"], "end": row["end_time"],
                  "text": _text(f"speaker {_id(row['speaker_id'])} ({engine}, "
                                f"{_id(row['diarization_type'])}) · "
-                               f"{_id(row['turn_id'])}")}
+                               f"{_id(row['turn_id'])}"),
+                 # The turn tables have no engine column — the tier's own engine *is* the row's
+                 # namespace, so it travels in `source` rather than being guessed from a filename.
+                 "_id_keys": ("turn_id", SPEAKER_NS, ENGINE_NS),
+                 **{key: row[key] for key in ("turn_id", "speaker_id",
+                                              "diarization_type")},
+                 "engine": engine}
                 for row in rows]
 
     return build
@@ -623,7 +800,10 @@ def fusion_rows(item: TierInput) -> list[dict[str, Any]]:
     return [{"start": row["start_time"], "end": row["end_time"],
              "text": _text(f"{row['agreement']}: turn {_id(row['turn_id'])} · turn speaker "
                            f"{_id(row['speaker_id'])} ({_id(row['engine'])}) | face track "
-                           f"{_id(row['face_track_id'])} | {row['agreement_detail']}")}
+                           f"{_id(row['face_track_id'])} | {row['agreement_detail']}"),
+             "_id_keys": ("turn_id", SPEAKER_NS, ENGINE_NS, FACE_TRACK_NS),
+             **{key: row[key] for key in ("turn_id", "speaker_id", "engine",
+                                          "face_track_id", "agreement")}}
             for row in rows]
 
 
@@ -743,7 +923,8 @@ def asd_speaking_rows(item: TierInput) -> list[dict[str, Any]]:
     step = median_positive_step([row["timestamp"] for row in rows])
     stamps = [row["timestamp"] for row in rows]
     labels = [asd_label(row) for row in rows]
-    return [{"start": stamps[first], "end": _shift(stamps[last], step), "text": text}
+    return [{"start": stamps[first], "end": _shift(stamps[last], step), "text": text,
+             "_id_keys": ()}
             for first, last, text in collapse_runs(stamps, labels)]
 
 
@@ -763,7 +944,8 @@ def face_track_rows(item: TierInput) -> list[dict[str, Any]]:
     step = asd_step_from(item.dataset_dir / artifact_path("active_speaker_frames"))
     return [{"start": row["first_timestamp"], "end": _shift(row["last_timestamp"], step),
              "text": _text(f"track {row['track_id']} · {row['active_frame_count']}/"
-                           f"{row['frame_count']} act · mean {_num(row['mean_score'], 3)}")}
+                           f"{row['frame_count']} act · mean {_num(row['mean_score'], 3)}"),
+             "_id_keys": ("track_id",), "track_id": row["track_id"]}
             for row in rows]
 
 
@@ -1050,7 +1232,8 @@ def person_track_rows(item: TierInput) -> list[dict[str, Any]]:
              "text": _text(f"person {row['_person_id']} · {row['_head']} of {row['_total']} · "
                            f"conf {conf} · track coverage {coverage} · "
                            f"max gap reported {gap} · {row['_covered']} · "
-                           f"{row['_marker']}")}
+                           f"{row['_marker']}"),
+             "_id_keys": ("person_id",), "person_id": row["_person_id"]}
             for row in rows
             for conf, coverage, gap in [reported.get(row["_person_id"],
                                                      (UNKNOWN_DISPLAY, UNKNOWN_DISPLAY,
@@ -1096,7 +1279,7 @@ def pose_presence_rows(item: TierInput) -> list[dict[str, Any]]:
                and row["confidence"] is not None
                and float(row["confidence"]) >= POSE_PRESENCE_MIN_CONFIDENCE}
     return [{"start": stamps[first], "end": _shift(stamps[last], step),
-             "text": "body present"}
+             "text": "body present", "_id_keys": ()}
             for first, last, seen in collapse_runs(stamps, [s in present for s in stamps])
             if seen]
 
@@ -1116,7 +1299,7 @@ def voiced_rows(item: TierInput) -> list[dict[str, Any]]:
     stamps = [row["timestamp"] for row in rows]
     flags = [row["f0_hz"] is not None for row in rows]
     return [{"start": stamps[first], "end": _shift(stamps[last], step),
-             "text": "voiced (f0)"}
+             "text": "voiced (f0)", "_id_keys": ()}
             for first, last, voiced in collapse_runs(stamps, flags) if voiced]
 
 
@@ -1319,9 +1502,20 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     are logged, so a tier that dropped half its rows says so in the run output — the difference
     between "this clip has few words" and "the words table has no times in it" stays readable.
 
+    Overlap is resolved **here**, after the two drop rules and never inside a builder: a tier's
+    rows are converted to integer milliseconds, rows with no usable time are dropped and counted,
+    and only then is the tier projected (:func:`project_independent_tier`). That order matters
+    twice over — a row dropped for having no time must not appear in the projection's logical
+    count, and the sweep must run on the same endpoints that are about to be written, or the
+    property would describe intervals the file does not contain. Per-tier isolation is unchanged:
+    a projection rewrites one tier's annotations and touches no other tier, and the two
+    missing/non-finite drop lines still name their own tier.
+
     The tier census is written as a document property, so a reader of the file alone can tell
     "this clip has no person tier because ``persons`` was off" from "the export lost it" —
-    the same argument the manifest makes in JSON.
+    the same argument the manifest makes in JSON. The census counts what was **emitted**; where a
+    tier was projected, its logical row count is a different number and lives in the projection
+    property rather than here.
     """
     from pympi.Elan import Eaf
 
@@ -1329,6 +1523,9 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     eaf = Eaf(author="multimodal-pipeline", suppress_version_warning=True)
     built: dict[str, int] = {}
     skipped: dict[str, str] = {}
+    # Only the tiers that actually had to be re-cut, so the property names the exceptions instead
+    # of restating twelve unaffected tiers.
+    projections: dict[str, Any] = {}
 
     for spec in TIERS:
         relative = artifact_path(spec.artifact)
@@ -1357,7 +1554,8 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
                 # as well as to a label: never merge two states into one printable number.
                 missing_time = 0
                 non_finite = 0
-                for row in rows:
+                placed: list[dict[str, Any]] = []
+                for position, row in enumerate(rows):
                     try:
                         start_ms, end_ms = interval_ms(row["start"], row["end"])
                     except MissingTimestamp:
@@ -1366,8 +1564,24 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
                     except NonFiniteTimestamp:
                         non_finite += 1
                         continue
-                    eaf.add_annotation(spec.tier, start_ms, end_ms, _text(row["text"]))
-                built[spec.tier] = len(rows) - missing_time - non_finite
+                    # `_row_id` keys the projection's membership lists; `source` is the row's own
+                    # producer identity, built from the id columns the builder declared in
+                    # `_id_keys` (never a cross-walk between spaces). Both are metadata: a tier
+                    # that is not projected writes neither into the file, and no builder uses
+                    # either name for its own keys.
+                    placed.append({**row, "start_ms": start_ms, "end_ms": end_ms,
+                                   "text": _text(row["text"]),
+                                   "_row_id": f"{spec.tier}:{position}",
+                                   "source": {key: row[key]
+                                              for key in row.get("_id_keys", ())
+                                              if row.get(key) is not None}})
+                emitted, projection = project_independent_tier(spec.tier, placed)
+                if projection is not None:
+                    projections[spec.tier] = projection["tiers"][spec.tier]
+                for annotation in emitted:
+                    eaf.add_annotation(spec.tier, annotation["start_ms"],
+                                       annotation["end_ms"], annotation["value"])
+                built[spec.tier] = len(emitted)
                 if missing_time:
                     log(f"elan: tier {spec.tier} dropped {missing_time} of {len(rows)} "
                         f"annotation(s) with a missing timestamp (no time is exported rather "
@@ -1388,6 +1602,12 @@ def build_eaf(dataset_dir: Path, video_path: Path, log: Callable[..., None] = pr
     # costs nothing and cannot drift from a clip.
     eaf.add_property("pipeline-tier-semantics", TIER_SEMANTICS)
     eaf.add_property("pipeline-media", f"{media['media_url']} | {media['relative_media_url']}")
+    # Written only when something was re-cut. Compact by construction: one entry per affected
+    # tier, and each logical row carries its segment list rather than a copy of the table.
+    if projections:
+        eaf.add_property(OVERLAP_PROJECTION_PROPERTY, json.dumps(
+            {"version": OVERLAP_PROJECTION_VERSION, "tiers": projections},
+            ensure_ascii=False, separators=(",", ":"), default=str))
     log(f"elan: {len(built)} tier(s), {sum(built.values())} annotation(s) for "
         f"{Path(video_path).name}; skipped {len(skipped)} "
         f"({', '.join(sorted(skipped)) or 'none'})")
@@ -1404,6 +1624,10 @@ def tier_counts(eaf: Any) -> dict[str, int]:
     ``default`` is excluded because it is not one of this module's tiers: pympi creates it for
     every document and nothing writes into it. Leaving it in would report thirteen tiers for
     twelve, and a count off by one is the kind of claim a reader believes.
+
+    These are the **emitted** counts. Where a tier was projected (:func:`overlap_projection`),
+    the number of producer rows behind those annotations is a different number and lives in that
+    property, not here.
     """
     counts: dict[str, int] = {}
     for name, data in eaf.tiers.items():
@@ -1412,3 +1636,20 @@ def tier_counts(eaf: Any) -> dict[str, int]:
         annotations = data[0] if isinstance(data, tuple) else data
         counts[name] = len(annotations)
     return counts
+
+
+def overlap_projection(eaf: Any) -> dict[str, Any]:
+    """The per-tier projection document stored in a built or reopened Eaf (``{}`` if none).
+
+    One reader for the property, so a consumer never parses the JSON by hand and a document
+    written before this rule existed reads as "nothing was projected" rather than a KeyError. The
+    per-tier payload carries ``logical_row_count``, ``final_annotation_count`` and the ``logical``
+    rows (each with its own interval, producer ids, text and segment membership).
+    """
+    raw = dict(eaf.properties).get(OVERLAP_PROJECTION_PROPERTY)
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw).get("tiers", {})
+    except (ValueError, AttributeError):  # a hand-edited property is no projection we can report
+        return {}
