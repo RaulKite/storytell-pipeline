@@ -18,6 +18,20 @@ simultaneous intervals and carrying all active labels/IDs, not dropping or stagg
 This adds B2a to the linked work queue before the new linguistic tiers; GUI playback is still
 unverified. Source: https://www.mpi.nl/tools/elan/docs/manual/Sec_Basic_Information_Annotations_tiers_and_linguistic_types.html.
 
+Closed on the agent side (2026-10-01): seven work units on `feat/elan-basics` — `003b860` identities
+and unavailable-score states, `60e17a0` person sightings without invented continuity, `129d481`
+simultaneous labels on non-overlapping tiers, `4e36ce4` the four linguistic tiers, `8d32211` the
+acoustic segment tier, `032d4fa` the coverage inventory, `1265a0c` reporting coverage/projection
+through the channel `status.json` actually keeps, plus three `docs(odd)` receipts. The seven corpus
+`.eaf` files were refreshed with a full inventory taken before and after: 166 files under `data/`
+changed and none of them a measurement (154 Parquet tables and 42 raw/media files kept their
+SHA256); four files that used to fail `validate` for same-tier overlap now pass, and `validate` is
+ok 7/7. Full unit suite 1851 passed / 8 skipped, e2e 42 passed, pyflakes clean. Still open: the
+operator's own check in ELAN on the laptop (this server has no GUI, so label readability is
+unmeasured), and push/merge, which was never authorized for this follow-up. No commit here carries a
+native review receipt: the review facade reports `package-local-binary-missing`, and each unit was
+verified by a separate agent instead.
+
 
 - Workflow: Gentle-AI ODD (Organic Driven Development)
 - Feature branch: `master` (fresh repo, no upstream) → feature work committed as reviewable work units
