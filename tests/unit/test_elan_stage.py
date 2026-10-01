@@ -110,6 +110,31 @@ class TestStageWiring:
         assert summary["mimetype"] == "video/mp4"
         assert summary["bytes"] == ctx.artifact("elan_annotations").stat().st_size
 
+    def test_the_record_names_the_projected_tiers_with_both_counts(self, stage_config, dataset):
+        """`tier_counts` is what ELAN shows; the record also has to say what it was projected from.
+
+        A reader who compares the record against the table sees 3 annotations for 2 rows and needs
+        the second number in the same record, not only inside the XML. An unprojected dataset
+        reports an empty map rather than omitting the key, so "nothing was re-cut" and "this
+        version never considered re-cutting" stay distinguishable.
+        """
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        from tests.unit.test_elan import _segment_row
+
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        assert stage.run(ctx).detail["provenance"]["extra"]["projected_tiers"] == {}
+
+        _write(SEGMENTS_SCHEMA, dataset["dir"] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 1.0, 3.0, "inner"),
+        ])
+        ctx.scratch.clear()
+        summary = stage.run(ctx).detail["provenance"]["extra"]
+        assert summary["projected_tiers"] == {"segments_src": {"logical_rows": 2, "emitted": 3}}
+        assert summary["tier_counts"]["segments_src"] == 3
+
     def test_no_temporary_file_is_left_behind(self, stage_config, dataset):
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
@@ -290,6 +315,172 @@ class TestStageWiring:
         end = text.index("</TIER>", start) + len("</TIER>")
         path.write_text(text[:start] + text[end:], encoding="utf-8")
         with pytest.raises(ValidationError, match="census are absent"):
+            stage.validate(ctx)
+
+    def test_validate_accepts_a_projected_document(self, stage_config, dataset):
+        """The tiers this export now re-cuts still pass their own validation.
+
+        Two overlapping segments in `segments_src` are the trigger: the emitted document is
+        disjoint by construction, so the new check has to accept it (and accept the extra
+        property) rather than complain about the shape it was written to police.
+        """
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        from tests.unit.test_elan import _segment_row
+
+        _write(SEGMENTS_SCHEMA, dataset["dir"] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 1.0, 3.0, "inner"),
+        ])
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        summary = stage.run(ctx).detail["provenance"]["extra"]
+        assert summary["tier_counts"]["segments_src"] == 3
+        assert stage.validate(ctx)["tiers"] == 6
+
+    @pytest.mark.parametrize("mutation,expected", [
+        # The two segments as written are (0, 1000) and (1000, 2000): legal, touching, half-open.
+        # Each mutation retargets one of those four slots and nothing else.
+        ("second-start-earlier", "overlapping"),   # (0, 1000) + (500, 2000) -> partial overlap
+        ("nested-inside", "overlapping"),          # (0, 2000) + (500, 900) -> wholly inside
+        ("zero-width", "start < end"),             # (1000, 1000) -> no width to select
+        ("reversed", "start < end"),               # (2000, 900) -> negative
+    ])
+    def test_validate_rejects_same_tier_overlap_written_by_hand(self, stage_config, dataset,
+                                                               mutation: str,
+                                                               expected: str) -> None:
+        """The overlap check resolves the XML itself, and does not trust the document's metadata.
+
+        Every case edits `TIME_VALUE`s only. The tier census and `pipeline-overlap-projection` are
+        left exactly as the writer produced them, so a check that consulted either would pass all
+        four — and the metadata is the tempting place to look, because the writer's own account of
+        the tier always says the tier was written correctly. The last two cases exercise the same
+        walk's other rule: `start >= end` is refused even though both slots are fine integers on
+        their own, because an interval with no width (or a negative one) cannot be selected.
+
+        The slots are found by id from the tier's own annotations rather than hardcoded, so this
+        keeps testing the mutation even when pympi's slot numbering changes.
+        """
+        import re
+
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        from tests.unit.test_elan import _segment_row
+
+        _write(SEGMENTS_SCHEMA, dataset["dir"] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "first"),
+            _segment_row("seg-1", 1.0, 2.0, "second"),
+        ])
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        path = ctx.artifact("elan_annotations")
+        text = path.read_text(encoding="utf-8")
+
+        root = ET.fromstring(text)
+        tier = next(element for element in root.iter("TIER")
+                    if element.attrib.get("TIER_ID") == "segments_src")
+        refs = [(element.attrib["TIME_SLOT_REF1"], element.attrib["TIME_SLOT_REF2"])
+                for element in tier.iter("ALIGNABLE_ANNOTATION")]
+        assert refs and len(refs) == 2, refs
+        first_start, first_end = refs[0]
+        second_start, second_end = refs[1]
+
+        def retarget(slot_id: str, value: int) -> None:
+            nonlocal text
+            pattern = (f'TIME_SLOT_ID="{slot_id}" TIME_VALUE="\\d+"')
+            replaced, count = re.subn(pattern, f'TIME_SLOT_ID="{slot_id}" '
+                                      f'TIME_VALUE="{value}"', text)
+            assert count == 1, f"slot {slot_id} not found once in the document"
+            text = replaced
+
+        if mutation == "second-start-earlier":
+            retarget(second_start, 500)
+        elif mutation == "nested-inside":
+            retarget(first_end, 2000)
+            retarget(second_start, 500)
+            retarget(second_end, 900)
+        elif mutation == "zero-width":
+            retarget(second_end, 1000)
+        else:
+            retarget(second_end, 900)
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ValidationError, match="tier segments_src") as raised:
+            stage.validate(ctx)
+        # The message says which rule the file broke, so a reader is not sent looking for the
+        # wrong defect: overlap and an unselectable interval are different repairs.
+        assert expected in str(raised.value), str(raised.value)
+
+    def test_validate_rejects_overlap_even_though_the_projection_property_says_otherwise(
+            self, stage_config, dataset):
+        """Metadata is the writer's account of itself, not evidence about the bars.
+
+        The document here really is projected (`pipeline-overlap-projection` is present and
+        internally consistent), and the edit then re-overlaps one emitted segment while leaving
+        that property and the tier census untouched. A validator that trusted either would call
+        this file fine; ELAN would not open it.
+        """
+        import re
+
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA
+
+        from tests.unit.test_elan import _segment_row
+
+        _write(SEGMENTS_SCHEMA, dataset["dir"] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 1.0, 3.0, "inner"),
+        ])
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        path = ctx.artifact("elan_annotations")
+        text = path.read_text(encoding="utf-8")
+        assert "pipeline-overlap-projection" in text, "fixture is not projected; test vacuous"
+        assert "segments_src=3" in text
+
+        root = ET.fromstring(text)
+        tier = next(element for element in root.iter("TIER")
+                    if element.attrib.get("TIER_ID") == "segments_src")
+        refs = [(element.attrib["TIME_SLOT_REF1"], element.attrib["TIME_SLOT_REF2"])
+                for element in tier.iter("ALIGNABLE_ANNOTATION")]
+        assert len(refs) == 3, refs
+        # Widen the first segment (0, 1000) to (0, 2500): it now covers the second and third.
+        slot = refs[0][1]
+        text, count = re.subn(f'TIME_SLOT_ID="{slot}" TIME_VALUE="\\d+"',
+                              f'TIME_SLOT_ID="{slot}" TIME_VALUE="2500"', text)
+        assert count == 1
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ValidationError) as raised:
+            stage.validate(ctx)
+        assert "overlapping" in str(raised.value)
+
+    def test_validate_allows_touching_annotations_in_one_tier(self, stage_config, dataset):
+        """Half-open neighbours share a boundary; that is the legal case, not an overlap.
+
+        Without this the check would fail every ordinary transcript on the corpus, and the
+        projection's own "touching is not an overlap" rule would have no counterparty on the
+        validation side.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        assert stage.validate(ctx)["tiers"] == 5
+
+    def test_validate_reports_a_time_slot_that_is_not_an_integer(self, stage_config, dataset):
+        """A `TIME_VALUE` that is not an integer is a different failure from a bad interval.
+
+        It is also the one case where nothing can be resolved, so the message has to name the
+        slots rather than silently treating them as zero.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        path = ctx.artifact("elan_annotations")
+        text = path.read_text(encoding="utf-8")
+        text = text.replace('<TIME_SLOT TIME_SLOT_ID="ts3" TIME_VALUE="400" />',
+                            '<TIME_SLOT TIME_SLOT_ID="ts3" TIME_VALUE="four" />')
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ValidationError, match="not integers"):
             stage.validate(ctx)
 
     def test_rerunning_replaces_the_file_rather_than_appending(self, stage_config, dataset):

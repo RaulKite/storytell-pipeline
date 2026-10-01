@@ -501,6 +501,28 @@ def annotations(eaf: Any, tier: str) -> list[tuple[int, int, str]]:
             for start, end, value, _svg in eaf.tiers[tier][0].values()]
 
 
+def logical_rows(eaf: Any, tier: str) -> list[dict[str, Any]]:
+    """A tier's **logical** rows: one per producer row, with its own interval and text.
+
+    For a tier with no same-tier overlap this is the emitted annotation list, in the same order.
+    For a projected tier it comes from `pipeline-overlap-projection`, which is the only place the
+    producers' uncut intervals still exist. A test that wants "one bar per sighting" has to ask
+    the metadata once a tier was re-cut, and asking the emitted annotations instead would make the
+    assertion depend on whether some other producer happened to overlap.
+    """
+    emitted = annotations(eaf, tier)
+    document = projection_of(eaf).get(tier)
+    if document is None:
+        return [{"start_ms": start, "end_ms": end, "text": text}
+                for start, end, text in emitted]
+    return list(document["logical"])
+
+
+def logical_texts(eaf: Any, tier: str) -> list[str]:
+    """Every logical row's text, including the rows a projection merged into a shared segment."""
+    return [row["text"] for row in logical_rows(eaf, tier)]
+
+
 class TestBuildEaf:
     """The twelve tiers, built from real Parquet and read back out of real XML."""
 
@@ -1710,7 +1732,12 @@ class TestAgainstTheCorpus:
         if not video.is_file():
             pytest.skip(f"source video {video} is not on this disk")
         eaf = build_eaf(root, video, log=lambda *a, **k: None)
-        labels = [text for _s, _e, text in annotations(eaf, "person_tracks")]
+        # The **logical** rows: two ids sighted in the same frame overlap, and an ELAN independent
+        # tier cannot hold both, so the emitted annotations are segments carrying both labels. The
+        # grouping this test re-derives is a property of the producers' rows, which is what the
+        # document's projection metadata preserves — one entry per sighting run, at its own
+        # endpoints. Asserting the emitted list here would measure the projection, not the grouping.
+        labels = logical_texts(eaf, "person_tracks")
         runs = [text for text in labels if "sighting run " in text]
         marks = [text for text in labels if "sighting mark " in text]
         # The grouping the tier claims to have used, re-derived here from the source tables.
@@ -2062,11 +2089,13 @@ class TestPersonSightings:
                 _person_frame(1, 1, persons_in_frame=2)]
         _persons(root, rows, [_person_track(1, 0.0, 0.04, 2), _person_track(2, 0.0, 0.0, 1)])
         _frame_index(root, [_frame_row(0, 0.0), _frame_row(1, 0.04)])
-        labels = annotations(eaf_of({"dir": root, "video": video}), "person_tracks")
-        assert [chunk for _s, _e, text in labels
-                for chunk in text.split(" · ")[1:2]] == [
+        # Read from the logical rows, not the emitted bars: the two ids overlap in frame 0, so
+        # the tier projects them and the emitted list is shorter than the sighting history this
+        # test is about. The grouping rule is a property of the rows, projection or not.
+        texts = logical_texts(eaf_of({"dir": root, "video": video}), "person_tracks")
+        assert [text.split(" · ")[1] for text in texts] == [
             "sighting run 2 frames of 2", "sighting mark 1 frame of 1"]
-        assert "track coverage 0.500" in labels[0][2]
+        assert "track coverage 0.500" in texts[0]
 
     def test_the_run_carries_source_coverage_and_the_producers_reported_gap(
             self, tmp_path: Path) -> None:
@@ -2250,3 +2279,641 @@ def person_clip(tmp_path: Path) -> tuple[Path, Path]:
     video.write_bytes(b"stub")
     _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
     return root, video
+
+
+# --------------------------------------------- non-overlapping independent tiers (B2a)
+
+#: The document property that carries the logical intervals a projection split up.
+PROJECTION_PROPERTY = "pipeline-overlap-projection"
+
+
+def _segment_row(segment_id: str, start: float, end: float, text: str) -> dict[str, Any]:
+    """One `speech/segments.parquet` row for the overlap fixtures."""
+    return {"schema_version": "1.0", "video_id": "clip", "segment_id": segment_id,
+            "start_time": start, "end_time": end, "duration": end - start,
+            "language": "en", "speaker_id": "SPEAKER_00", "text": text, "confidence": -0.15}
+
+
+def _clip(tmp_path: Path) -> tuple[Path, Path]:
+    """A dataset directory and a video, with nothing written yet."""
+    root = tmp_path / "processed" / "clip"
+    video_dir = tmp_path / "input_videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    video = video_dir / "clip.mp4"
+    video.write_bytes(b"stub")
+    return root, video
+
+
+def _sweep_boundaries(rows: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Every maximal disjoint segment of a set of intervals, from a boundary sweep.
+
+    Deliberately written a second time, here in the test, on the seconds the fixture was built
+    from and with a different algorithm (sort the endpoints, walk them, carry the active set):
+    the projection in `elan.py` runs on **milliseconds** and re-derives its boundaries from the
+    rounded endpoints, so if the two implementations ever disagree the disagreement is the bug.
+    """
+    points = sorted({value for pair in rows for value in pair})
+    segments: list[tuple[float, float]] = []
+    for earlier, later in zip(points, points[1:]):
+        if any(start <= earlier and later <= end for start, end in rows):
+            segments.append((earlier, later))
+    return segments
+
+
+def projection_of(eaf: Any) -> dict[str, Any]:
+    """The projection document's per-tier map, parsed — `{}` when no tier was affected.
+
+    Absence is the state a clean export is written in (see
+    `test_only_an_affected_tier_appears_in_the_property`), so reading it as an empty dict here
+    keeps the "nothing was re-cut" assertions from depending on whether the key exists. The
+    version marker stays out of the way: this returns the `tiers` map, and the version is asserted
+    separately against the raw property.
+    """
+    raw = dict(eaf.properties).get(PROJECTION_PROPERTY)
+    return json.loads(raw)["tiers"] if raw else {}
+
+
+def projection_version(eaf: Any) -> int:
+    """The shape marker of the projection property."""
+    return json.loads(dict(eaf.properties)[PROJECTION_PROPERTY])["version"]
+
+
+class TestIndependentTierProjection:
+    """Same-tier overlap is illegal in ELAN; the export must project rather than invent.
+
+    The MPI manual states that annotations in one tier may not overlap in time, and pympi never
+    enforced it — neither did this file's own round-trip test, which only ever asked whether the
+    bytes came back. So the tiers built from simultaneous producers (`person_tracks`: two people
+    in one frame; `face_tracks`: two TalkNet tracks alive at once; `asd_speaking`: overlapping
+    runs from a re-scored grid) wrote bars ELAN cannot render, and the pipeline's own tables
+    already show such rows today.
+
+    Three rules the whole class is about:
+
+    * **Nothing is dropped and nothing is staggered.** Every source row keeps its exact measured
+      endpoints in the document's `pipeline-overlap-projection` property; only the *emitted*
+      intervals are re-cut, into disjoint half-open segments built from the source endpoints
+      themselves, each carrying the text of every row active in it.
+    * **A projection is a re-expression, not a new measurement.** A tier with no overlap is
+      byte-identical to what this module wrote before: same intervals, same single-string label,
+      no mention in the property at all.
+    * **Identities are never merged.** Two rows that round to the same millisecond pair stay two
+      source intervals with two ids and two texts, in an order that does not depend on the order
+      Parquet returned them in.
+    """
+
+    # ------------------------------------------------------------- the segments split
+
+    def test_two_sightings_in_one_frame_become_one_segment_holding_both_labels(
+            self, tmp_path: Path) -> None:
+        """The corpus case, made small: two people, one frame, one legal tier.
+
+        Before this change the tier emitted two annotations over the same pair of time slots,
+        which is exactly what an ELAN independent tier may not contain.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        _persons(root, [_person_frame(0, 1), _person_frame(0, 2)],
+                 [_person_track(1, 0.0, 0.0, 1), _person_track(2, 0.0, 0.0, 1)])
+        _frame_index(root, [_frame_row(i, round(i * STEP, 6)) for i in range(3)])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        emitted = annotations(eaf, "person_tracks")
+        assert len(emitted) == 1, emitted
+        start, end, value = emitted[0]
+        assert (start, end) == (0, 1)
+        texts = json.loads(value)
+        assert sorted(texts) == ["person 1 · sighting mark 1 frame of 1 · conf 0.800 · track "
+                                 "coverage 0.500 · max gap reported unknown · covers src frame 0"
+                                 " · source adjacency verified",
+                                 "person 2 · sighting mark 1 frame of 1 · conf 0.800 · track "
+                                 "coverage 0.500 · max gap reported unknown · covers src frame 0"
+                                 " · source adjacency verified"]
+
+    @pytest.mark.parametrize("id_a,id_b", [(0, 1), (1, 0)], ids=["track-0-first", "track-1-first"])
+    def test_coincident_face_tracks_keep_both_texts_in_one_order(
+            self, tmp_path: Path, id_a: int, id_b: int) -> None:
+        """Same interval, two producers: the label is a group, and its order is ours.
+
+        The rows are written in the opposite order for the second parameter, so a label whose
+        order came from Parquet would flip between the two runs and this test would say so.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
+        rows = [{"schema_version": "1.0", "video_id": "clip", "track_id": id,
+                 "first_timestamp": 0.0, "last_timestamp": 0.04, "frame_count": 2,
+                 "active_frame_count": 2, "active_ratio": 1.0, "mean_score": 1.0,
+                 "max_score": 1.0, "scenes": [1], "mean_bbox_area": 100.0}
+                for id in (id_a, id_b)]
+        _write(ACTIVE_SPEAKER_TRACKS_SCHEMA,
+               root / "speaker" / "active_speaker_tracks.parquet", rows)
+        values = [text for _s, _e, text in annotations(eaf_of({"dir": root, "video": video}),
+                                                       "face_tracks")]
+        assert len(values) == 1
+        # Ordered by text, so the second parameter — the same table with its rows reversed —
+        # produces the identical label. That is the point of the parametrization.
+        assert json.loads(values[0]) == sorted([f"track {id_a} · 2/2 act · mean 1.000",
+                                               f"track {id_b} · 2/2 act · mean 1.000"])
+
+    @pytest.mark.parametrize("rows,expected", [
+        # nested: one segment per distinct endpoint pair, outer label alone then both.
+        ([(0.0, 2.0), (0.5, 1.0)], [(0.0, 0.5), (0.5, 1.0), (1.0, 2.0)]),
+        # partial overlap: the intersection is its own segment.
+        ([(0.0, 1.0), (0.5, 1.5)], [(0.0, 0.5), (0.5, 1.0), (1.0, 1.5)]),
+        # coincident: one segment, both labels.
+        ([(0.0, 1.0), (0.0, 1.0)], [(0.0, 1.0)]),
+        # touching: legal, and it stays two annotations — no gap, no merge.
+        ([(0.0, 1.0), (1.0, 2.0)], [(0.0, 1.0), (1.0, 2.0)]),
+        # an interior endpoint that only one row owns must survive as a boundary.
+        ([(0.0, 2.0), (0.5, 2.0)], [(0.0, 0.5), (0.5, 2.0)]),
+    ], ids=["nested", "partial", "coincident", "touching", "shared-end"])
+    def test_the_segments_are_the_sweep_of_the_source_endpoints(
+            self, tmp_path: Path, rows: list[tuple[float, float]],
+            expected: list[tuple[float, float]]) -> None:
+        """Boundaries come from the producers' own endpoints — never an invented offset.
+
+        `expected` is written out per case rather than computed, and the emitted pairs are also
+        compared against an independent sweep, so a projection that rounded a boundary or slid
+        one by a grid step dies twice.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet",
+               [_segment_row(f"seg-{i}", start, end, f"text {i}")
+                for i, (start, end) in enumerate(rows)])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        got = [(start, end) for start, end, _text in annotations(eaf, "segments_src")]
+        assert got == [(int(start * 1000), int(end * 1000)) for start, end in expected]
+        assert got == [(int(a * 1000), int(b * 1000)) for a, b in _sweep_boundaries(rows)]
+        assert not any(next_start < previous_end
+                       for (_s1, previous_end, _t1), (next_start, _s2, _t2) in zip(
+                           annotations(eaf, "segments_src"),
+                           annotations(eaf, "segments_src")[1:]))
+
+    def test_touching_annotations_are_allowed_and_not_merged(self, tmp_path: Path) -> None:
+        """Half-open neighbours share a boundary; that is not an overlap.
+
+        Asserted on its own because the sweep can get this wrong in two opposite ways: merging
+        the pair invents one interval where the producer wrote two, and treating a shared
+        boundary as a collision opens a hole nobody measured.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "first"),
+            _segment_row("seg-1", 1.0, 2.0, "second"),
+        ])
+        got = annotations(eaf_of({"dir": root, "video": video}), "segments_src")
+        assert [(s, e) for s, e, _t in got] == [(0, 1000), (1000, 2000)]
+        assert [t for _s, _e, t in got] == ["SPEAKER_00: first · [seg-0]",
+                                            "SPEAKER_00: second · [seg-1]"]
+        assert projection_of(build_eaf(root, video, log=lambda *a, **k: None)) == {}
+
+    # ------------------------------------------------------------------- the label shape
+
+    def test_a_single_active_label_is_still_a_plain_string(self, tmp_path: Path) -> None:
+        """Where nothing overlapped, the file must be exactly what it was before.
+
+        JSON everywhere would rewrite every tier in the corpus for a rule that only bites on
+        simultaneous rows, and a reviewer would not be able to see which intervals changed.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "hola")])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        assert annotations(eaf, "segments_src") == [(0, 1000, "SPEAKER_00: hola · [seg-0]")]
+        assert projection_of(eaf) == {}
+
+    def test_the_group_label_is_machine_readable_and_names_no_invented_delimiter(
+            self, tmp_path: Path) -> None:
+        """A group is a JSON list, so a label containing the delimiter is not ambiguous.
+
+        The alternative the design considered — joining with a delimiter and listing the members
+        in metadata — has to survive a producer that *writes that delimiter*. JSON survives any
+        text, so that is what the format is.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, 'weird · "quoted" · [seg-9]'),
+            _segment_row("seg-1", 0.5, 1.5, "normal"),
+        ])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        overlap = [t for _s, _e, t in annotations(eaf, "segments_src") if t.startswith("[")]
+        assert len(overlap) == 1
+        members = json.loads(overlap[0])
+        assert len(members) == 2
+        assert any('weird · "quoted" · [seg-9]' in member for member in members)
+        assert any("seg-9" in member for member in members)
+
+    def test_a_single_label_that_looks_like_a_group_stays_a_plain_string(
+            self, tmp_path: Path) -> None:
+        """A producer's text may begin with `[`; that must not be read as a group.
+
+        A lone label is written as the plain text it always was, even inside a projected tier, so a
+        transcript that opens with a bracket (`[inaudible] …`) survives unchanged. Exact membership
+        never depends on guessing from the first character: the property lists the one text of each
+        single-label segment's row.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "[inaudible] 3 words"),
+            _segment_row("seg-1", 0.5, 1.0, "cover"),
+        ])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        emitted = annotations(eaf, "segments_src")
+        assert emitted[0][2] == "SPEAKER_00: [inaudible] 3 words · [seg-0]"
+        json.loads(emitted[1][2])  # the overlapping segment is the only list
+        rows = {row["text"]: row for row in projection_of(eaf)["segments_src"]["logical"]}
+        lone = rows["SPEAKER_00: [inaudible] 3 words · [seg-0]"]
+        # Alone on the first segment, sharing the second — and both memberships are recorded.
+        assert lone["segments"] == [[0, 500], [500, 1000]]
+        assert lone["source"]["segment_id"] == "seg-0"
+
+    def test_unicode_and_whitespace_survive_a_group_label(self, tmp_path: Path) -> None:
+        """The projection must not be where a producer's text finally gets mangled."""
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "  Ñandú — 75%  ·  ¡oye!  "),
+            _segment_row("seg-1", 0.5, 1.0, "😀 你好"),
+        ])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        out = root / "unicode.eaf"
+        eaf.to_file(str(out))
+        from pympi.Elan import Eaf
+
+        reopened = Eaf(str(out), suppress_version_warning=True)
+        group = json.loads([t for _s, _e, t in annotations(reopened, "segments_src")
+                            if t.startswith("[")][0])
+        assert group == ["SPEAKER_00: Ñandú — 75% · ¡oye! · [seg-0]",
+                         "SPEAKER_00: 😀 你好 · [seg-1]"]
+
+    # ------------------------------------------------------- identities are never merged
+
+    def test_two_rows_with_the_same_text_keep_two_ids_in_the_group(self,
+                                                                  tmp_path: Path) -> None:
+        """Deduplicating by text would erase one producer's row.
+
+        Two segments with the same words and different `segment_id`s are two measurements, and
+        the ids are the only thing in the label that says so.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "same words"),
+            _segment_row("seg-1", 0.0, 1.0, "same words"),
+        ])
+        group = json.loads(annotations(eaf_of({"dir": root, "video": video}),
+                                       "segments_src")[0][2])
+        assert group == ["SPEAKER_00: same words · [seg-0]",
+                         "SPEAKER_00: same words · [seg-1]"]
+
+    @pytest.mark.parametrize("order", ["forward", "reversed"],
+                             ids=["forward", "reversed"])
+    def test_the_group_order_does_not_depend_on_the_input_order(
+            self, tmp_path: Path, order: str) -> None:
+        """Determinism: identical tables in, identical bytes out.
+
+        Rows with identical endpoints are the hard case — a producer's file order decides the
+        sort's tie, so a group ordered by the sort would flip its label between two runs of the
+        same data.
+        """
+        rows = [_segment_row("seg-1", 0.0, 1.0, "beta"),
+                _segment_row("seg-0", 0.0, 1.0, "alpha"),
+                _segment_row("seg-2", 0.0, 1.0, "alpha")]
+        if order == "reversed":
+            rows.reverse()
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", rows)
+        group = json.loads(annotations(eaf_of({"dir": root, "video": video}),
+                                       "segments_src")[0][2])
+        assert group == ["SPEAKER_00: alpha · [seg-0]", "SPEAKER_00: alpha · [seg-2]",
+                         "SPEAKER_00: beta · [seg-1]"]
+
+    def test_two_rows_that_round_to_one_interval_stay_two_source_intervals(
+            self, tmp_path: Path) -> None:
+        """The millisecond grid collides sub-millisecond rows; identity and metadata must not.
+
+        ELAN can only store one interval here, so the projection has one *emitted* segment — but
+        it carries both texts and the property records both source intervals, so neither row is
+        lost just because the format is coarse.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 1.2341, 1.2349, "first"),
+            _segment_row("seg-1", 1.2344, 1.2348, "second"),
+        ])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        emitted = annotations(eaf, "segments_src")
+        assert [s for s, _e, _t in emitted] == [1234]
+        assert json.loads(emitted[0][2])[1].startswith("SPEAKER_00: second")
+        logical = projection_of(eaf)["segments_src"]["logical"]
+        assert [(row["start_ms"], row["end_ms"]) for row in logical] == [(1234, 1235),
+                                                                        (1234, 1235)]
+        assert sorted(row["row_id"] for row in logical) == ["segments_src:0", "segments_src:1"]
+
+    # ------------------------------------------------------------------- traceability
+
+    def test_the_property_maps_every_source_interval_and_its_segment_membership(
+            self, tmp_path: Path) -> None:
+        """An interval split across three segments stays one row with three memberships.
+
+        The union of a row's segments has to be the row's own interval — that is what makes the
+        property a *reconstruction* rather than a summary: given it, a reader recovers which
+        producer row said what, and over what range.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 0.5, 1.5, "inner"),
+        ])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        document = projection_of(eaf)["segments_src"]
+        logical = {row["row_id"]: row for row in document["logical"]}
+        assert sorted(logical) == ["segments_src:0", "segments_src:1"]
+        outer = logical["segments_src:0"]
+        assert outer["source"] == {"segment_id": "seg-0", "speaker_id": "SPEAKER_00"}
+        assert outer["start_seconds"] == 0.0 and outer["end_seconds"] == 2.0
+        assert (outer["start_ms"], outer["end_ms"]) == (0, 2000)
+        assert outer["text"] == "SPEAKER_00: outer · [seg-0]"
+        assert outer["segments"] == [[0, 500], [500, 1500], [1500, 2000]]
+        assert logical["segments_src:1"]["segments"] == [[500, 1500]]
+        for row in logical.values():
+            union_start = min(start for start, _e in row["segments"])
+            union_end = max(end for _s, end in row["segments"])
+            assert (union_start, union_end) >= (row["start_ms"], row["end_ms"])
+            assert union_start == row["start_ms"]
+
+    def test_the_projection_counts_final_and_logical_annotations_apart(
+            self, tmp_path: Path) -> None:
+        """Two numbers, two states: what ELAN shows and what the producer wrote.
+
+        One number would have to be either "the tables had 5 rows" (false of the file) or "the
+        file has 3 annotations" (false of the tables), and the census line is quoted as evidence.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 0.5, 1.5, "inner"),
+            _segment_row("seg-2", 3.0, 4.0, "alone"),
+        ])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        document = projection_of(eaf)["segments_src"]
+        assert document["logical_row_count"] == 3
+        assert document["final_annotation_count"] == 4
+        assert len(annotations(eaf, "segments_src")) == 4
+        census = dict(eaf.properties)["pipeline-tiers"]
+        assert "segments_src=4" in census, census
+
+    def test_the_projection_document_carries_a_version_and_survives_the_round_trip(
+            self, tmp_path: Path) -> None:
+        """A reader must be able to tell this shape from whatever replaces it.
+
+        Written, re-read from disk, still valid JSON: a property nobody can reopen is not
+        traceability, and the projection is the only place the producers' own intervals live once
+        a tier has been re-cut.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 0.5, 1.5, "inner")])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        assert projection_version(eaf) == 1
+        out = root / "projection.eaf"
+        eaf.to_file(str(out))
+        ET.parse(out)
+        from pympi.Elan import Eaf
+
+        reopened = Eaf(str(out), suppress_version_warning=True)
+        assert projection_of(reopened) == projection_of(eaf)
+        assert projection_version(reopened) == 1
+        # Every logical row's segments tile its own interval with no internal gap or overlap.
+        for row in projection_of(reopened)["segments_src"]["logical"]:
+            segments = row["segments"]
+            assert segments[0][0] == row["start_ms"]
+            assert segments[-1][1] == row["end_ms"]
+            assert all(segments[i][1] == segments[i + 1][0]
+                       for i in range(len(segments) - 1)), segments
+
+    def test_only_an_affected_tier_appears_in_the_property(self, dataset: dict[str, Path]
+                                                         ) -> None:
+        """The synthetic clip has no same-tier overlap, so it gets no property at all.
+
+        Checked by absence rather than by an empty dict per tier: a document that lists twelve
+        unaffected tiers is a document where a reader cannot see which two were rewritten.
+        """
+        eaf = eaf_of(dataset)
+        assert PROJECTION_PROPERTY not in dict(eaf.properties)
+        assert projection_of(eaf) == {}
+
+    def test_the_semantics_property_explains_the_projection_as_reexpression(
+            self, tmp_path: Path) -> None:
+        """A reader of the file alone must not take a segment for a new event.
+
+        The property names the rule it enforces, says the segments are not new measurements, and
+        points at the property holding the producers' own intervals.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "a"), _segment_row("seg-1", 0.5, 1.5, "b")])
+        text = dict(eaf_of({"dir": root, "video": video}).properties)["pipeline-tier-semantics"]
+        clause = text[text.index("Independent tiers:"):]
+        assert "may not overlap" in clause
+        assert "not new" in clause and "measurement" in clause
+        assert PROJECTION_PROPERTY in clause
+        assert "logical_row_count" in clause and "final_annotation_count" in clause
+
+    def test_a_dropped_row_is_not_counted_in_the_logical_rows(self, tmp_path: Path) -> None:
+        """The two drop rules stay independent: a row with no time never reaches the sweep.
+
+        It is not a projection artefact and must not inflate `logical_row_count` — the count has
+        to reconcile against the tier's own rows, or the property is unverifiable.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("hello", 0.0, 0.4), _word("no-time", 1.0, None)])
+        lines: list[str] = []
+        eaf = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert len(annotations(eaf, "words")) == 1
+        assert [line for line in lines if "words" in line and "missing timestamp" in line]
+        assert PROJECTION_PROPERTY not in dict(eaf.properties)
+        assert dict(eaf.properties)["pipeline-tiers"] == "words=1"
+
+    # -------------------------------------------------- the sweep against a second oracle
+
+    @pytest.mark.parametrize("rows", [
+        [(0.0, 1.0), (0.2, 0.4), (0.9, 1.4)],
+        [(0.0, 0.3), (0.3, 0.6), (0.6, 0.9)],
+        [(1.0, 2.0), (0.0, 3.0), (0.5, 1.5), (2.5, 2.75)],
+        [(0.0, 1.0), (0.0, 0.5), (0.5, 1.0)],
+        [(2.0, 3.0), (0.0, 0.5)],
+    ], ids=["nested-three", "chain-touching", "crossing", "split-at-half", "disjoint"])
+    def test_no_emitted_interval_of_a_tier_overlaps_any_other(self, tmp_path: Path,
+                                                             rows: list[tuple[float, float]]
+                                                             ) -> None:
+        """Brute force over the pairs, plus an independently swept boundary set.
+
+        This is the check the format demands and the one pympi cannot do: pairwise disjointness
+        of the emitted pairs, with touching allowed, over shapes no hand-written case covers.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet",
+               [_segment_row(f"seg-{i}", start, end, f"t{i}")
+                for i, (start, end) in enumerate(rows)])
+        emitted = annotations(eaf_of({"dir": root, "video": video}), "segments_src")
+        pairs = sorted((start, end) for start, end, _t in emitted)
+        assert all(pairs[i][1] <= pairs[i + 1][0] for i in range(len(pairs) - 1)), pairs
+        assert [s for s, _e in pairs] == sorted({s for s, _e in pairs})
+        # Every source endpoint survives as some emitted boundary.
+        boundaries = {value for pair in pairs for value in pair}
+        for start, end in rows:
+            assert int(start * 1000) in boundaries, (start, end, pairs)
+            assert int(end * 1000) in boundaries or int(end * 1000) == int(start * 1000) + 1
+        # ... and every source row is represented somewhere in the labels.
+        joined = " ".join(t for _s, _e, t in emitted)
+        for i, (_start, _end) in enumerate(rows):
+            assert f"[seg-{i}]" in joined
+        assert pairs == [(int(a * 1000), int(b * 1000)) for a, b in _sweep_boundaries(rows)]
+
+    def test_a_projected_tier_leaves_every_other_tier_alone(self, tmp_path: Path) -> None:
+        """Per-tier isolation survives the projection.
+
+        `segments_src` overlaps and is re-cut; `words` does not overlap and must come out with the
+        intervals, labels and *order* it always had, and must not appear in the property at all.
+        A projection that bled across tiers would re-time the transcript of every clip that has two
+        speakers, which is the failure an analyst would notice last and trust first.
+        """
+        root, video = _clip(tmp_path)
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [
+            _word("hello", 0.0, 0.4), _word("there", 0.4, 0.6)])
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 2.0, "outer"),
+            _segment_row("seg-1", 0.5, 1.5, "inner")])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        assert projection_of(eaf)["segments_src"]["final_annotation_count"] == 3
+        assert list(projection_of(eaf)) == ["segments_src"]
+        assert annotations(eaf, "words") == [
+            (0, 400, "hello · SPEAKER_00 · w-0.0 · [seg-0]"),
+            (400, 600, "there · SPEAKER_00 · w-0.4 · [seg-0]")]
+
+    def test_rows_written_out_of_time_order_project_to_the_same_document(
+            self, tmp_path: Path) -> None:
+        """The tier's rows come from a sort; the projection must not depend on that sort's ties.
+
+        Two rows with identical endpoints are the case a sort cannot order (both key to the same
+        tuple), so the group order is decided by the projection's own tie-break. Written here in
+        reverse table order and compared against the forward case's expected label, this dies if
+        the group ever inherits Parquet's row order.
+        """
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-1", 0.5, 1.0, "inner"),
+            _segment_row("seg-0", 0.0, 1.0, "outer")])
+        eaf = build_eaf(root, video, log=lambda *a, **k: None)
+        emitted = annotations(eaf, "segments_src")
+        assert [(s, e) for s, e, _t in emitted] == [(0, 500), (500, 1000)]
+        assert emitted[0][2] == "SPEAKER_00: outer · [seg-0]"
+        assert json.loads(emitted[1][2]) == ["SPEAKER_00: inner · [seg-1]",
+                                             "SPEAKER_00: outer · [seg-0]"]
+        # ... and the same document the forward-ordered table produces, row for row.
+        forward = _clip(tmp_path.parent / "forward")
+        _write(SEGMENTS_SCHEMA, forward[0] / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "outer"),
+            _segment_row("seg-1", 0.5, 1.0, "inner")])
+        other = build_eaf(forward[0], forward[1], log=lambda *a, **k: None)
+        assert projection_of(other) == projection_of(eaf)
+        assert annotations(other, "segments_src") == emitted
+
+    def test_a_reopened_document_reads_its_projection_through_the_shared_reader(
+            self, tmp_path: Path) -> None:
+        """Consumers get one reader, and a document without the property reads as "nothing".
+
+        A legacy .eaf — non-overlapping, so it carries no property at all — must be readable by the
+        same call that reads a projected one: absence is the compatible state the rule was designed
+        to leave alone, not an error and not an empty dict that has to be special-cased.
+        """
+        from pympi.Elan import Eaf
+
+        from multimodal_pipeline.elan import overlap_projection
+
+        root, video = _clip(tmp_path)
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "first")])
+        legacy = build_eaf(root, video, log=lambda *a, **k: None)
+        assert overlap_projection(legacy) == {}
+        out = root / "legacy.eaf"
+        legacy.to_file(str(out))
+        assert overlap_projection(Eaf(str(out), suppress_version_warning=True)) == {}
+
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet", [
+            _segment_row("seg-0", 0.0, 1.0, "first"),
+            _segment_row("seg-1", 0.5, 1.5, "second")])
+        projected = build_eaf(root, video, log=lambda *a, **k: None)
+        projected.to_file(str(out))
+        reopened = Eaf(str(out), suppress_version_warning=True)
+        document = overlap_projection(reopened)["segments_src"]
+        assert document["logical_row_count"] == 2
+        assert document["final_annotation_count"] == 3
+        assert [row["source"]["segment_id"] for row in document["logical"]] == ["seg-0", "seg-1"]
+
+    def test_the_corpus_projection_maps_back_to_the_producers_rows(self) -> None:
+        """The traceability claim, tested on the tables that motivated it.
+
+        For every dataset on this disk, each logical `person_tracks` row has to name a `person_id`
+        the frames table reports and an interval equal to that id's own sighting endpoints —
+        re-derived here from `persons/frames.parquet`, without calling the tier. That is the check
+        that says the property reconstructs the source mapping, rather than merely describing the
+        bars it was generated with.
+        """
+        checked = 0
+        for root in sorted(p for p in PROCESSED.iterdir()
+                           if (p / "manifest.json").is_file()):
+            frames_path = root / ARTIFACT_LAYOUT["person_frames"]
+            if not frames_path.is_file():
+                continue
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            video = Path(manifest["source"]["path"])
+            if not video.is_file():
+                continue
+            eaf = build_eaf(root, video, log=lambda *a, **k: None)
+            document = projection_of(eaf).get("person_tracks")
+            if document is None:
+                continue
+            rows = read_table(frames_path,
+                              columns=["person_id", "timestamp"]).to_pylist()
+            endpoints: dict[int, list[float]] = {}
+            for row in rows:
+                if row["person_id"] is None or row["timestamp"] is None:
+                    continue
+                endpoints.setdefault(int(row["person_id"]), []).append(float(row["timestamp"]))
+            logical = document["logical"]
+            assert document["logical_row_count"] == len(logical)
+            assert document["final_annotation_count"] == len(annotations(eaf, "person_tracks"))
+            for entry in logical:
+                person_id = entry["source"]["person_id"]
+                stamps = endpoints.get(person_id)
+                assert stamps, f"{root.name}: projected row for unknown id {person_id}"
+                # The tier's logical row is one sighting run: its endpoints are measurements taken
+                # from this id's own timestamps, never an invented or grid-extended value.
+                assert entry["start_seconds"] in stamps, (root.name, entry)
+                assert entry["end_seconds"] in stamps, (root.name, entry)
+                assert entry["start_ms"] <= entry["end_ms"]
+                assert entry["segments"], (root.name, entry)
+                checked += 1
+        assert checked, "no projected person tier found on this disk; the loop proved nothing"
+
+    def test_the_corpus_export_emits_no_same_tier_overlap(self) -> None:
+        """The rule is measured on the real tables, where simultaneous rows already exist.
+
+        Two people in one frame and two TalkNet tracks alive at once are not hypothetical here:
+        `persons/frames.parquet` and the ASD tracks table carry them on this disk.
+        """
+        for name in sorted(p.name for p in PROCESSED.glob("*") if (p / "manifest.json").is_file()):
+            root = PROCESSED / name
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            video = Path(manifest["source"]["path"])
+            if not video.is_file():
+                continue
+            eaf = build_eaf(root, video, log=lambda *a, **k: None)
+            for tier, (annotations_of_tier, _ref, _dict, _type) in eaf.tiers.items():
+                if tier == "default":
+                    continue
+                pairs = sorted((int(eaf.timeslots[start]), int(eaf.timeslots[end]))
+                               for start, end, _v, _svg in annotations_of_tier.values())
+                assert all(pairs[i][1] <= pairs[i + 1][0]
+                           for i in range(len(pairs) - 1)), f"{name}/{tier}: {pairs}"

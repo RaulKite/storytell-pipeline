@@ -33,7 +33,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from ..elan import ALL_INPUTS, SECONDARY_INPUTS, TIERS, build_eaf, tier_counts
+from ..elan import (ALL_INPUTS, SECONDARY_INPUTS, TIERS, build_eaf, overlap_projection,
+                    tier_counts)
 from ..exceptions import ValidationError
 from .base import Stage, StageContext
 
@@ -166,6 +167,12 @@ class ElanStage(Stage):
         dataset_dir = ctx.paths.dataset_dir
         eaf = build_eaf(dataset_dir, video_path, log=ctx.log)
         counts = tier_counts(eaf)
+        # The tier counts in this record are what ELAN shows. Where a tier was re-cut, the number
+        # of producer rows behind it is different, and a reader comparing `tier_counts` against a
+        # table's row count would otherwise conclude rows went missing. So the projected tiers are
+        # named with both numbers, read back out of the document rather than accumulated in memory:
+        # what the record reports is what the file carries.
+        projection = overlap_projection(eaf)
         descriptor = eaf.media_descriptors[0] if eaf.media_descriptors else {}
         summary: dict[str, Any] = {
             "tiers": len(counts),
@@ -174,6 +181,9 @@ class ElanStage(Stage):
             # Named in the record, not only in the log: "this dataset has no person tier" should
             # be answerable from status.json without opening the .eaf.
             "skipped_tiers": [spec.tier for spec in TIERS if spec.tier not in counts],
+            "projected_tiers": {tier: {"logical_rows": document["logical_row_count"],
+                                       "emitted": document["final_annotation_count"]}
+                                for tier, document in sorted(projection.items())},
             "media_url": descriptor.get("MEDIA_URL"),
             "relative_media_url": descriptor.get("RELATIVE_MEDIA_URL"),
             "mimetype": descriptor.get("MIME_TYPE"),
@@ -239,7 +249,15 @@ class ElanStage(Stage):
 
         What is checked is openability and self-consistency, the two things a reader notices and
         the file cannot report from outside: ELAN refusing to parse it, a linked video it cannot
-        find, a tier lost to a truncation that left well-formed XML behind.
+        find, a tier lost to a truncation that left well-formed XML behind, and — since the export
+        began projecting simultaneous rows — same-tier overlap and unselectable intervals.
+
+        Because ``validate`` is also the reuse gate (:func:`outputs_present` and the rerun check in
+        ``stages.base`` both call it), a document written before the projection rule fails and is
+        sent back through ``execute``. That is the intended consequence: a file ELAN cannot lay out
+        is not a reusable result, and the rerun is a two-second, pure-python re-export of tables
+        that have not changed. It does mean the corpus ``.eaf`` files still on disk report overlap
+        until they are regenerated — measured, four of the seven on this machine.
         """
         path = ctx.artifact("elan_annotations")
         if not path.is_file():
@@ -279,6 +297,7 @@ class ElanStage(Stage):
         else:
             issues.extend(self._check_media(ctx, descriptors[0], eaf_dir=path.parent))
         issues.extend(self._check_census(root, tiers))
+        issues.extend(self._check_independent_tiers(root, path.name))
         if issues:
             raise ValidationError(self.name, issues)
         return {"tiers": len(tiers), "media_descriptors": len(descriptors),
@@ -326,6 +345,88 @@ class ElanStage(Stage):
                               "was written for another source")
         if relative and not (eaf_dir / relative).resolve().exists():
             issues.append(f"linked media is not reachable from {eaf_dir.name}/: {relative}")
+        return issues
+
+    @staticmethod
+    def _check_independent_tiers(root: Any, name: str) -> list[str]:
+        """No two annotations in one tier may overlap, and every interval must be well-formed.
+
+        ELAN tiers are *independent*: two annotations in the same tier sharing an instant is a
+        document ELAN refuses to lay out, and pympi neither writes that away nor reads it back as
+        an error — it is exactly the state the export now projects away. Checking it here is what
+        makes the rule a validated property rather than a hope: a hand-edited file, an export
+        written by an older build, or a future builder that bypassed the projection is caught by
+        ``validate`` instead of by whoever next opens ELAN.
+
+        Deliberately resolved from the XML rather than through pympi or the document's own
+        properties. :meth:`_check_census` reads a property this stage wrote, so it re-asks the file
+        a question the writer already answered; this check reads only ``TIME_SLOT`` values and each
+        ``ALIGNABLE_ANNOTATION``'s own ``TIME_SLOT_REF1``/``TIME_SLOT_REF2``, and does **not**
+        consult ``pipeline-overlap-projection``. A metadata block that says "these were split
+        correctly" is not evidence about the bars, and the failure worth catching is an edit that
+        broke the intervals and left the property intact. ``REF_ANNOTATION`` carries no slots of its
+        own and this export writes none — every tier here is alignable — so skipping it closes
+        nothing.
+
+        Three bound rules come free with the walk, each reported as its own message because each is
+        its own way for a file to be wrong: a ``TIME_VALUE`` that is not an integer, a slot
+        reference that names no slot, and an interval that is negative or empty (``start >= end``
+        cannot be selected in ELAN, however sane each slot looks on its own). Touching intervals
+        (``[0, 1000)`` then ``[1000, 2000)``) are legal and are not reported.
+        """
+        slots: dict[str, int] = {}
+        bad_slots: list[str] = []
+        for element in root.iter("TIME_SLOT"):
+            slot_id = element.attrib.get("TIME_SLOT_ID")
+            # EAF writes the millisecond as an attribute (`TIME_VALUE="400"`), not as element text;
+            # a missing attribute is read as "not an integer" rather than as 0, because a slot with
+            # no value has no claim about when and must not silently become second zero.
+            raw = (element.attrib.get("TIME_VALUE") or "").strip()
+            try:
+                slots[slot_id] = int(raw)
+            except ValueError:
+                bad_slots.append(f"{slot_id}={raw!r}")
+        if bad_slots:
+            return [f"{name} has {len(bad_slots)} TIME_SLOT value(s) that are not integers: "
+                    f"{', '.join(bad_slots[:5])}"]
+
+        issues: list[str] = []
+        for tier in root.iter("TIER"):
+            tier_id = tier.attrib.get("TIER_ID")
+            if tier_id == "default":
+                continue
+            pairs: list[tuple[int, int]] = []
+            dangling = 0
+            for annotation in tier.iter("ALIGNABLE_ANNOTATION"):
+                start = annotation.attrib.get("TIME_SLOT_REF1")
+                end = annotation.attrib.get("TIME_SLOT_REF2")
+                if start not in slots or end not in slots:
+                    dangling += 1
+                    continue
+                pairs.append((slots[start], slots[end]))
+            if dangling:
+                issues.append(f"{name}: tier {tier_id} has {dangling} annotation(s) whose "
+                              "time-slot reference names no TIME_SLOT in the document")
+            malformed = sorted(pair for pair in pairs if pair[0] < 0 or pair[0] >= pair[1])
+            if malformed:
+                issues.append(f"{name}: tier {tier_id} has {len(malformed)} annotation(s) "
+                              f"outside ELAN's rule start < end (e.g. {malformed[:3]})")
+            # Sorted by start with a running furthest end, so the scan is linear and a *nested*
+            # pair — an earlier annotation ending after a later one starts — still counts as the
+            # overlap it is. Touching is excluded by the strict `<`.
+            pairs.sort()
+            overlaps: list[tuple[tuple[int, int], tuple[int, int]]] = []
+            furthest: tuple[int, int] | None = None
+            for pair in pairs:
+                if furthest is not None and pair[0] < furthest[1]:
+                    overlaps.append((furthest, pair))
+                if furthest is None or pair[1] > furthest[1]:
+                    furthest = pair
+            if overlaps:
+                issues.append(
+                    f"{name}: tier {tier_id} has {len(overlaps)} overlapping annotation "
+                    f"pair(s) — an ELAN tier is independent and cannot hold them "
+                    f"(e.g. {overlaps[:3]}); rerun elan")
         return issues
 
     @staticmethod

@@ -1,44 +1,37 @@
 # ELAN basics
 
-## Intent
+## Intent and constraints
 
-Authorized: truthful existing summaries, honest person sightings, four SpaCy tiers, acoustic segment statistics, coverage and verification. Detailed pose/landmarks and dense acoustic numeric tracks are deferred. Source measurements and unrelated untracked `scripts/make_elan_view.py` stay unchanged.
+Authorized: truthful summaries/person sightings, four SpaCy tiers, acoustic segment statistics and coverage/verification. Detailed pose/landmarks/dense numeric tracks are deferred. Preserve original measurements and unrelated untracked `scripts/make_elan_view.py`.
 
-Branch: `feat/elan-basics`; base/checkpoint `ca6e161` / `checkpoint/elan-basics-ca6e161`. No push, merge, external installation or producer rerun authorized here. Master assumptions: `odd/tasks/multimodal-video-pipeline.md`, ELAN follow-up.
+Branch `feat/elan-basics`; base/checkpoint `ca6e161` / `checkpoint/elan-basics-ca6e161`. No push/merge/external install/producer rerun. Master assumptions: `odd/tasks/multimodal-video-pipeline.md`, ELAN follow-up.
 
 ## Decisions
 
-- Retain existing tier IDs/order (including `gloss_en`); add new tiers. English gloss is segment translation, never token alignment.
-- Audio engine speaker IDs and YOLO person IDs are separate from TalkNet tracks; fusion face_track_id references the SAME TalkNet track_id.
-- Unknown/null/nonfinite measurements are not zero. Negative ASD is about the selected face, not global silence. Both imputed verdicts retain provenance.
-- Persons files contain detections, not a complete sampled grid. Use only proven source-frame adjacency; otherwise isolated sightings with coverage unknown. Never infer stride via median timestamps. Stored longest_gap_seconds is elapsed sighting separation, not exclusively absence.
-- English tokens/sentences without independent times use explicitly labeled segment context. No fabricated alignment.
-- Coverage separates treatment, availability and outcome; valid XML does not establish complete coverage.
-- Official MPI ELAN manual, independent tiers (stereotype None): two annotations cannot overlap. Add B2a before new tiers: partition overlapping intervals into disjoint segments carrying ALL active labels/IDs. Do not stagger times or discard simultaneous events. Source: https://www.mpi.nl/tools/elan/docs/manual/Sec_Basic_Information_Annotations_tiers_and_linguistic_types.html (retrieved during implementation).
-- No changes to producers, schemas, artifact paths, operator config, environments or raw/input data.
-- Strict TDD not configured in inspected settings; ordinary functional verification plus observed failing cases/mutations. Runner: `uv run --with pytest pytest ... -q -p no:randomly`.
-- CLI review mode is on(default), contrary to AGENTS prose. Facade assess/inspect failed package-local-binary-missing; no lineage or native receipt. Do not install outside repo or alter switch. Independent verification is required.
-- Delivery: reversible feature-branch chain of five work units, no PR. Initial forecast 1,200–1,800 authored lines; B1 alone measured 1,260 including tracking. B2 plus corrections also exceeds the initial unit forecast; B2a adds format conformance. Forecast revised to 4,000–5,000; 400/unit advisory, not a reason to omit tests. No review or delivery claim from size.
+- Retain existing tier IDs/order; `gloss_en` is segment translation, not word gloss. Add new tiers.
+- Audio engine speakers and YOLO persons are separate namespaces; fusion face_track_id references the SAME TalkNet track_id.
+- Unknown is not zero. Negative ASD concerns the selected face, not global silence; both imputed states retain provenance. Untimed rows are dropped and counted, not placed at zero.
+- Detection-only person tables do not establish a sampled grid. Group only proven source-frame/PTS adjacency; otherwise isolated marks, coverage unknown. Do not infer stride or extend by stride. Display reported elapsed sighting separation, never call it time absent. Person intervals retain measured endpoints; 1ms singleton width is a display minimum.
+- Untimed English tokens/sentences use labeled enclosing-segment context; no fabricated alignment.
+- Official ELAN independent tiers cannot overlap. B2a partitions intervals carrying ALL active labels/IDs and retains logical intervals in metadata; no staggering/discarding. Source: https://www.mpi.nl/tools/elan/docs/manual/Sec_Basic_Information_Annotations_tiers_and_linguistic_types.html (retrieved during implementation). XML/pympi alone did not enforce this.
+- Coverage separates treatment/availability/outcome, not a completeness boolean. No producer/schema/artifact/config/environment/raw/input changes.
+- Strict TDD not configured; ordinary functional checks plus observed failing cases/mutations. Runner `uv run --with pytest pytest ... -q -p no:randomly`. Independent verification may disable cache using `PYTHONDONTWRITEBYTECODE=1` and `-p no:cacheprovider`; normal fixture temp writes allowed.
+- CLI native review on(default), contrary to AGENTS prose. Facade assess/inspect unavailable (`package-local-binary-missing`), no lineage/receipt. Preserve switch, do not install externally; require independent verification.
+- Delivery: six coherent feature-branch units, no PR. Initial forecast 1,200–1,800 exceeded; revised 4,000–5,000. 400/unit advisory, never omit tests/minify. Measured running authored lines 2,910 after B2, including tracking.
 
-## Tasks
+## Tasks and evidence
 
-- [x] B1 Correct labels/unknown states. Delegated writer (multi-file) plus independent verifier. Commit `003b86038353911c9dadb4f5a9d9be511439194a`.
-- [ ] B2 Honest person intervals and explicit secondary-input fingerprints. Delegated writer; IN PROGRESS.
-- [ ] B2a ELAN-compatible non-overlapping flat tiers with lossless simultaneous-label representation. Delegated writer plus independent verifier; newly added after official-format constraint discovery.
-- [ ] B3 Four SpaCy tiers and transparent timing context. Delegated writer.
-- [ ] B4 Acoustic segment summaries with units/unknown states. Delegated writer.
-- [ ] B5 Coverage/validation, full checks, regenerated corpus EAFs and docs. Delegated writer plus independent verifier.
+- [x] B1 Correct labels/unknown states. Delegated multi-file writer + independent verifier. `003b86038353911c9dadb4f5a9d9be511439194a`: 197 focused passed, pyflakes clean, 1613 collected, temporary reopened EAF counts 50/37/90/95; 86 protected hashes unchanged. Observed baseline/mutations. Native review unavailable.
+- [x] B2 Honest sighting intervals/secondary fingerprints/missing-time refusal. Delegated writer + independent verifier. `60e17a02e8a7e3a22bbda6463c550a5009556daa`: 237 focused passed independently (cache disabled), 1653 collected, pyflakes clean. Real person10 split source112–114 /144–239; 92 protected hashes unchanged. Temp null times dropped, valid siblings retained; reported999 preserved; no-index isolated marks. Worker pre-correction full suite1637 passed/8skipped and e2e42passed; closure suite still pending. No native review.
+- [ ] B2a Non-overlapping independent tiers retaining simultaneous labels/logical intervals. Delegated writer + independent verifier. IN PROGRESS.
+- [ ] B3 Four SpaCy tiers with transparent timing context. Delegated writer.
+- [ ] B4 Acoustic segment summaries/units/unknown states. Delegated writer.
+- [ ] B5 Coverage/validation/full checks/corpus EAF refresh/docs. Delegated writer + independent verifier.
 
-## Evidence
+## Checks and recovery
 
-B1: 197 focused tests passed independently; pyflakes clean; 1613 unit tests collected. Baseline and mutations exposed unknown-to-zero and unscored-to-negative states; follow-up cases exposed null speakers, false namespaces, negative imputation and engine omission. Temporary reopened EAFs on KABC/CNN/La-1/person_demo: 50/37/90/95 annotations. 86 protected source/input hashes unchanged. Native review unavailable, not approved.
+Per unit: focused trio `tests/unit/test_elan.py tests/unit/test_elan_stage.py tests/unit/test_readme_claims.py`, measured collection ratchet, scoped pyflakes, temp EAF/schema probes. Important logic must have observed failing cases. No source-table writes.
 
-B2 mapping: raw `frames` contains detections only, parameters has no vid_stride or complete measurement grid. Persons frame_number/PTS matches source frame index exactly for four corpus clips; La-1 source frames 2 and 73 have no detection rows. Proven source adjacency may split runs without inference. Full suite and corpus regeneration pending.
+Closure: full unit+e2e suite, pyflakes src/workers/tests/scripts, corpus validate, all seven reopened EAF links/counts/semantic fidelity/nonoverlap. Snapshot derived outputs and hash original tables before authorized ELAN-only refresh. No laptop GUI claim.
 
-## Checks and rollback
-
-Per-unit focused trio: `uv run --with pytest pytest tests/unit/test_elan.py tests/unit/test_elan_stage.py tests/unit/test_readme_claims.py -q -p no:randomly`; measured collection ratchet and pyflakes. Temp EAF/schema probes allowed, no source changes.
-
-Closure: full unit+e2e suite, pyflakes src/workers/tests/scripts, corpus validate, all seven reopened EAFs/media/counts and independent semantic comparisons. Snapshot derived outputs and hash original tables before authorized ELAN-only refresh. No laptop GUI verification claim. Original measurement hashes must remain identical.
-
-Rollback each work-unit commit without unrelated changes; retain pre-refresh EAF copies. Running authored lines: 1,260 after B1. Next: B2 implementation using verified source adjacency.
+Rollback each work-unit commit independently; retain pre-refresh EAF snapshots. Next: B2a format conformance, then linguistic tiers. Current corpus EAFs still historical/stale; no refresh yet.
