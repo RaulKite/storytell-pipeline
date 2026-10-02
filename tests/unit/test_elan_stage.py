@@ -711,7 +711,7 @@ class TestConfigAndRegistry:
 
     def test_the_export_is_a_manifest_artifact(self) -> None:
         assert "elan_annotations" in MANIFEST_ARTIFACTS
-        assert len(MANIFEST_ARTIFACTS) == 44
+        assert len(MANIFEST_ARTIFACTS) == 46
 
     def test_the_registered_path_lives_in_its_own_directory(self) -> None:
         assert ARTIFACT_LAYOUT["elan_annotations"] == "elan/annotations.eaf"
@@ -950,7 +950,7 @@ class TestRecordReportsWhatWasLeftOut:
         summary = record_of(stage, ctx)
         assert summary["dropped_rows"] == {}
         assert summary["projected_tiers"] == {}
-        assert len(summary["coverage"]) == 22
+        assert len(summary["coverage"]) == 23
 
 
 class TestValidateChecksCoverageAgainstTheDocument:
@@ -1265,10 +1265,10 @@ class TestValidateChecksCoverageAgainstTheDocument:
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
         summary = record_of(stage, ctx)
-        assert len(summary["coverage"]) == 22, "the inventory stopped covering the 22 tables"
+        assert len(summary["coverage"]) == 23, "the inventory stopped covering the 23 tables"
         monkeypatch.setitem(artifacts_module.ARTIFACT_LAYOUT, "eye_gaze", "gaze/eye.parquet")
         assert len([key for key, relative in artifacts_module.ARTIFACT_LAYOUT.items()
-                    if relative.endswith(".parquet")]) == 23
+                    if relative.endswith(".parquet")]) == 24
         assert stage.validate(ctx)["tiers"] == 5
 
     @pytest.mark.parametrize("bad_tier", [

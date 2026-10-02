@@ -345,6 +345,80 @@ class TranslationConfig(_Model):
         )
 
 
+class StoriesConfig(_Model):
+    """Narrative-window detection over the transcript, with the translation endpoint (§20.3 / T16).
+
+    Its own section even though it defaults to the same endpoint, because it has its own
+    prompt version, its own batching and its own retry budget: a prompt change for story
+    detection must not invalidate every translation, and vice versa. "The same LLM as
+    translation" is therefore the *no-config* answer (the shipped example points both at
+    ``${LITELLM_*}``) rather than a shared object that couples the two fingerprints.
+
+    ``max_segments_per_request`` is the limit that makes a long transcript honest. The
+    design does not window silently: a story whose evidence is not entirely inside one
+    window is dropped *and counted* (``dropped_outside_window``), so a clipped answer is a
+    recorded gap rather than a story that never existed.
+    """
+
+    enabled: bool = True
+    provider: str = "openai-compatible"
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    temperature: float = 0.0
+    timeout_seconds: float = 120.0
+    max_retries: int = 3
+    backoff_base_seconds: float = 1.0
+    prompt_version: str = "v1"
+    max_output_tokens: int | None = None
+    cache: bool = True
+    #: Segments in one window. 60 is a cost decision measured on this corpus: a 1-4
+    #: segment clip costs ~600 prompt tokens, so a minute of transcript is one affordable
+    #: request. Lower it for denser transcripts at the price of more requests.
+    max_segments_per_request: int = 60
+    #: Neighbouring segments shown as CONTEXT. Larger than translation's 2 because a
+    #: narrative boundary often sits just outside the window being judged.
+    context_segments: int = 5
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider")
+    @classmethod
+    def _provider(cls, value: str) -> str:
+        if value not in {"openai-compatible", "mock"}:
+            raise ValueError("stories.provider must be 'openai-compatible' or 'mock'")
+        return value
+
+    @field_validator("max_segments_per_request")
+    @classmethod
+    def _window(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                "stories.max_segments_per_request must be >= 1: it is how many segments "
+                "travel in one window, and 0 would send no transcript at all"
+            )
+        return value
+
+    @property
+    def endpoint_configured(self) -> bool:
+        """Whether an endpoint is actually reachable with this configuration.
+
+        Mirrors :attr:`TranslationConfig.endpoint_configured` including the placeholder
+        refusal: a config copied from an example with ``your_api_key`` in it must skip
+        honestly rather than send a request that will be rejected, and the stage turns a
+        false here into a skip reason naming the three keys to set.
+        """
+        if self.provider == "mock":
+            return True
+        host = self.base_url.lower().replace("http://", "").replace("https://", "")
+        return (
+            "litellm_host" not in host
+            and bool(self.base_url.strip())
+            and "your_api_key" not in self.api_key.lower()
+            and bool(self.model.strip())
+            and self.api_key.strip().lower() not in PLACEHOLDER_VALUES
+        )
+
+
 class SpacyConfig(_Model):
     enabled: bool = True
     uv_project: Path = Path("environments/spacy")
@@ -915,6 +989,7 @@ class PipelineConfig(_Model):
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     diarization_nemotron: DiarizationNemotronConfig = Field(default_factory=DiarizationNemotronConfig)
     translation: TranslationConfig = Field(default_factory=TranslationConfig)
+    stories: StoriesConfig = Field(default_factory=StoriesConfig)
     spacy: SpacyConfig = Field(default_factory=SpacyConfig)
     acoustic: AcousticConfig = Field(default_factory=AcousticConfig)
     openpose: OpenPoseConfig = Field(default_factory=OpenPoseConfig)
@@ -937,6 +1012,11 @@ class PipelineConfig(_Model):
             "diarization": self.diarization,
             "diarization_nemotron": self.diarization_nemotron,
             "translation": self.translation,
+            # No `uv_project` (it is an HTTP call, not a worker), so neither `tools.json`'s
+            # uv_projects walk nor the CLI's missing-environment warning sees it. Listed
+            # because a section with its own config should be reachable from the mapping
+            # the CLI and provenance walk.
+            "stories": self.stories,
             "spacy": self.spacy,
             "acoustic": self.acoustic,
             "openpose": self.openpose,

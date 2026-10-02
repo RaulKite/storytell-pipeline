@@ -480,19 +480,25 @@ class TestWorkedExampleMatchesTheManifest:
     """
 
     def test_the_artifact_count_it_quotes_is_the_manifest_key_count(self) -> None:
-        # The registry declares 44 manifest candidates; exactly one is opt-in
+        # The registry declares 46 manifest candidates; exactly one is opt-in
         # (`pose_images_raw`, gated on `openpose.write_images`), and the README's corpus
         # sentence says every dataset on this disk lists the remaining 43. The old shape of
         # this test hardcoded a `never_produced` set of seven; a full batch run turned that
         # set into fiction, which is why the prose guard below now parses the sentence and
         # re-checks it against every manifest instead of trusting a constant. The ELAN export
-        # moved the number 43 -> 44, and this constant moving *with* the registry is the
+        # moved the number 43 -> 44, and the stories stage moved it 44 -> 46 (its normalised
+        # table plus its raw directory — both newer than every run on this disk, so no
+        # manifest lists them yet). This constant moving *with* the registry is the
         # whole design: a stage added without the prose being re-checked dies here.
+        # The prose itself is re-checked by the two tests below, and both now report the
+        # README stale rather than letting the registry grow unnoticed.
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
 
-        assert len(MANIFEST_ARTIFACTS) == 44
+        assert len(MANIFEST_ARTIFACTS) == 46
         assert "pose_images_raw" in MANIFEST_ARTIFACTS
         assert "elan_annotations" in MANIFEST_ARTIFACTS
+        assert "stories" in MANIFEST_ARTIFACTS
+        assert "stories_raw" in MANIFEST_ARTIFACTS
 
     def test_the_corpus_counts_the_prose_states_match_the_manifests_on_disk(self) -> None:
         """The README states per-dataset artifact counts for *this* machine's corpus, in two
@@ -520,36 +526,40 @@ class TestWorkedExampleMatchesTheManifest:
         # so it runs everywhere — the corpus is gitignored, and a guard that skipped with it
         # would guard nothing on a fresh clone or CI (advisory R3-corpus-skip).
         stated_corpus = re.search(
-            r"so all (\w+) now list \*\*(\d+)\*\*\s*\n?artifacts and declare\s*\n?"
-            r"the same one absence", README)
+            r"five of the seven datasets list \*\*(\d+)\*\* artifacts with that one "
+            r"absence,\s*\n?while `person_demo` and `pipeline_silent` list "
+            r"\*\*(\d+)\*\* and declare\s*\n?three", README)
         stated_stages = re.search(
-            r"Why (\d+) stages and (\d+) artifacts when the registry declares (\d+) keys", README)
+            r"Why (\d+) stages and (\d+) artifacts when the registry declares "
+            r"(\d+) manifest keys", README)
         assert stated_corpus and stated_stages, (
             "the corpus-count sentences the README makes about this machine changed shape; "
             "re-point this test at them instead of deleting the check")
-        words = {"seven": 7, "six": 6, "eight": 8}
-        n_total = words.get(stated_corpus.group(1).lower())
-        n_count = int(stated_corpus.group(2))
+        n_uniform, n_speechless = (int(stated_corpus.group(i)) for i in (1, 2))
         n_stages, n_stated_count, n_registry = (int(stated_stages.group(i)) for i in (1, 2, 3))
-        assert n_total and n_count, (
+        assert n_uniform and n_speechless, (
             f"unparsed number in: {stated_corpus.group(0)!r}")
 
         # The prose has to add up on its own terms before disk or code is consulted. The
-        # count appears twice (corpus sentence and stage sentence) and must agree with
-        # itself; the registry total is the per-dataset count plus the one opt-in absence;
-        # and the stage number is STAGE_ORDER's length, not a remembered number. The only
-        # comparison against the registry constant is the one that says the declared 43 is
-        # the registry's (advisory R3-rerun-upper-bound's lesson: derive bounds from the
-        # prose, consult the constant once).
+        # uniform count appears twice (corpus sentence and stage sentence) and must agree
+        # with itself; the registry total is the uniform count plus the one opt-in
+        # absence every dataset declares; the speechless pair's count is the uniform one
+        # minus exactly the two stories artifacts a no-speech dataset cannot produce; and
+        # the stage number is STAGE_ORDER's length, not a remembered number (advisory
+        # R3-rerun-upper-bound's lesson: derive bounds from the prose, consult the
+        # constant once).
         from multimodal_pipeline.artifacts import MANIFEST_ARTIFACTS
         from multimodal_pipeline.stages.base import STAGE_ORDER
 
-        assert n_count == n_stated_count, (
+        assert n_uniform == n_stated_count, (
             f"the README states the per-dataset count twice and disagrees with itself: "
-            f"{n_stated_count} vs {n_count}")
-        assert n_count + 1 == n_registry, (
-            f"the prose says {n_count} listed per dataset against {n_registry} registry "
+            f"{n_stated_count} vs {n_uniform}")
+        assert n_uniform + 1 == n_registry, (
+            f"the prose says {n_uniform} listed per dataset against {n_registry} registry "
             "keys, which only adds up if exactly one artifact is the declared opt-in absence")
+        assert n_uniform - 2 == n_speechless, (
+            f"the prose says the two no-speech datasets list {n_speechless}, not the "
+            f"uniform {n_uniform} minus exactly the two stories artifacts")
         assert n_registry == len(MANIFEST_ARTIFACTS), (
             f"the prose says the registry declares {n_registry}; "
             f"MANIFEST_ARTIFACTS has {len(MANIFEST_ARTIFACTS)}")
@@ -558,20 +568,30 @@ class TestWorkedExampleMatchesTheManifest:
         if len(manifests) < 2:
             pytest.skip("byte-level half needs the corpus under data/processed/")
 
-        # 2. What the bytes say.
+        # 2. What the bytes say. The prose no longer claims uniformity — it names which
+        # datasets are the speechless minority — so the byte half asserts the partition
+        # exactly: five datasets at the uniform count declaring only the opt-in absence,
+        # the two named no-speech datasets declaring that plus the two stories artifacts.
         docs = {p.parent.name: json.loads(p.read_text()) for p in manifests}
-        assert len(docs) == n_total, (
-            f"the prose says {n_total} datasets on this disk; {len(docs)} manifests found")
-        # The prose claims uniformity: every dataset lists n_count artifacts and declares
-        # exactly one absence, and that absence is the opt-in renderings.
+        assert len(docs) == 7, (
+            f"the prose counts seven datasets on this disk; {len(docs)} manifests found")
+        SPEECHLESS = {"person_demo", "pipeline_silent"}
         for name, doc in sorted(docs.items()):
-            assert len(doc["artifacts"]) == n_count, (
-                f"the prose says all {n_total} datasets list {n_count} artifacts; "
-                f"{name} lists {len(doc['artifacts'])}")
-            assert set(doc["artifacts_not_generated"]) == {"pose_images_raw"}, (
-                f"the prose says every dataset declares the same one absence "
-                f"(pose_images_raw); {name} declares "
-                f"{sorted(doc['artifacts_not_generated'])}")
+            declared = set(doc["artifacts_not_generated"])
+            if name in SPEECHLESS:
+                assert len(doc["artifacts"]) == n_speechless, (
+                    f"the prose says {name} lists {n_speechless} artifacts; "
+                    f"it lists {len(doc['artifacts'])}")
+                assert declared == {"pose_images_raw", "stories", "stories_raw"}, (
+                    f"the prose says the no-speech datasets declare exactly three "
+                    f"absences; {name} declares {sorted(declared)}")
+            else:
+                assert len(doc["artifacts"]) == n_uniform, (
+                    f"the prose says five datasets list {n_uniform} artifacts; "
+                    f"{name} lists {len(doc['artifacts'])}")
+                assert declared == {"pose_images_raw"}, (
+                    f"the prose says datasets with speech declare only pose_images_raw; "
+                    f"{name} declares {sorted(declared)}")
         # 3. The opt-in gate the prose names is the config default, not a wish.
         import inspect
 
@@ -608,9 +628,13 @@ class TestWorkedExampleMatchesTheManifest:
             key for key in MANIFEST_ARTIFACTS
             if all(key not in d["artifacts"] for d in docs.values())
         }
+        # `stories` and `stories_raw` left this set on 2026-10-01, when a corpus run
+        # produced them for every dataset with speech. What NO dataset lists is now just
+        # the opt-in rendering. A stage present in five datasets and absent in two is a
+        # partition the byte half above guards; this guard is about what no dataset has.
         assert absent == {"pose_images_raw"}, (
-            f"the guard's promise was that exactly the opt-in renderings are absent "
-            f"everywhere; disk disagrees: {sorted(absent)}")
+            f"the guard's promise was that exactly the opt-in renderings are absent from "
+            f"every dataset on this disk; disk disagrees: {sorted(absent)}")
         absent_paths = {ARTIFACT_LAYOUT[key] for key in absent}
         section = README[README.index("### One dataset, file by file"):]
         section = section[:section.index("### How to consume it")]

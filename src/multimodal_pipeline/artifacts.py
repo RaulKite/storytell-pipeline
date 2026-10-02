@@ -34,6 +34,11 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "speaker_turns_nemotron": "speech/speaker_turns_nemotron.parquet",
     "translation_raw": "translation/raw",
     "translation_segments": "translation/segments_en.parquet",
+    # Narrative windows (T16). Its own directory rather than a `translation/` sibling:
+    # the table answers a question no other table asks, and a reader looking for the
+    # LLM's story verdict should not find it filed under the thing that only translates.
+    "stories": "stories/stories.parquet",
+    "stories_raw": "stories/raw",
     "spacy_source_raw": "linguistic/source/raw/spacy_source.json",
     "spacy_english_raw": "linguistic/english/raw/spacy_english.json",
     "spacy_source_tokens": "linguistic/source/tokens.parquet",
@@ -106,6 +111,9 @@ STAGE_LOG_NAMES = (
     # at, even though it reads the video rather than the audio or the speaker tables.
     "persons",
     "speaker_fusion",
+    # Own log like every stage. It runs no worker (one HTTP call per window), but its skip
+    # reasons and its per-window drop counts need a file to point at.
+    "stories",
     # Own log like every stage. It runs no worker, but its skip reasons and its per-tier
     # census need a file to point at, and `set(STAGE_LOG_NAMES) == set(STAGE_ORDER)` is
     # asserted by three existing tests.
@@ -159,6 +167,10 @@ class VideoPaths:
             "audio",
             "speech/raw",
             "translation/raw",
+            # The stories stage's table and its preserved raw responses. Declared like
+            # translation/raw so `ensure_dirs` keeps its promise that a stage's directory
+            # exists before it writes into it; an empty stories/raw is not an artifact.
+            "stories/raw",
             "linguistic/source/raw",
             "linguistic/english/raw",
             "acoustic/raw",

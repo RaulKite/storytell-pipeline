@@ -712,9 +712,21 @@ POSE_DENSE_TRACK_REASON = (
     "and the pose tier (`pose_presence`) blocks over pose/body.parquet's timestamps and "
     "confidences alone, so these joints' coordinates stay in the Parquet table")
 
+STORIES_TABLE_REASON = (
+    "narrative-level claims are not represented by this export: no tier reads this table, "
+    "and no existing tier represents a stretch of speech as a story — the transcript tiers "
+    "(`segments_src`, `words`) block over individual segments' own rows and never group them, "
+    "so a story's span and its `why_it_is_a_story` have no bar to reach")
+
 TIER_ABSENT_REASONS: dict[str, str] = {
     "pose_hands": POSE_DENSE_TRACK_REASON,
     "pose_face": POSE_DENSE_TRACK_REASON,
+    # `stories` arrives here the same way the pose tables do: the file is a normalised
+    # Parquet table, the export writes no tier from it, and an unmapped entry would print
+    # COVERAGE_REASON_UNKNOWN — which reads as "nobody thought about this table" when the
+    # truth is a decision. Naming the tier level that is missing (narrative grouping) is
+    # the falsifiable half: a tier that started grouping segments would make this false.
+    "stories": STORIES_TABLE_REASON,
     "pose_normalized": (
         "dense per-joint numeric tracks are not represented by this export, and this table is a "
         "change of basis over the same BODY_25 keypoints the pose tier already blocks over — "
