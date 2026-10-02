@@ -1123,3 +1123,130 @@ class TestFailurePropagation:
             client.detect(request_for(SEGMENTS))
         assert "sk-secret-123456" not in str(excinfo.value)
         assert "sk-secret-123456" not in str(excinfo.value.details)
+
+
+class TestTheCacheKeyBindsWhatActuallyChangesTheAnswer:
+    """The independent verifier falsified the key's promise (finding 1, HIGH).
+
+    `key()`'s docstring claims "an endpoint, model or prompt change produces a different
+    key". Measured on a temporary corpus: changing the endpoint, or editing the prompt
+    source, left the request key unchanged, so a forced rerun reported
+    `batches_reused: 1` and the client was never called again — the table kept the old
+    endpoint's answers. The stage fingerprint did move in both cases (it hashes
+    base_url and the module source), which is why only a forced rerun, or a moved
+    cache directory, reaches the stale cache — the narrowness is real and the broken
+    promise is equally real. These tests bind the key to both.
+    """
+
+    def test_the_request_key_changes_when_the_endpoint_changes(self) -> None:
+        first = request_for(SEGMENTS, endpoint="https://one.example/v1")
+        second = request_for(SEGMENTS, endpoint="https://two.example/v1")
+        assert first.key() != second.key()
+
+    def test_the_request_key_changes_when_the_prompt_text_changes(
+            self, monkeypatch) -> None:
+        before = request_for(SEGMENTS).key()
+        monkeypatch.setitem(PROMPTS, "v1", PROMPTS["v1"] + "\nAsk politely.")
+        after = request_for(SEGMENTS).key()
+        assert before != after, (
+            "the key ignored the prompt it will actually render, so a prompt edit "
+            "reuses the old prompt's answers when the cache is reachable")
+
+    def test_a_forced_rerun_after_an_endpoint_change_calls_the_client_again(
+            self, context) -> None:
+        # The verifier's exact reproduction, one level up: same context, second
+        # execution, base_url moved. Before the fix: batches_reused 1, calls 1 total.
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        context.config.stories.base_url = "https://one.example/v1"
+        client = FakeClient([envelope(story_payload()), envelope(story_payload())])
+        first = run_stage(context, client)
+        assert first["batches_reused"] == 0
+        context.config.stories.base_url = "https://two.example/v1"
+        stage = StoriesStage()
+        stage._client = lambda _ctx: client  # type: ignore[method-assign]
+        outcome = stage.run(context)
+        assert outcome.status == "completed", outcome.message
+        second = outcome.detail["provenance"]["extra"]
+        assert second["batches_reused"] == 0, (
+            "the endpoint moved but the old window was reused: the table now claims "
+            "the new endpoint produced answers the old one gave")
+        assert client.request_count == 2
+
+
+class TestStoryIdsAreNormalizedBeforeAnythingCitesThem:
+    """Finding 2 (MEDIUM): the validator stripped ids, serialization did not.
+
+    `story_id: " s1 "` validated (stripped for the duplicate check) and then the row
+    writer used the padded original, so a child citing `"s1"` was published pointing at
+    `w0-s1` while its parent carried `w0- s1 ` — an orphan the validator had sworn did
+    not exist. The normalization therefore moves to where the entry is built, before
+    parent resolution and before rows.
+    """
+
+    def test_a_padded_story_id_is_normalized_and_children_still_link(self) -> None:
+        payload = {"stories": [story_payload(story_id=" s1 "),
+                               story_payload(story_id="s2", parent_id="s1")]}
+        stories, dropped = validate_stories(payload, request_for(SEGMENTS))
+        assert dropped == []
+        by_id = {row["story_id"]: row["parent_id"] for row in stories}
+        assert sorted(by_id) == ["w0-s1", "w0-s2"]
+        assert by_id["w0-s2"] == "w0-s1", (
+            f"child lost its parent across whitespace: {by_id}")
+
+    def test_an_id_that_only_differs_in_whitespace_is_a_duplicate(self) -> None:
+        payload = {"stories": [story_payload(story_id="s1"), story_payload(story_id=" s1 ")]}
+        with pytest.raises(ValidationError, match="duplicate"):
+            validate_stories(payload, request_for(SEGMENTS))
+
+
+class TestACacheEntryMustDescribeItselfConsistently:
+    """Finding 3 (MEDIUM): a cache file whose content contradicts its payload.
+
+    Reuse re-validated the payload — so no invented id could reach the table (the
+    verifier confirmed this) — but `_ensure_raw` happily restored the *content* string,
+    so a tampered cache could publish a raw window file citing evidence the table does
+    not carry. An entry that does not agree with itself is not evidence of anything: it
+    is refetched, not half-trusted.
+    """
+
+    def test_a_cache_whose_content_cites_an_invented_id_is_not_reused(
+            self, context) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(story_payload())]))
+        cache_files = list((context.artifact("stories_raw") / "cache").glob("*.json"))
+        assert len(cache_files) == 1
+        entry = json.loads(cache_files[0].read_text())
+        tampered = json.loads(entry["content"])
+        tampered["stories"][0]["evidence_segment_ids"] = ["seg999999"]
+        entry["content"] = json.dumps(tampered)
+        cache_files[0].write_text(json.dumps(entry))
+        # Delete the raw file so a reuse would have to restore it from the poisoned entry.
+        for raw in context.artifact("stories_raw").glob("window_*.json"):
+            raw.unlink()
+        client = FakeClient([envelope(story_payload())])
+        extra = run_stage(context, client)
+        assert client.request_count == 1, (
+            "the poisoned entry was reused instead of refetched")
+        assert extra["batches_reused"] == 0
+        restored = list(context.artifact("stories_raw").glob("window_*.json"))
+        assert restored and "seg999999" not in restored[0].read_text()
+
+
+class TestAFabricatedParentIsABreachEvenForADroppedStory:
+    """Finding 4 (LOW): the reject/drop line leaked a fabricated reference.
+
+    A story dropped for anchoring outside the window skipped the parent check entirely,
+    so an answer citing parent `"not-in-answer"` was counted as a gap when it describes
+    a story nobody answered. The accepted-entry rule (breach) now applies to dropped
+    entries too; a parent that IS in the answer but was itself dropped remains the
+    counted propagation the deviation-1 tests guard.
+    """
+
+    def test_a_dropped_story_with_a_parent_nobody_answered_is_a_breach(self) -> None:
+        request = request_for(SEGMENTS, max_segments_per_request=2, context_segments=1)
+        payload = {"stories": [story_payload(evidence_segment_ids=["seg000003"],
+                                             parent_id="not-in-answer")]}
+        with pytest.raises(ValidationError, match="not-in-answer"):
+            validate_stories(payload, request)

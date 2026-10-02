@@ -131,3 +131,54 @@ fabricated-boundary refusal is tested with genuinely fake times (4.444).
 ## Log
 
 - 2026-10-01 probe run, numbers above; raw responses `/tmp/stories-probe/*.json`.
+
+## S16c: independent verification of `9f39903` and the fixes it forced (2026-10-02)
+
+The verifier (gentle-ai-verify, read-only, /tmp-only writes) confirmed the suites (1949/8
+unit, 42 e2e, pyflakes clean), the rejection guards (no escaping TypeError on any of its
+malformed inputs), the corpus facts (KABC 1 row w0-s1 [0.071,4.051] conf 0.9; CNN/La-1 0
+rows with reasons; both speechless datasets skipped with reason; 0 key hits across 20
+stories files), raw/table agreement on KABC, and fingerprint coverage of transcript and
+prompt source. It falsified two claims and found two more defects; all four were
+reproduced by the parent before any fix, with the parent's own probes:
+
+1. **HIGH — cache key ignored endpoint and prompt text** while the key's own docstring
+   promised they mattered. Forced reruns after an endpoint or prompt-text change reused
+   the stale window (`batches_reused: 1`, 0 client calls). Fix: `key()` now hashes the
+   rendered template's SHA256 and `base_url` (as `StoriesRequest.endpoint`). Red-first
+   tests including the verifier's exact one-level-up reproduction. Mutation-checked:
+   removing either field kills its named test.
+2. **MEDIUM — validator stripped ids, `_row` did not**: `" s1 "` validated and published
+   `w0- s1 ` while its child cited `w0-s1` — a validator-guaranteed orphan. Fix: the row
+   now uses the stripped entry key validation already computed. Mutation restores the
+   raw field and kills two tests.
+3. **MEDIUM — a cache entry whose `content` contradicts its `payload` was half-trusted**:
+   the payload re-validated (no invented id could reach the table — the verifier verified
+   that) but `_ensure_raw` restored the tampered response text as the raw window file.
+   Fix: reuse requires `parse_stories_response(content) == payload` or refetch.
+4. **LOW — a dropped story could carry a parent nobody answered**, skipping the breach
+   check accepted entries got. Fix: fabricated parents breach for every entry, dropped
+   included; a parent that IS in the answer but was dropped stays the counted propagation
+   (deviation 1's tests still pass).
+
+Claim 5's "all 18 stages valid" was the verifier being right and the parent's plan being
+stale: the code fix changed the stories fingerprint → finalization/elan correctly went
+stale *before the fix reruns*. After this commit's rerun chain (stories → elan, 5 real
+endpoint calls again because the key legitimately changed), `status --plan` reports
+"valid previous result" for all 18 stages × 7 datasets, and validate is ok 7/7 — the
+false claim now dies against a re-measured disk instead of a remembered plan.
+
+Side effects recorded honestly: each corpus dataset now keeps BOTH raw window files (the
+pre-fix key's and the post-fix key's) — the old file is the original bytes of the answers
+the first run published; deleting them would erase raw evidence, so they stay. The
+speechless datasets carry empty `stories/raw/` directories (created by `ensure_dirs`
+before `enabled()` skipped the stage) — cosmetic, not in any manifest.
+
+Whole-session integrity of the verifier's own run: its first harness lost its in-memory
+baseline (authorized; it declared UNCERTAIN rather than hiding). The parent took an
+independent confirmation snapshot after the report: **0 differences across all 2098
+files** against `/tmp/stories-verify-final-ga9b2xmu/final_snapshot.json`, so no mutation
+occurred from its final snapshot to the parent's check.
+
+Suite after fixes: 1963 collected, 1955 passed / 8 skipped; e2e 42; pyflakes clean; every
+rejection fix mutation-checked (M1-M5, M5's revert kills the named test).

@@ -25,6 +25,7 @@ HTTP by the same OpenAI-compatible endpoint translation already uses.
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import time
 from dataclasses import dataclass, field
@@ -111,6 +112,11 @@ class StoriesRequest:
     model: str = ""
     temperature: float = 0.0
     max_output_tokens: int | None = None
+    #: Which endpoint this window is addressed to. Part of the key because the answer
+    #: is that endpoint's opinion: moving base_url while the model name stays a LiteLLM
+    #: alias ("chat") is exactly the change that alters the answer and changes nothing
+    #: else in the request (independent verification of 9f39903, finding 1).
+    endpoint: str = ""
 
     @property
     def requested_ids(self) -> list[str]:
@@ -136,12 +142,17 @@ class StoriesRequest:
                 .replace("{requested}", _render(self.requested)))
 
     def key(self) -> str:
-        """Request digest: prompt + model + temperature + exactly what was shown.
+        """Request digest: prompt + endpoint + model + temperature + exactly what was shown.
 
-        Same contract as translation's: an endpoint, model or prompt change produces a
-        different key, so a completed window is never reused across a change that would
-        have changed the answer.
+        The docstring is a contract, not decoration, and an independent verifier proved
+        it was broken: with only `prompt_version` inside, editing the *text* of the v1
+        prompt left the key identical, so a forced rerun re-read the old prompt's
+        answers. The rendered template's own hash binds the promise now, and `endpoint`
+        binds where the question goes — together with the stage fingerprint (which
+        already hashes both), no reachable path reuses an answer across a change that
+        would have changed it.
         """
+        template = PROMPTS.get(self.prompt_version, "")
         return stable_hash({
             "video_id": self.video_id,
             "window_index": self.window_index,
@@ -158,6 +169,8 @@ class StoriesRequest:
                        float(turn["start_time"]), float(turn["end_time"])]
                       for turn in self.turns],
             "prompt_version": self.prompt_version,
+            "prompt_text_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
+            "endpoint": self.endpoint,
             "model": self.model,
             "temperature": self.temperature,
             "max_output_tokens": self.max_output_tokens,
@@ -189,7 +202,8 @@ def build_requests(segments: Sequence[dict[str, Any]], *, video_id: str,
                    max_segments_per_request: int, context_segments: int,
                    prompt_version: str, model: str, temperature: float,
                    max_output_tokens: int | None,
-                   turns: Sequence[dict[str, Any]] | None = None) -> list[StoriesRequest]:
+                   turns: Sequence[dict[str, Any]] | None = None,
+                   endpoint: str = "") -> list[StoriesRequest]:
     """Split a transcript into start-ordered windows, each with neighbouring context.
 
     Windows partition the transcript (they do not overlap): overlapping *requests* would
@@ -223,6 +237,7 @@ def build_requests(segments: Sequence[dict[str, Any]], *, video_id: str,
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            endpoint=endpoint,
         ))
     return requests
 
@@ -375,6 +390,18 @@ def validate_stories(payload: dict[str, Any], request: StoriesRequest, *,
     accepted_entries = [(story_id, story) for story_id, story in entries
                         if story_id not in dropped_ids]
     accepted_ids = {story_id for story_id, _story in accepted_entries}
+    # A fabricated parent name is a breach wherever the child ended up, accepted or
+    # dropped: the row or the drop record would both cite a story no part of this answer
+    # claims. Only a parent that IS in the answer can legitimately be missing from this
+    # window (propagated drop above). Independent verification of 9f39903, finding 4:
+    # this check used to run for accepted entries only, so a dropped child slipped past
+    # it pointing at a name nobody answered.
+    entry_ids = {story_id for story_id, _story in entries}
+    for story_id, story in entries:
+        parent = _parent_id(story)
+        if parent is not None and parent not in entry_ids:
+            raise ValidationError(stage, [f"{story_id}: parent_id {parent!r} is not a story "
+                                          f"of this answer"])
     for story_id, story in accepted_entries:
         parent = _parent_id(story)
         if parent is None:
@@ -395,7 +422,7 @@ def validate_stories(payload: dict[str, Any], request: StoriesRequest, *,
             ancestors.add(cursor)
             cursor = _parent_of(accepted_entries, cursor)
 
-    rows = [_row(story, request) for _id, story in accepted_entries]
+    rows = [_row(story, request, story_id) for story_id, _story in accepted_entries]
     return rows, dropped
 
 
@@ -434,9 +461,16 @@ def _number(value: Any) -> float | None:
     return None
 
 
-def _row(story: dict[str, Any], request: StoriesRequest) -> dict[str, Any]:
-    """A validated story as one table row, with window-namespaced ids."""
-    model_id = str(story["story_id"])
+def _row(story: dict[str, Any], request: StoriesRequest, model_id: str) -> dict[str, Any]:
+    """A validated story as one table row, with window-namespaced ids.
+
+    ``model_id`` is the entry key validation built — whitespace-stripped — not the raw
+    ``story_id`` field. The independent verifier (finding 2) showed why: the validator
+    matched and de-duplicated stripped ids while this function used the padded original,
+    so a story sent as ``" s1 "`` published ``w0- s1 `` while its child cited ``w0-s1``:
+    an orphan the validator had guaranteed could not exist. Normalisation that lives only
+    in the checker is not a guarantee; it has to reach the row.
+    """
     parent = story.get("parent_id")
     parent_id = None if parent is None or not str(parent).strip() else \
         f"{request.id_prefix}-{str(parent).strip()}"
@@ -706,6 +740,7 @@ class StoriesStage(Stage):
             temperature=cfg.temperature,
             max_output_tokens=cfg.max_output_tokens,
             turns=self._turn_rows(ctx),
+            endpoint=cfg.base_url,
         )
 
     @staticmethod
@@ -892,6 +927,17 @@ class StoriesStage(Stage):
             stories, dropped = validate_stories(stored, request)
         except (ValidationError, ValueError):
             return None
+        if content:
+            # An entry whose two halves disagree describes nothing honestly: the payload
+            # would pass while `_ensure_raw` restores a response text citing evidence the
+            # table does not carry (independent verification of 9f39903, finding 3). The
+            # content must re-parse to the payload it claims to be the original bytes of,
+            # or the entry is refetched instead of half-trusted.
+            try:
+                if parse_stories_response(content) != stored:
+                    return None
+            except (ValueError, ValidationError):
+                return None
         # The raw text on disk is the payload re-serialised, not the model's own bytes:
         # the byte-identical copy lives in window_<i>_<key>.json and is never rewritten.
         return StoriesVerdict(content=content or json.dumps(stored, ensure_ascii=False),
