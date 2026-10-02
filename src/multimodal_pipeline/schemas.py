@@ -174,6 +174,58 @@ TRANSLATION_SCHEMA = pa.schema(
     ]
 )
 
+# --- stories (narrative windows detected by the pipeline's own LLM) --------
+#
+# One row per narrative window the model claimed, flat, one table per video.
+#
+# Why a table and not a column on `speech_segments`: a story is a *set* of segments
+# with its own start and end, so it cannot be expressed as a per-segment label
+# without either duplicating a story across its rows or choosing one row to carry it
+# (§20.3). Why the nesting is a `parent_id` rather than a depth or a path: the forest
+# is what the model was asked for, and a parent key is the one shape that keeps a
+# child's row readable on its own while still naming which story it sits inside.
+#
+# Why `evidence_segment_ids` is a JSON-encoded string and not `pa.list_(pa.string())`:
+# every other normalised table in this registry is flat, `write_table`/`_coerce` are
+# written against flat schemas, and consumers from the ELAN export to a spreadsheet
+# export read columns as scalars. The ids are a JSON array of strings — `json.loads`
+# round-trips it exactly — and the column is named in the plural because its content
+# is a list even though its Arrow type is not. Encoding it here rather than inventing
+# a nested-write path in `write_table` keeps this one stage from changing how every
+# other table is written.
+#
+# Why `why_it_is_a_story` and `confidence` survive on every row: the probe measured
+# one judgment it would have been reasonable to refuse (a KABC line read as a story
+# closure). A reader has to be able to disagree with a specific row and say why, so
+# the model's own justification is kept verbatim rather than summarised away.
+STORIES_SCHEMA = pa.schema(
+    [
+        ("schema_version", pa.string()),
+        ("video_id", pa.string()),
+        # Namespaced by window (`w0-s1`): two windows can both answer with "s1", and
+        # the model's ids are only unique inside one request.
+        ("story_id", pa.string()),
+        # The outer story this one sits in, already window-prefixed, or null for a
+        # root. Null is a real answer (a top-level story), so it is not filled with "".
+        ("parent_id", pa.string()),
+        ("start_time", pa.float64()),
+        ("end_time", pa.float64()),
+        ("title", pa.string()),
+        ("why_it_is_a_story", pa.string()),
+        # JSON array of `segment_id`s, as a string — see the note above.
+        ("evidence_segment_ids", pa.string()),
+        ("confidence", pa.float64()),
+        # Which window of this video's transcript produced the row, so a clipped long
+        # transcript is auditable window by window.
+        ("window_index", pa.int32()),
+        ("model", pa.string()),
+        ("prompt_version", pa.string()),
+        # The request digest that produced this row: the raw response and cache entry
+        # of the same name sit under stories/raw/.
+        ("request_key", pa.string()),
+    ]
+)
+
 # --- linguistic -----------------------------------------------------------
 
 TOKENS_SCHEMA = pa.schema(
@@ -563,6 +615,7 @@ TABLE_SCHEMAS: dict[str, pa.schema] = {
     "speaker_fusion_pyannote": SPEAKER_FUSION_SCHEMA,
     "speaker_fusion_nemotron": SPEAKER_FUSION_SCHEMA,
     "translation_segments": TRANSLATION_SCHEMA,
+    "stories": STORIES_SCHEMA,
     "linguistic_source_tokens": TOKENS_SCHEMA,
     "linguistic_source_sentences": SENTENCES_SCHEMA,
     "linguistic_english_tokens": TOKENS_SCHEMA,

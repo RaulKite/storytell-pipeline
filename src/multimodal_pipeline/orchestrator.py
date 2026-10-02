@@ -49,6 +49,7 @@ from .stages.speaker_assignment import SpeakerAssignmentStage
 from .stages.speaker_fusion import SpeakerFusionStage
 from .stages.spacy_english import SpacyEnglishStage
 from .stages.spacy_source import SpacySourceStage
+from .stages.stories import StoriesStage
 from .stages.translation import TranslationStage
 from .stages.whisperx import WhisperXStage
 
@@ -72,6 +73,7 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         ActiveSpeakerStage,
         PersonsStage,
         SpeakerFusionStage,
+        StoriesStage,
         FinalizationStage,
         ElanStage,
     )
@@ -471,6 +473,11 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         "whisperx": config.whisperx.enabled,
         "diarization": config.diarization.enabled,
         "translation": config.translation.enabled,
+        # Default-true, so its flag has to be listed or the status table calls a stage the
+        # operator switched off "enabled" (the mapping defaults to True). Same reasoning as
+        # `translation` and `elan`; unlike `persons`, a default-False stage that the
+        # precedent above keeps out of the map on purpose.
+        "stories": config.stories.enabled,
         "spacy_source": config.spacy.enabled and config.spacy.process_source,
         "spacy_english": config.spacy.enabled and config.spacy.process_english,
         "acoustic": config.acoustic.enabled,

@@ -279,7 +279,7 @@ data/processed/<video_id>/
 │   ├── fusion_nemotron.parquet         ← same fusion, Nemotron turns, if that engine is selected
 │   └── raw/{active_speaker.json,tracks.pckl,scores.pckl,scenes.csv}
 ├── elan/
-│   └── annotations.eaf             ← ELAN export: 17 fixed summary tiers over 19 of the 22 tables, video linked (see below)
+│   └── annotations.eaf             ← ELAN export: 17 fixed summary tiers over 19 of the 23 tables, video linked (see below)
 ├── logs/                         ← pipeline.log + one log per stage
 └── provenance/
     ├── config.json               ← resolved config, secrets masked, config hash
@@ -354,7 +354,7 @@ Output, verbatim, against the dataset committed under `data/processed/` on this 
 ```text
 pipeline_demo 9.985 s at 25/1 fps, 249 source frames
 temporal_model: {'unit': 'seconds_from_video_start', 'interval_columns': ['start_time', 'end_time'], 'instant_columns': ['timestamp'], 'frame_columns': ['frame_number']}
-artifacts: 43 | declared not generated: {'pose_images_raw': 'not_generated'}
+artifacts: 45 | declared not generated: {'pose_images_raw': 'not_generated'}
   metadata          completed rows={'frame_index': 249}
   audio             completed rows={}
   whisperx          completed rows={'speech_segments': 1, 'speech_words': 23}
@@ -370,26 +370,32 @@ artifacts: 43 | declared not generated: {'pose_images_raw': 'not_generated'}
   activespeaker     completed rows={'active_speaker_frames': 249, 'active_speaker_tracks': 0}
   persons           completed rows={'person_frames': 0, 'person_tracks': 0}
   speaker_fusion    completed rows={'speaker_fusion_pyannote': 2, 'speaker_fusion_nemotron': 1}
+  stories           completed rows={'stories': 0}
   finalization      completed rows={}
   elan              completed rows={}
 ```
 
 Two things to notice before opening a single Parquet file. `artifacts_not_generated` holds
-exactly one entry — the skeleton renderings under `pose_images_raw`, which exist only when
-`openpose.write_images: true` and are off by default — and it is the *declaration* channel:
-an absent file is always named there, never silently missing. The `pose_*` and `person_*`
-zeros are a **result**, not a failure: the clip is a synthetic test pattern with a
-synthesised voice over it, so there is no person for OpenPose or YOLO to find, and both
-stages still wrote their schema-complete tables and their raw documents. `manifest.json`
-carries the same 43 keys in `artifacts` (key → dataset-relative path) and their sizes in
-`artifact_details`.
+exactly one entry on this dataset — the skeleton renderings under `pose_images_raw`, which
+exist only when `openpose.write_images: true` and are off by default — and it is the
+*declaration* channel: an absent file is always named there, never silently missing. The
+`pose_*` and `person_*` zeros are a **result**, not a failure: the clip is a synthetic test
+pattern with a synthesised voice over it, so there is no person for OpenPose or YOLO to find,
+and both stages still wrote their schema-complete tables and their raw documents.
+`manifest.json` carries the same 45 keys in `artifacts` (key → dataset-relative path) and
+their sizes in `artifact_details`.
 
-Why 17 stages and 43 artifacts when the registry declares 44 keys? Because the 44th is
-opt-in: `pose_images_raw`, the skeleton renderings, exists only with
-`openpose.write_images: true`, which is false by default, and it is the single entry this
-dataset's `artifacts_not_generated` names. A full batch run after `persons` was enabled
-rewrote all seven datasets on this disk, and adding the ELAN export then rewrote the
-manifests again, so all seven now list **43** artifacts and declare the same one absence.
+Why 18 stages and 45 artifacts when the registry declares 46 manifest keys? Because one key
+is opt-in: `pose_images_raw`, the skeleton renderings, exists only with
+`openpose.write_images: true`, which is false by default, and it is the single entry datasets
+with speech declare absent. The counts are **not uniform across this disk** and the prose
+says so honestly: five of the seven datasets list **45** artifacts with that one absence,
+while `person_demo` and `pipeline_silent` list **43** and declare three — `pose_images_raw`
+plus `stories` and `stories_raw`, because the `stories` stage skips a video with no speech
+segments, with the reason in its status record. A full batch run after `stories` was added
+rewrote the manifests, and an ELAN refresh after that moved the coverage inventory to the
+23-table registry (17 exported tiers + 2 summarised read stories among the 19 tables an
+export actually reads; `stories` is present-and-named-unexported).
 
 Where a reviewer should look to check that number: nowhere in git. `data/processed/` is
 gitignored, so no commit in this repository contains a manifest, and a diff that moves this
@@ -1943,7 +1949,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1859 tests, ~35 s
+uv run --with pytest pytest tests/unit -q     # 1957 tests, ~35 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
 ```
 
@@ -2000,7 +2006,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1859 tests
+tests/unit/                1957 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)

@@ -55,6 +55,13 @@ STAGE_ORDER: tuple[str, ...] = (
     # Audio/visual agreement. Last of the media stages because it consumes the diarizers'
     # turn tables *and* the ASD frames table.
     "speaker_fusion",
+    # Narrative windows over the finished transcript. Placed here — after every producer it
+    # reads and immediately before `finalization` — because it is a consumer of the
+    # labelled transcript and nothing downstream reads its table. Its dependency is
+    # deliberately not `translation` (see STAGE_DEPENDENCIES), so this position is about
+    # ordering only: putting it earlier in the audio branch would make a diarization or ASD
+    # failure cost the story detection for no reason.
+    "stories",
     "finalization",
     # The ELAN export runs last because it summarises every producer's tables: a tier whose
     # input had not been written yet would be a tier silently missing from the file an
@@ -76,6 +83,14 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "diarization_nemotron": ("audio",),
     "speaker_assignment": ("whisperx", "diarization"),
     "translation": ("speaker_assignment",),
+    # `speaker_assignment` only, which is exactly what it reads: `speech/segments.parquet`
+    # with the speaker labels applied, plus `speech/speaker_turns.parquet` rendered beside
+    # the transcript as speaker context. Depending on `translation` would make an
+    # unconfigured or failing translation endpoint cost the story detection — the two
+    # stages share an HTTP endpoint, not a table, and a Spanish clip with no English gloss
+    # still has stories in it. Depending on `speaker_fusion` would tie a narrative reading
+    # to TalkNet having run, and a diarization-free corpus would lose the stories it has.
+    "stories": ("speaker_assignment",),
     "spacy_source": ("speaker_assignment",),
     "spacy_english": ("translation",),
     "acoustic": ("audio", "speaker_assignment"),

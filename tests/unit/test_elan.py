@@ -4991,7 +4991,7 @@ class TestCoverageInventory:
         parquet = {name for name, relative in ARTIFACT_LAYOUT.items()
                    if relative.endswith(".parquet")}
         assert set(inventory) == parquet
-        assert len(inventory) == 22, "the registry's normalised-table count changed shape"
+        assert len(inventory) == 23, "the registry's normalised-table count changed shape"
         assert {entry["state"] for entry in inventory.values()} <= set(elan_core.COVERAGE_STATES)
 
     def test_the_inventory_is_a_json_property_that_survives_the_round_trip(
@@ -5276,7 +5276,7 @@ class TestCoverageInventory:
         for root in corpus_datasets():
             eaf, _report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
             inventory = coverage_map(eaf)
-            assert len(inventory) == 22, root.name
+            assert len(inventory) == 23, root.name
             for name in UNREAD_TABLES:
                 on_disk = (root / ARTIFACT_LAYOUT[name]).is_file()
                 expected = (elan_core.COVERAGE_PRESENT_NOT_EXPORTED if on_disk
@@ -5289,11 +5289,14 @@ class TestCoverageInventory:
         """The same recomputation, over the seven real corpora, with the real registry.
 
         Asserted per corpus, and the set of states actually met is asserted too rather than
-        assumed to be all four: every producer ran on all seven datasets here, so no artifact is
-        `absent` on this disk and `absent` is covered by the fixtures instead. Claiming four would
-        be a claim about a corpus that does not exist.
+        assumed. The `stories` table changed what this disk can show: the two datasets without
+        speech skip the stage with a stated reason, so `absent` became a state the real corpora
+        actually meet (measured 2026-10-01: person_demo and pipeline_silent), and a guard that
+        still forbade it would forbid the truth. The absent set is therefore asserted exactly:
+        a third dataset losing a producer is what this catches.
         """
         seen = set()
+        absent_by_root = {}
         for root in corpus_datasets():
             eaf, _report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
             inventory = coverage_map(eaf)
@@ -5301,10 +5304,12 @@ class TestCoverageInventory:
             assert {name: entry["state"] for name, entry in inventory.items()} == recomputed, \
                 root.name
             seen.update(recomputed.values())
-        assert seen == {elan_core.COVERAGE_EXPORTED, elan_core.COVERAGE_SUMMARISED,
-                        elan_core.COVERAGE_PRESENT_NOT_EXPORTED}, seen
-        assert elan_core.COVERAGE_ABSENT not in seen, \
-            "a producer stopped writing a table on this corpus; re-measure the README's counts"
+            absent_by_root[root.name] = {n for n, state in recomputed.items()
+                                         if state == elan_core.COVERAGE_ABSENT}
+        assert seen == set(elan_core.COVERAGE_STATES), seen
+        assert {name: missing for name, missing in absent_by_root.items() if missing} == {
+            "person_demo": {"stories"}, "pipeline_silent": {"stories"},
+        }, "which datasets lack a table changed; re-measure the README's counts"
 
 
 class TestDropCountsReachTheRecord:
