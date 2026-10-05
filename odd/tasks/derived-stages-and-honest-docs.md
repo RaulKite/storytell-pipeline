@@ -178,15 +178,23 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
 - [x] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
       Diarization) so the operator can compare two engines on the same corpus and choose.
       Added at the end of the queue on the operator's request, 2026-09-24. Done `35119ef`.
-- [ ] **T23** the prose queue has no guard, and it has now lied twice. Add the equivalent of
-      `test_readme_claims.py` over the §26 capability table: a test that resolves each row's
-      stage name against `STAGE_ORDER` and its status against disk, so "blocked, not started"
-      cannot survive a stage that shipped. The failure mode is measured, not hypothetical —
-      §26 described `stories` as unblocked-and-unstarted for four commits after it ran on the
-      corpus, and the operator found it by reading the document, not by a test dying. The
-      design question is real and unresolved: a status table written in prose is easy to
-      assert against until the assertions become noise people tick rather than read, at which
-      point the guard is worse than the drift. Decide that before writing it.
+- [x] **T23** the prose queue has no guard, and it had now lied twice. Resolved as
+      `tests/unit/test_odd_queue_claims.py`, with the design question left open above
+      answered by measurement rather than taste. The affirmative direction ("a row saying
+      *built* must name a stage on disk") was tried against the table as written and
+      **rejected**: four false positives in six rows (`diarization_v2` shipped as
+      `speaker_fusion`; `pose_skeletons` deliberately has no stage of its own; 20.6 is
+      documentation; and a disk check fails on any machine that has not run the corpus). A
+      guard needing four exceptions is noise with a failure message. The negative direction
+      ("a row claiming work has not started must not name a stage in `STAGE_ORDER`") needs
+      zero exceptions, kills the literal row §26 carried for four commits, and is what
+      shipped. Two lessons it forced, both recorded in the file: matching the whole state
+      cell punishes the honest correction (the fixed 20.3 row keeps the words "blocked, not
+      started" *inside* its parenthetical, so only the first bolded run is the declared
+      state); and the expected-row set is derived from the document, because the first
+      parser silently dropped 20.6 — whose name is prose — and a hardcoded count would have
+      stayed green while policing one row less.
+
 
 ## 5. T17 — NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote
 
