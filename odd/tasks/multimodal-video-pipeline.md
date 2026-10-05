@@ -909,7 +909,7 @@ Written so the next session does not re-derive it from the stage list.
 |---|---|---|
 | 20.1 `diarization_v2` | **built** (as `speaker_fusion`) | §17, receipted `c3f5ede`, advisories closed `d7b01ba` |
 | 20.2 `persons` | **built**, off by default | §24–§25, ten commits `c5f0a5a..cf57d5b`, six review lineages |
-| 20.3 `stories` | **blocked, not started** | needs the operator's endpoint and a spend decision |
+| 20.3 `stories` | **built** (corrected 2026-10-02 — this row said "blocked, not started" for a stage that had shipped) | `d182188..8f41689`, own document `odd/tasks/stories-detection.md`; S16a probe → S16b stage (105 tests) → S16d real corpus run → S16c independent verification, which found 4 real defects, all fixed in `8f41689` |
 | 20.4 `pose_normalized` | **built** | §20–§22, validated against the real R `dfMaker` |
 | 20.5 `pose_skeletons` | **built** inside `openpose` — deliberately no stage of its own | §19 + §26 note below: `write_images`/`image_max_side` + `pose_images_raw` |
 | 20.6 documentation that installs | **built** | §23, `24ad40c`/`6b0db61`, receipt `18f6123` |
@@ -951,3 +951,44 @@ the rendered view and the measured keypoints cannot disagree about which frames 
 detection; a separate stage would re-read the raw JSON to produce a view of it. And 20.4 is no longer
 only "built": since `ed3f1e7` its Python, and that of `speaker_fusion` and `persons`, is inside what
 reuse fingerprints (§31).
+
+## 41. What 20.3 actually shipped, and what the queue row had been hiding (2026-10-02)
+
+The row above is the second artifact in this repository to describe finished work as
+unstarted. It was not a typo: the endpoint and the spend decision really were the blocker
+when §26 was written, the operator then supplied both, and the queue was never re-read after
+they arrived. A queue row is a claim with a date on it, so this one now carries its own date.
+
+What exists, measured on this disk rather than recalled:
+
+- `stages/stories.py` + 105 tests in `tests/unit/test_stories.py`, and the stage is in
+  `STAGE_ORDER` after every producer it reads, before `finalization`.
+- Corpus: KABC 1 story (`w0-s1`, 0.071–4.051 s, conf 0.9); CNN, La-1, `pipeline_demo` and
+  `pipeline_demo_ntsc` all **0 rows, with stated reasons**; `person_demo` and `pipeline_silent`
+  skipped for having no speech segments (their `stories/raw/` directories exist and their
+  tables are absent, which is what the ELAN coverage inventory calls `absent`). Four of the
+  five datasets that ran produced nothing, which is the designed behaviour and not a failure —
+  but one story across a seven-dataset corpus is a thin base to call a feature proven, and the
+  only non-demo clip that yielded one is the same 4-second KABC clip that carries most of the
+  measured evidence in this repository.
+- Endpoint cost, separating the three things the feature document measured so they stop
+  being quoted as one number: the S16a **probe** cost 6 calls / 3.674 tokens (~600 prompt +
+  ~70 completion each on 1–4-segment transcripts); the S16d **corpus run** cost 5 calls /
+  2.992 tokens at ~330 ms each; and the post-`8f41689` rerun made 5 real calls **again**,
+  because the cache key had legitimately changed, so nothing was reused. None of these are
+  in `status.json` — the persisted `stories` record carries only `stories`, `windows` and
+  `empty_windows`, because the orchestrator persists `validation_result` and not `execute()`'
+  s extras (the ELAN document's B5c is about exactly this gap) — so the figures come from the
+  run notes in `odd/tasks/stories-detection.md`, not from disk. Either way it is small change:
+  "needs a spend decision" is demonstrably no longer the constraint.
+
+What is still open on 20.3, and is not nothing: **the README has no `stories` section**. The
+count guards are honest and the config comment is written, but the prose tour of `stories/`
+that every other stage has (S16c) was never written. Anyone reading the README to decide what
+this stage gives them currently learns it exists from one line in an artifact table.
+
+And the reason the queue drifted, stated so it repeats less: the ODD documents describe work
+that is finished, and nothing re-reads them after a feature lands. `test_readme_claims.py`
+ratchets the README against pytest and against disk; no equivalent guard reads the §26 table.
+That is a known hole, not a suggestion — a guard over a prose status table is easy to imagine
+and nobody has decided whether it is worth its rigidity.

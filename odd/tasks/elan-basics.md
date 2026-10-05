@@ -2,7 +2,7 @@
 
 ## Intent and constraints
 
-Authorized: truthful summaries/person sightings, four SpaCy tiers, acoustic segment statistics and coverage/verification. Detailed pose, landmarks and dense numerical tracks are deferred. Preserve original measurements and unrelated untracked `scripts/make_elan_view.py`.
+Authorized: truthful summaries/person sightings, four SpaCy tiers, acoustic segment statistics and coverage/verification. Detailed pose, landmarks and dense numerical tracks are deferred. Preserve original measurements. `scripts/make_elan_view.py` was preserved untracked through this feature and is now committed with tests (`d547eee`); it is the tool the export was eyeballed with here, since this machine has no ELAN.
 
 Branch: `feat/elan-basics`; base/checkpoint: `ca6e161` / `checkpoint/elan-basics-ca6e161`. No push, merge, external installation or producer rerun. Master assumptions: `odd/tasks/multimodal-video-pipeline.md`, ELAN follow-up.
 
