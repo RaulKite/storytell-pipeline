@@ -982,10 +982,15 @@ What exists, measured on this disk rather than recalled:
   run notes in `odd/tasks/stories-detection.md`, not from disk. Either way it is small change:
   "needs a spend decision" is demonstrably no longer the constraint.
 
-What is still open on 20.3, and is not nothing: **the README has no `stories` section**. The
-count guards are honest and the config comment is written, but the prose tour of `stories/`
-that every other stage has (S16c) was never written. Anyone reading the README to decide what
-this stage gives them currently learns it exists from one line in an artifact table.
+What is still open on 20.3, and is not nothing: ~~the README has no `stories` section~~
+— **closed after §41 was written.** The section, the missing `stories/stories.parquet` row
+in the file-by-file table, a `config.example.yaml` section the config docstring had been
+claiming existed, and an `inspect-environment` warning that announced translation's
+unconfigured endpoint but not this one are all in the commit that follows this document.
+The claim above was true when it was written and is kept struck rather than deleted, because
+the sequence is the useful part: the queue row, the docstring and the warning were all wrong
+about the same thing — a default-on stage that costs money and was undiscoverable — and only
+the README gap was visible when §41 was written.
 
 And the reason the queue drifted, stated so it repeats less: the ODD documents describe work
 that is finished, and nothing re-reads them after a feature lands. `test_readme_claims.py`

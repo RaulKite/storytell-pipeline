@@ -95,9 +95,31 @@ key from `.env`. 2 runs × 3 real clips, temperature 0:
 - [x] S16c Independent verification of `9f39903`: done, 4 defects found and fixed in
       `8f41689` (see §S16c below, which is the record of it, and the parent's integrity
       confirmation of the verifier's own run).
-- [ ] **Still open, split out of S16c:** a descriptive README section for the stage. The
-      count guards are honest; the prose tour of `stories/` that every other stage has is
-      not written, and the README currently reveals the stage only through one artifact row.
+- [x] README section for the stage, the half of S16c that stayed open after the
+      verification: written, together with the `stories/stories.parquet` row the
+      file-by-file table was also missing. Measured, not remembered — the section quotes
+      the single corpus story (KABC `w0-s1`, 680 tokens, 1 request), the four empty tables
+      with their reasons, the two skips, the `.eaf`'s own verbatim refusal to export this
+      table, and the fact that **no ground truth exists** so no precision/recall number can
+      be quoted. Writing it surfaced two further defects, both about the same thing —
+      `stories` being undiscoverable — and both fixed with it in the same unit:
+      1. `config/config.example.yaml` had **no `stories` section at all** while
+         `StoriesConfig`'s own docstring asserted "the shipped example points both at
+         `${LITELLM_*}`". A false claim in a docstring is the failure mode this repository
+         has already been caught with twice; here the example was the only place an
+         operator would look for a default-on, token-spending stage's knobs.
+      2. `_environment_warnings` announced an unconfigured endpoint for `translation` and
+         **not** for `stories`, though both default to on and share one gateway — so a fresh
+         install reported the skip that costs nothing and stayed silent about the one that
+         costs tokens. The warning now exists, placed adjacent to translation's, with 6
+         tests (3 mutations each killed by a named test).
+      A new guard `TestShippedExampleMatchesTheModels` now checks every key of the shipped
+      example against the pydantic models, with the section map **derived from
+      `PipelineConfig`** rather than typed out: a hand-copied list of sections is a second
+      opinion nobody checks. It caught a second missing section while being written —
+      `pose_normalized`, also on by default — and its 18 parametrised cases die on a typo'd
+      key, which is the whole point: pydantic ignores unknown fields, so a dead documented
+      knob is silent today.
 
 ### Parent spot-check of the writer's review_focus (2026-10-01)
 
