@@ -26,10 +26,15 @@ and no amount of code reading resolves them:
   their clips, their `data/input_videos/`).
 
 Check the review mode with `gentle-ai review mode status`; do not trust prose, including
-this paragraph. As written (2026-10-02) it reads `receipt-driven development: on (decided by
-default)` with `global: unset` and `clone-local: unset`, and the repository history agrees —
-native review lineages with captured verdicts are recorded in `odd/tasks/elan-export.md` and
-master ODD says plainly "RDD is enabled".
+this paragraph. It currently reads `receipt-driven development: on (decided by default)`.
+**Decision (2026-10-02, operator): RDD stays ON for this clone** — asked which mode produces
+better code, the operator chose the one that generates the best code, and the receipts answer
+it: native review found the defects no test reached, including `R3-output-alias`, where
+`--output-json clip.mp4` replaced the operator's own video, and `R4-nan-timestamp-aborts-
+export`, where one NaN timestamp killed a whole ELAN export. Expect consent prompts on
+eligible commits, and treat `mode status` — not any document — as the only authority on
+review state. A disable is always one command away (`gentle-ai review mode disable`, then
+confirm it reads back `off`), and the switch stays the operator's, not yours.
 
 This paragraph previously asserted the opposite: "disabled for this clone ... native review
 consent prompts therefore do not appear." That was stale, and the mechanism is recorded in
@@ -38,13 +43,9 @@ master ODD ("Discrepancy about the review switch"): the clone-local `disable` wa
 through to the default of on. A disable that is not visible in `mode status` output is not a
 disable. An agent following the stale paragraph wrote into a receipt document that a shipped
 chain had never been reviewed, because a policy file seemed cheaper to read than the tool it
-describes. If the operator intends the mode off, run `gentle-ai review mode disable` and
-confirm it reads back `off`; until then, expect consent prompts and treat the live tool as the
-only authority on review state.
-
-The switch stays the operator's, not yours: do not change it. And the sentence worth keeping
-regardless of the mode — do not describe a change as reviewed when nothing reviewed it, and do
-not describe it as *unreviewed* on the strength of a document either.
+describes. The rule that survived the incident, in both directions: do not describe a change
+as reviewed when nothing reviewed it, and do not describe it as *unreviewed* on the strength
+of a document either.
 
 ## Commands that actually work here
 
