@@ -439,6 +439,7 @@ Now the files, with what those numbers mean:
 | `speaker/fusion_{pyannote,nemotron}.parquet` | 2 / 1 | One row per diarization turn per engine: the turn's times plus what the face evidence said about it, as a verdict in `agreement` and the arithmetic behind it in `agreement_detail`. On this clip both engines answer `no_face_visible` — "a voice with nothing visible" — which is the correct reading of a test pattern, not a failure to decide. |
 | `speaker/active_speaker_frames.parquet` | 249 | Dense on the 25 FPS grid, and on this clip the grid *is* the source grid. Every row is `face_status='no_face'`, `frame_reason='no_face'`, `score_imputed=False`, `is_active_speaker=False`, `track_id=None`. |
 | `speaker/active_speaker_tracks.parquet` | 0 | No track, because no face was ever located. |
+| `stories/stories.parquet` | 0 | The endpoint was asked once (`requests_made: 1`, 541 tokens) and answered *"no story"*, recording `windows: 1, empty_windows: 1`. The empty table is the verdict, not a missing stage. `stories/raw/` holds two `window_0_*.json` responses and two cache entries for that one request because the dataset kept the bytes produced under the stage's **first** cache key as well; the pre-fix response is the original evidence behind an earlier published row, so deleting it would erase raw output. |
 | `elan/annotations.eaf` | 17 tiers / 86 annotations *(on disk)* | The ELAN export of the tiers above: fixed flat tiers, the video linked by both an absolute and a relative URL, per-frame signals collapsed into runs. It is XML, so the count is annotations and tiers rather than rows, and it is a **summary** — label text and run boundaries are derived, so this is not a row-for-row copy of the tables. **Regenerated on 2026-10-01** by `--only-stage elan`, so the file on this disk now matches what the current code builds (it held 12 tiers / 59 annotations while five code changes had landed since it was written; see the table under [ELAN export](#elan-export-elan) for the before/after of that refresh). Measured on this clip: `words` 23, `spacy_source_tokens` 26 logical rows emitted as 23 bars, `spacy_english_tokens` 28 coincident context rows in **1** bar, `acoustic_segments` 1, `asd_speaking` 1 block reading `no face`, `pose_presence` and `person_tracks` 0 — the export repeats the tables' own emptiness, it does not invent a subject the clip does not have. |
 | `provenance/{config,tools,processing}.json` | — | Resolved config with secrets masked, the machine inventory, and every stage's exact command, hashes and duration. |
 
@@ -984,6 +985,88 @@ one batch that reused a single `YOLO(...)` across five clips, and 0 from the sam
 in one process each. The worker therefore builds the model inside its tracking function,
 passes `persist=False` unconditionally, and counts GMC failures into
 `gmc_failure_count` so the failure is a number in the artifact rather than a line in a log.
+
+## Narrative windows: `stories`
+
+Every other stage measures something. This is the only stage whose job is a **judgement**: which
+stretch of this transcript actually tells a story. The pipeline's own LLM endpoint is asked, and
+its answer is treated as a claim to check, not a result to publish. It reads
+`speech/segments.parquet` and, when a diarizer ran, the speaker turns — never frames, poses or
+faces — and it is the only stage that spends tokens per video.
+
+One story exists on this corpus. On KABC:
+
+```python
+row = read("stories").iloc[0].to_dict()
+# {'story_id': 'w0-s1', 'parent_id': None, 'start_time': 0.071, 'end_time': 4.051,
+#  'title': 'Recalling hearing a voice at a Laker game',
+#  'why_it_is_a_story': "The speaker recalls a specific past event of hearing someone's
+#                        voice at a basketball game.",
+#  'evidence_segment_ids': '["seg000001", "seg000002"]', 'confidence': 0.9,
+#  'window_index': 0, 'model': 'chat', 'prompt_version': 'v1',
+#  'request_key': '6af24e5d243048792e2584bb'}
+```
+
+That row cost one request and 680 tokens (549 prompt + 131 completion), and its two evidence ids
+are two of the segment ids it was shown. Across the corpus: CNN, La-1, `pipeline_demo` and
+`pipeline_demo_ntsc` each ran and returned an **empty table with a stated `no_story_reason`**,
+and `person_demo` and `pipeline_silent` skipped for having no speech segments at all. Four of
+the five datasets that ran produced nothing.
+
+**There is no ground truth, so there is no precision or recall number to quote.** One positive
+case in seven datasets is a working mechanism with one measured example, not a validated
+detector — and that example is the same 4-second clip that carries most of this repository's
+other measured evidence. Read the stage as cheap to rerun and easy to audit, not as a solved
+problem.
+
+**The empty answer is the designed answer, and it is defended in the prompt.** Rule 4 of
+`PROMPTS["v1"]` is "MOST IMPORTANT: if the transcript contains no narrative window, return
+`"stories": []` and say why in `no_story_reason`". That sentence is there because of a
+measurement, not taste: in the probe that preceded the schema, an endpoint with no permission
+to answer "no story" stretched a greeting into a story to satisfy the request. So `stories: 0`
+on four clips is the stage working. The same probe is why `no_story_reason` became a column —
+the endpoint volunteered it unprompted, and a stage that cannot record "nothing here, because…"
+cannot distinguish an empty transcript from a failed judgement.
+
+**Nothing reaches the table that was not checked against the transcript it was shown.** A story
+citing a `segment_id` outside the window it was offered, quoting times that are not that
+segment's boundaries, or omitting its evidence is dropped before `write_table` and counted as
+`dropped_outside_window` in the raw summary, so a clipped answer is a recorded gap rather than a
+story that never existed. `request_key` names the call that produced a row and `model` /
+`prompt_version` name what answered, so every claim traces to retained bytes in `stories/raw/`.
+
+**Ids are namespaced by window, which is not decoration.** The endpoint returns `s1`, and two
+windows can each return one; the table stores `"w0-" + "s1"`. `parent_id` points inside that
+namespace, because stories nest — and a parent the endpoint never actually answered with is
+recorded as a breach, not silently re-parented.
+
+**What the export deliberately does not do is the most consequential fact here.** No tier reads
+this table, and the `.eaf` says so in its own coverage inventory with the reason spelled out:
+*"narrative-level claims are not represented by this export: no tier reads this table, and no
+existing tier represents a stretch of speech as a story — the transcript tiers (`segments_src`,
+`words`) block over individual segments' own rows and never group them, so a story's span and
+its `why_it_is_a_story` have no bar to reach."* On the two datasets that skipped the stage, the
+same inventory reports the table `absent` instead of implying it exists. A story is a claim
+about a *stretch* of speech, and every tier in ELAN is a claim about a segment: a bar drawn over
+`w0-s1` would look like a measurement.
+
+Two settings shape the answers more than the model choice. `max_segments_per_request` (default
+60) is the window: a story whose evidence straddles the boundary is dropped **and counted**.
+`temperature: 0.0` is deliberate — windows are compared across runs, so the same transcript
+should give the same answer. `cache: true` reuses a completed window across runs, and the key
+covers the endpoint **and the rendered prompt text**, so editing the prompt invalidates the
+cache instead of silently serving stale answers; an earlier key hashed neither, which independent
+verification found and `8f41689` fixed — the observable symptom was a rerun after a prompt edit
+reporting `batches_reused: 1` with zero requests made.
+
+`provider: mock` needs no endpoint at all and is what the suite uses: it returns one window
+spanning the requested segments when shown two or more, and an empty answer with a reason when
+shown one, because a single segment cannot hold a beginning and an end. It goes through the same
+validator as the real provider, so the rejection path is exercised either way.
+
+`stories` is **on by default**, and `inspect-environment` announces an unconfigured endpoint
+before a run starts, immediately after translation's. That warning exists because silence about
+the only stage that costs money is a defect, not a detail.
 
 ---
 

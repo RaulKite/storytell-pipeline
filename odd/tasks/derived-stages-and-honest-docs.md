@@ -171,8 +171,10 @@ Each task closes with at least one work-unit commit carrying its tests and docs.
       the endpoint volunteered a `no_story_reason` unprompted, so the table carries one.
       Independent verification found 4 real defects (HIGH: a cache key that ignored the
       endpoint and the prompt text while its own docstring promised both), all fixed in
-      `8f41689` with mutation checks. Still open: the README has no `stories` section —
-      see master ODD §41.
+      `8f41689` with mutation checks. The last open pieces — the README section, the missing
+      file-by-file row, the `config.example.yaml` section its own docstring claimed existed,
+      and the missing `inspect-environment` warning — are closed; see
+      `odd/tasks/stories-detection.md` S16c and master ODD §41.
 - [x] **T17** `diarization_nemotron`: a **second, parallel** diarizer (NVIDIA Nemotron 3
       Diarization) so the operator can compare two engines on the same corpus and choose.
       Added at the end of the queue on the operator's request, 2026-09-24. Done `35119ef`.
