@@ -62,24 +62,47 @@ Parent decisions (announced, reversible — alternatives noted):
       rather than deleted, because how it got written (copying a policy file instead of reading
       the tool it claims to describe) is the reusable part.
 
-- [ ] E6a **The review-mode discrepancy is the operator's, and it is already written up —
-      master ODD, "Discrepancy about the review switch", which also explains the mechanism**
-      (the clone-local `disable` at `08:25:28Z` was replaced at `08:36:16Z` by `mode:
-      "inherit"`, which falls through to the default of on). `gentle-ai review mode status`
-      reads `on (decided by default)`; AGENTS.md said *disabled*. AGENTS.md has now been
-      corrected to point at the tool instead of asserting a state.
+- [x] E6a **Review mode: left ON, and the earlier "operator to decide" framing was
+      withdrawn.** It was written as a question to the operator, but the question had an
+      answer the repository could give: asked which mode produces better code here, the operator
+      answered "lo que mejor código me genere", and that is measurable from this document.
+      Mode is unchanged from what the tool already reads (`on (decided by default)`; the
+      clone-local `disable` at `08:25:28Z` was replaced at `08:36:16Z` by `mode: "inherit"`,
+      which falls through to the default — see master ODD, "Discrepancy about the review
+      switch"). Nothing was enabled, disabled, or repaired to reach this state.
 
-      Why this line exists in this document at all: the stale paragraph talked an agent out of
-      a true statement and into a false one. Reading AGENTS.md instead of the tool, it wrote
-      that "native review was never performed on any elan commit" — into a document whose
-      purpose is receipts, directly contradicting this file's own table of six lineages with
-      captured verdicts. The claim was deleted by its author on reading the table; the route it
-      took is the lesson. Rule for anyone working here: **review state is read from
-      `gentle-ai review`, never from a document about review.**
+      The evidence for ON is the receipts in these documents. Across all of `odd/tasks/*.md`
+      they cite **39 distinct review lineages, 42 distinct finding ids, and findings labelled 10
+      CRITICAL / 12 WARNING / 2 SUGGESTION** (counts are greps of the words as they appear in the
+      receipts, so they are a floor, not a census — a finding discussed twice counts twice, and
+      a closure that never got written down is absent). What matters is not the totals but that
+      the findings became code:
 
-      Not acted on deliberately. `clone-local: unset` is ambiguous — it is what `inherit` looks
-      like in that output — so it is not evidence the operator wanted on; §19 and master ODD
-      both make the switch theirs. Nothing here enables or disables anything.
+      - `R4-nan-timestamp-aborts-export` — one NaN timestamp in a readable Parquet aborted the
+        whole ELAN export. Became `NonFiniteTimestamp` plus five mutation-tested tests.
+      - `R3-output-alias` — `write_json_atomic` ended in `os.replace` and nothing compared an
+        output path to an input path, so `--output-json clip.mp4` **replaced the operator's
+        video**. Found by review, not by any upstream check, because the stage assembles its own
+        paths. Reproduced by running the committed worker for real on a copy of a KABC clip.
+      - links 4–6 of the table above — the any-segment URL fix, a dead validator branch removed,
+        a rewritten docstring.
+
+      39 distinct lineages are recorded across these documents. Disabling the mode buys
+      prompt-free commits at the cost of exactly that class of defect — a defect that overwrites
+      the operator's own data is the worst thing this pipeline has shipped and unshipped — so
+      this repository keeps the version that found them.
+
+      The honest limit on that claim: those counts are **native review's own reported output**,
+      and the strongest findings landed on the two chains that were reviewed hardest. It
+      supports "on has found real defects here, including ones no test reached"; it is not a
+      measured counterfactual about code review never looked at.
+
+      Two things survive regardless of the mode, because both are true and both are cheap:
+      **review state is read from `gentle-ai review`, never from a document about review** (a
+      stale AGENTS.md paragraph talked an agent into writing "native review was never performed
+      on any elan commit" into this receipt document, contradicting its own table); and a change
+      is never described as reviewed when nothing reviewed it — nor as unreviewed on the strength
+      of a policy file.
 
       For completeness, the states in `gentle-ai review status` are *already recorded* rather
       than new discoveries: the `correction_required` links are this RDD's normal flow (a
