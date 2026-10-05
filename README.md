@@ -2056,7 +2056,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 2009 tests, ~90 s
+uv run --with pytest pytest tests/unit -q     # 2021 tests, ~90 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~285 s (needs ffmpeg + uv)
 ```
 
@@ -2114,7 +2114,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                2009 tests
+tests/unit/                2021 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer,
                            ELAN .eaf HTML viewer (no ELAN needed to eyeball a tier layout)

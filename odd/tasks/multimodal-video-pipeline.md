@@ -994,6 +994,13 @@ the README gap was visible when §41 was written.
 
 And the reason the queue drifted, stated so it repeats less: the ODD documents describe work
 that is finished, and nothing re-reads them after a feature lands. `test_readme_claims.py`
-ratchets the README against pytest and against disk; no equivalent guard reads the §26 table.
-That is a known hole, not a suggestion — a guard over a prose status table is easy to imagine
-and nobody has decided whether it is worth its rigidity.
+ratchets the README against pytest and against disk; the §26 table had no equivalent.
+
+That hole is now closed, one direction only — see `tests/unit/test_odd_queue_claims.py` and
+T23 for why the tempting stronger rule was rejected after measuring four false positives in
+six rows. What ships is: *a row that declares work unstarted must not name a stage in
+`STAGE_ORDER`*. Zero exceptions, and it dies on the literal row this section is about. The
+corollary worth keeping in mind for anyone extending it: the guard reads the state a row
+**declares** (its first bolded run), not the whole cell, because a row that records its own
+correction keeps the stale wording inside a parenthetical — and a guard that punishes that
+trains people to delete the audit trail.
