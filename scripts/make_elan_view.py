@@ -142,10 +142,10 @@ def main(eaf_path: str, out_path: str) -> dict:
  .S{{box-shadow:inset -5px 0 0 rgba(255,255,255,.85)}}
 </style>
 <h3>{html.escape(source.parent.parent.name)}</h3>
-<div class="meta">{total} anotaciones · {len(tiers)} tiers · {simultaneous_bars} barras
- simultáneas · eje {duration:.0f} ms = <b>{axis_kind}</b><br>
+<div class="meta">{total} annotations · {len(tiers)} tiers · {simultaneous_bars} bars
+ with simultaneous labels · axis {duration:.0f} ms = <b>{axis_kind}</b><br>
  video: {media_note}<br>
- <b>sin vídeo embebido</b>: pasar el .eaf a una máquina con ELAN para la comprobación real.</div>
+ <b>no video embedded</b>: copy the .eaf to a machine with ELAN for the real check.</div>
 {chr(10).join(rows)}
 """
     Path(out_path).write_text(page, encoding="utf-8")
@@ -156,6 +156,6 @@ def main(eaf_path: str, out_path: str) -> dict:
 
 if __name__ == "__main__":
     summary = main(sys.argv[1], sys.argv[2])
-    print(f"{sys.argv[2]}: {summary['annotations']} anotaciones, {summary['tiers']} tiers, "
-          f"eje {summary['axis_ms']:.0f} ms ({summary['axis_kind']}), "
-          f"{summary['simultaneous_bars']} barras simultáneas")
+    print(f"{sys.argv[2]}: {summary['annotations']} annotations, {summary['tiers']} tiers, "
+          f"axis {summary['axis_ms']:.0f} ms ({summary['axis_kind']}), "
+          f"{summary['simultaneous_bars']} simultaneous-label bars")
