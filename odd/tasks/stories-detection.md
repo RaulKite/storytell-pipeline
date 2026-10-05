@@ -23,8 +23,16 @@ key from `.env`. 2 runs × 3 real clips, temperature 0:
 - The prompt's "empty is the correct answer" rule **held**: 2 of 3 clips came back empty
   with a stated `no_story_reason`, unprompted by any follow-up. That is the §20.3
   requirement ("the output must be allowed to be empty") demonstrated on this endpoint.
-- Temperature 0 was byte-identical across runs on all three. Not relied upon as a
-  guarantee — the request digest caches instead — but it means dev loops are cheap.
+- Temperature 0 was byte-identical across runs on all three *on 2026-10-01*. That held for
+  four days and then did not. Re-measured 2026-10-05 running the stage fresh in an isolated
+  tree (bundle for the operator): KABC requested with the **same `request_key` 6af24e5d…**
+  (same transcript, same prompt, same model) and the response came back with
+  `why_it_is_a_story` "hearing **the listener's** voice" where 2026-10-01 recorded "hearing
+  **someone's** voice". Same story, same window 0.071–4.051, same confidence 0.9 — the
+  semantic payload stable, the prose not. "Not relied upon as a guarantee" was the right
+  hedge and this is the bill for treating it as more: dev loops are cheap because of the
+  request-key cache, never because the endpoint is deterministic. A claim of determinism
+  across days was never tested here, and is now measured false for this gateway.
 - KABC's one story cited only real `segment_id`s and used real segment boundary times;
   `confidence` 0.9. The validating parser the stage needs is therefore a real rejection
   path (invented id / fake boundary ⇒ reject the batch), not decoration.
