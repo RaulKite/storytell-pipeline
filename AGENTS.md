@@ -25,10 +25,26 @@ and no amount of code reading resolves them:
 - A destructive change to data the operator produced by hand (their TalkNet scripts,
   their clips, their `data/input_videos/`).
 
-Receipt-driven development is **disabled for this clone** (`gentle-ai review mode
-status` reads it, `enable` reverses it). Native review consent prompts therefore do not
-appear. That switch is the operator's, not yours: do not re-enable it, and do not
-describe a change as reviewed when nothing reviewed it.
+Check the review mode with `gentle-ai review mode status`; do not trust prose, including
+this paragraph. As written (2026-10-02) it reads `receipt-driven development: on (decided by
+default)` with `global: unset` and `clone-local: unset`, and the repository history agrees —
+native review lineages with captured verdicts are recorded in `odd/tasks/elan-export.md` and
+master ODD says plainly "RDD is enabled".
+
+This paragraph previously asserted the opposite: "disabled for this clone ... native review
+consent prompts therefore do not appear." That was stale, and the mechanism is recorded in
+master ODD ("Discrepancy about the review switch"): the clone-local `disable` was written at
+`08:25:28Z` and replaced eleven minutes later by a record of `mode: "inherit"`, which falls
+through to the default of on. A disable that is not visible in `mode status` output is not a
+disable. An agent following the stale paragraph wrote into a receipt document that a shipped
+chain had never been reviewed, because a policy file seemed cheaper to read than the tool it
+describes. If the operator intends the mode off, run `gentle-ai review mode disable` and
+confirm it reads back `off`; until then, expect consent prompts and treat the live tool as the
+only authority on review state.
+
+The switch stays the operator's, not yours: do not change it. And the sentence worth keeping
+regardless of the mode — do not describe a change as reviewed when nothing reviewed it, and do
+not describe it as *unreviewed* on the strength of a document either.
 
 ## Commands that actually work here
 
