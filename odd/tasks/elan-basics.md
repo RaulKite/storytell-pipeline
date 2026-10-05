@@ -36,7 +36,17 @@ Branch: `feat/elan-basics`; base/checkpoint: `ca6e161` / `checkpoint/elan-basics
   - Download bundle `/tmp/elan-bundle.tar.gz` regenerated after the refresh (3,205,599 bytes: 7 `.eaf` + 7 videos) and re-extracted into a clean tree to prove all 7 relative media URLs resolve (0 broken). The earlier 12-tier bundle is deleted; any copy of it the operator kept is stale.
 - [x] B5c Close-out, agent side. Full evidence recorded here: focused trio 443 passed, full unit suite 1851 passed / 8 skipped, 1859 collected, e2e 42 passed (303.95 s), pyflakes clean over src/workers/tests/scripts. README and this document corrected. Still open and operator-only: opening the refreshed files in ELAN on the laptop. The server has no GUI (`DISPLAY`/`WAYLAND_DISPLAY` empty), so label readability — including the 874-876-character acoustic bars — is unanswered by anything measured here.
 - [ ] B5d Operator check in ELAN (laptop). Opening the refreshed files and saying whether the labels are usable — including the 874-876-character acoustic bars. Not markable here: the server has no GUI (`DISPLAY`/`WAYLAND_DISPLAY` empty), so nothing measured on this machine answers it.
-- [ ] T16 `stories` remains operator-blocked (credentials/live endpoint/cost).
+- [x] ~~T16 `stories` remains operator-blocked (credentials/live endpoint/cost).~~ **Closed —
+      the box described a state that had already ended.** The endpoint was supplied, the probe
+      ran (`stories-detection.md` S16a), the stage shipped (`d182188`), ran on the corpus
+      (S16d) and was independently verified (S16c). Closed here on 2026-10-02 while answering
+      T23, and it is worth naming what that means for T23: the new guard reads master's §26
+      queue table and **would not have caught this row** — same defect, different document,
+      different shape (a bullet, not a table). The guard covers the case it was measured
+      against, not the class. Widening it to arbitrary prose bullets was rejected on the same
+      grounds §41 gives for the affirmative direction: prose is where assertion-guards go to
+      become noise. The real control on these lines is the one that found it, which is reading
+      the document.
 
 ### Found and fixed while verifying the refresh (the parent's own false claim)
 

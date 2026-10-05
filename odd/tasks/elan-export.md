@@ -43,7 +43,50 @@ Parent decisions (announced, reversible — alternatives noted):
 - [x] E3 `ElanStage` last in `STAGE_ORDER`; `finalization` deps exclude it; media descriptor with relpath + mimetype by suffix
 - [x] E4 run on the corpus, open/validate one `.eaf` (XML sanity + pympi round-trip), check ELAN media URL correctness
 - [x] E5 README section + corpus-count prose/guard updates + ratchet; suite green with named mutations
-- [ ] E6 ODD receipt + native review per commit + push
+- [x] E6 ODD receipt + native review per commit + push. All three parts are evidenced, and
+      each was checked rather than assumed:
+      - *receipt* — this document, including the review-causality table of links and lineages.
+      - *native review per commit* — performed. Links 1–6 carry lineage ids and verdicts
+        (`review-1c583ddde2b7abbf` … `review-a9e5d77808e65346`), with the fix commits sitting
+        beside the links that asked for them, and two further docs lineages burned after the
+        table was written. `ca6e161` is the commit that records the last three receipts.
+      - *push* — `git merge-base --is-ancestor ca6e161 origin/master` succeeds.
+
+      **A correction, because an earlier draft of this box claimed the opposite.** It asserted
+      that no native review had run "because RDD is disabled for this clone", quoting AGENTS.md.
+      That is what AGENTS.md says, and `gentle-ai review mode status` on this same clone says
+      `receipt-driven development: on (decided by default)` with global and clone-local both
+      unset. The documented premise and the live tool disagree; the table above, the lineage
+      ids under `.git/gentle-ai/review-transactions/v2/`, and the commit messages that quote
+      their closure envelopes all side with the tool. The stale claim is kept here as a claim
+      rather than deleted, because how it got written (copying a policy file instead of reading
+      the tool it claims to describe) is the reusable part.
+
+- [ ] E6a **The review-mode discrepancy is the operator's, and it is already written up —
+      master ODD, "Discrepancy about the review switch", which also explains the mechanism**
+      (the clone-local `disable` at `08:25:28Z` was replaced at `08:36:16Z` by `mode:
+      "inherit"`, which falls through to the default of on). `gentle-ai review mode status`
+      reads `on (decided by default)`; AGENTS.md said *disabled*. AGENTS.md has now been
+      corrected to point at the tool instead of asserting a state.
+
+      Why this line exists in this document at all: the stale paragraph talked an agent out of
+      a true statement and into a false one. Reading AGENTS.md instead of the tool, it wrote
+      that "native review was never performed on any elan commit" — into a document whose
+      purpose is receipts, directly contradicting this file's own table of six lineages with
+      captured verdicts. The claim was deleted by its author on reading the table; the route it
+      took is the lesson. Rule for anyone working here: **review state is read from
+      `gentle-ai review`, never from a document about review.**
+
+      Not acted on deliberately. `clone-local: unset` is ambiguous — it is what `inherit` looks
+      like in that output — so it is not evidence the operator wanted on; §19 and master ODD
+      both make the switch theirs. Nothing here enables or disables anything.
+
+      For completeness, the states in `gentle-ai review status` are *already recorded* rather
+      than new discoveries: the `correction_required` links are this RDD's normal flow (a
+      committed-only candidate cannot carry its own correction, so each fix burned a successor
+      lineage — see the table above), and `review-0d54936f4c1fd6cd`'s `escalated` /
+      `reason_code: native_stop_required` / `cause: unknown_causality`, with three of four
+      captures present and the stop honoured, is written up in master ODD.
 
 ## Implementation receipt (writer pass, 2026-09-30)
 
