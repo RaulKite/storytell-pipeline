@@ -483,6 +483,13 @@ def _environment_warnings(config: PipelineConfig) -> list[str]:
         warnings.append(f"{config.diarization.hf_token_env} is not set: diarization will be skipped")
     if config.translation.enabled and not config.translation.endpoint_configured:
         warnings.append("translation endpoint is not configured: translation will be skipped")
+    # 'stories' is on by default and the only stage that spends tokens per video, so the
+    # operator who configured translation and saw no second warning would assume the LLM
+    # stages were covered. Placed immediately after translation on purpose: the two share
+    # one endpoint, so when one is unconfigured the other almost always is too, and reading
+    # them as a pair is the truth about what a fresh install will do.
+    if config.stories.enabled and not config.stories.endpoint_configured:
+        warnings.append("stories endpoint is not configured: stories will be skipped")
     if not Path(config.input.directory).is_dir():
         warnings.append(f"input directory does not exist: {config.input.directory}")
     from .provenance import openpose_report

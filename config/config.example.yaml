@@ -99,6 +99,48 @@ translation:
   cache: true                    # completed batches are reused across runs
   # extra_body: {}               # gateway-specific request fields
 
+# Narrative windows found in the transcript. On by default like translation, and it is the
+# only stage that spends tokens per video, so `inspect-environment` announces an
+# unconfigured endpoint the same way it announces translation's. It has its own section
+# rather than sharing translation's object because it has its own prompt version, batching
+# and retry budget: editing the story prompt must not invalidate every cached translation,
+# and vice versa.
+stories:
+  enabled: true
+  provider: openai-compatible    # openai-compatible | mock (offline testing)
+  base_url: http://LITELLM_HOST:PORT/v1
+  api_key: ${LITELLM_API_KEY:-}
+  model: claude-sonnet-4-5
+  temperature: 0.0               # deterministic: the same transcript should give the same
+                                 # windows, because they are compared across runs
+  timeout_seconds: 120
+  max_retries: 3
+  backoff_base_seconds: 1.0
+  prompt_version: v1
+  max_segments_per_request: 60   # segments judged per request; a story whose evidence
+                                 # straddles a window is dropped AND counted
+  context_segments: 5            # neighbours shown as context only (translation uses 2:
+                                 # a narrative boundary often sits just outside the window)
+  cache: true                    # completed windows are reused across runs; the key covers
+                                 # the endpoint and the rendered prompt text, so editing the
+                                 # prompt invalidates them
+  # max_output_tokens: 2000
+  # extra_body: {}               # gateway-specific request fields
+
+# Re-basing BODY_25 keypoints onto a person-centred frame, validated keypoint-for-keypoint
+# against R's multimolang::dfMaker. On by default. It reads pose/body.parquet only, so a
+# run with no OpenPose output skips with a reason rather than emitting an empty table.
+# Changing any of these changes the numbers, so they are recorded in the stage fingerprint.
+pose_normalized:
+  enabled: true
+  origin_keypoint: MidHip        # becomes (0, 0) — every coordinate is measured from here
+  basis_keypoint: Neck           # becomes (1, 0) — the longest two-point torso segment
+                                 # BODY_25 offers, chosen over dfMaker's Neck→LShoulder
+                                 # by measuring the divisor (the README's table)
+  second_axis: perpendicular     # derived, not chosen: the clockwise perpendicular of the
+                                 # first axis, (v.y, -v.x) in y-down image space — the exact
+                                 # branch the reference fixtures were validated against
+
 spacy:
   enabled: true
   uv_project: environments/spacy

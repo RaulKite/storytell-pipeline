@@ -108,6 +108,7 @@ warning before the batch, or as a skip reason naming the setting to change.
 | OpenPose under `openpose.root` | `inspect-environment` → `tools.openpose.executable` | With `openpose.enabled: true` and no binary, `inspect-environment` prints `OpenPose binary not found under /opt/openpose` and the stage **fails** the run. With `openpose.enabled: false` it skips with `openpose.enabled = false`. |
 | `HF_TOKEN` for pyannote community-1 (EULA accepted first) | `inspect-environment` → `HF_TOKEN is not set: diarization will be skipped` | `diarization` skips, so `speaker_turns.parquet` is absent and `speaker_assignment` degrades with its own reason. Transcript, linguistics, acoustics and pose still land. |
 | An OpenAI-compatible endpoint for translation | `inspect-environment` → `translation endpoint is not configured: translation will be skipped` | `translation` skips, so `linguistic/english/*` has no English text to read. `translation.provider: mock` exercises the whole graph offline with no credential. |
+| The same endpoint for story detection | `inspect-environment` → `stories endpoint is not configured: stories will be skipped` | `stories` skips with the reason in its status record. It is on by default and is the only stage that spends tokens per video; `stories.provider: mock` answers without any endpoint. |
 | A TalkNet-ASD checkout for `activespeaker` (`activespeaker.talknet_root`, containing `run_talknet.py`) | `inspect-environment` → `activespeaker.talknet_root is not set: active speaker detection will be skipped (point it at a TalkNet-ASD checkout to enable it)` | `speaker/*` is absent and `speaker_fusion` skips with it. The example config ships `activespeaker.enabled: false` precisely because this checkout is external to the repository. |
 
 `openpose.root` defaults to `/opt/openpose` and `openpose.executable: auto` searches
@@ -152,16 +153,21 @@ uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
 The payload is `system`, `tools` (GPU/CUDA, ffmpeg and ffprobe versions, the OpenPose
 binary and model inventory, and whether each uv project directory exists) and
 `environment_warnings`. What a fresh clone with a copied `.env.example` and the example
-config reports on a machine that has ffmpeg, OpenPose and all seven environments is three
-lines — and all three are correct:
+config reports on a machine that has ffmpeg, OpenPose and all seven environments is four
+lines — and all four are correct:
 
 ```json
 [
   "HF_TOKEN is not set: diarization will be skipped",
   "translation endpoint is not configured: translation will be skipped",
+  "stories endpoint is not configured: stories will be skipped",
   "input directory does not exist: /data/videos"
 ]
 ```
+
+The two endpoint warnings sit adjacent on purpose: `translation` and `stories` share one
+gateway and both default to on, so a fresh install is always missing both or neither, and
+`stories` is the stage that costs tokens when it does run.
 
 What it does *not* warn about is worth as much: an environment that exists but has never
 been synced (because `uv` syncs it on first use), a stage you explicitly disabled, or a
@@ -1967,7 +1973,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1981 tests, ~90 s
+uv run --with pytest pytest tests/unit -q     # 2009 tests, ~90 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~285 s (needs ffmpeg + uv)
 ```
 
@@ -1998,6 +2004,7 @@ that compute rows in-process noticing an edit to the python that computes them.
 |---|---|
 | `diarization ... missing credential HF_TOKEN` | Put `HF_TOKEN=...` in `.env` and accept the model's EULA on Hugging Face. Everything except speakers and English linguistics still runs without it. |
 | `translation endpoint is not configured` | Set `translation.base_url`/`api_key`/`model` (or `provider: mock` to test the graph). |
+| `stories endpoint is not configured` | Set `stories.base_url`/`api_key`/`model` — or `stories.enabled: false` to stop paying for a stage whose output you do not read. |
 | `uv project not found: .../environments/whisperx` | Run `uv sync --python 3.12` in that environment directory. |
 | `libnvrtc.so.13` on import | `torchcodec` drifted past 0.7.0. Re-pin and re-sync the diarization env. |
 | `OpenPose binary not found under /opt/openpose` | Check `openpose.root`; `inspect-environment` prints the resolved path. |
@@ -2024,7 +2031,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1981 tests
+tests/unit/                2009 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer,
                            ELAN .eaf HTML viewer (no ELAN needed to eyeball a tier layout)

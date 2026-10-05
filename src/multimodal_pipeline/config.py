@@ -351,8 +351,14 @@ class StoriesConfig(_Model):
     Its own section even though it defaults to the same endpoint, because it has its own
     prompt version, its own batching and its own retry budget: a prompt change for story
     detection must not invalidate every translation, and vice versa. "The same LLM as
-    translation" is therefore the *no-config* answer (the shipped example points both at
-    ``${LITELLM_*}``) rather than a shared object that couples the two fingerprints.
+    translation" is therefore the *no-config* answer — the shipped example gives both
+    sections the same placeholder gateway and both read ``${LITELLM_API_KEY}`` — rather
+    than a shared object that couples the two fingerprints.
+
+    On by default, which makes it the only stage that spends tokens per video, so
+    ``inspect-environment`` announces an unconfigured endpoint here the way it announces
+    translation's: a fresh install reports both skips before the run rather than leaving
+    the second one to be discovered in seven per-video status files.
 
     ``max_segments_per_request`` is the limit that makes a long transcript honest. The
     design does not window silently: a story whose evidence is not entirely inside one
