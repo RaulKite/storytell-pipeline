@@ -1416,6 +1416,24 @@ second zero, a word with a null `end_time` exported over `[0, 1)` ms. The check 
 and the drop is logged separately from a non-finite one (`dropped N of M annotation(s) with a
 missing timestamp`) because the two describe different upstream defects.
 
+### Eyeballing an `.eaf` without ELAN
+
+`scripts/make_elan_view.py` renders one `.eaf` as a self-contained HTML page — one row per
+tier, one block per annotation, full label on hover — for the machine that has no ELAN (this
+server has none, so this is how the export was reviewed here). It never embeds the video: the
+clips are gigabytes and a copy would be a second, staler source of truth. It is a viewing
+aid, not a second validator, and it refuses three lies: the time axis names whether it is
+the source media duration, a latest-annotation end, or an annotation end past the duration
+(real diarizer turns run past it — La-1's last annotation ends at 8097 ms on an 8008 ms
+clip); a bar carrying simultaneous labels keeps **all** of them and is flagged, because
+collapsing it would hide the very simultaneity the export partitions to preserve; and an
+empty tier prints as empty rather than vanishing.
+
+```bash
+uv run python scripts/make_elan_view.py \
+  data/processed/<dataset>/elan/annotations.eaf /tmp/view.html
+```
+
 ---
 
 ## Stage graph
@@ -1949,7 +1967,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1964 tests, ~90 s
+uv run --with pytest pytest tests/unit -q     # 1981 tests, ~90 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~285 s (needs ffmpeg + uv)
 ```
 
@@ -2006,9 +2024,10 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1964 tests
+tests/unit/                1981 tests
 tests/e2e/                 42 CLI-driven tests
-scripts/                   fixture + spaCy model installers, dataset figure renderer
+scripts/                   fixture + spaCy model installers, dataset figure renderer,
+                           ELAN .eaf HTML viewer (no ELAN needed to eyeball a tier layout)
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
 data/input_videos/         synthetic fixtures (committed, ~330 KB)
