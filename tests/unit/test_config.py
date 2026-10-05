@@ -9,6 +9,8 @@ import pytest
 import yaml
 
 from multimodal_pipeline.config import (
+    PipelineConfig,
+    _Model,
     load_config,
     load_dotenv,
     mask_command,
@@ -143,6 +145,73 @@ class TestTranslationEndpointReadiness:
         payload["translation"] = {"base_url": "http://10.0.0.5:4000/v1", "api_key": "sk-real", "model": "claude"}
         config = load_config(write_config(tmp_path, payload))
         assert config.translation.endpoint_configured is True
+
+    def test_stories_example_config_counts_as_unconfigured(self, tmp_path: Path) -> None:
+        """`stories` is on by default, so a copied example must skip rather than call out.
+
+        The mirror of the translation assertion above, and the reason the shipped example
+        can keep a placeholder gateway in its `stories` section: the placeholder refusal in
+        `endpoint_configured` is what stops a copy-paste install from sending a request that
+        will be rejected. If this ever fails, an example-config install is making live calls.
+        """
+        config = load_config(write_config(tmp_path, base_payload(tmp_path)))
+        assert config.stories.enabled is True
+        assert config.stories.endpoint_configured is False
+
+
+
+@pytest.fixture(scope="module")
+def shipped_example() -> dict:
+    """The committed example config, parsed. Module-scoped: nothing here mutates it."""
+    root = Path(__file__).resolve().parents[2]
+    return yaml.safe_load((root / "config" / "config.example.yaml").read_text("utf-8"))
+
+class TestShippedExampleMatchesTheModels:
+    """Every key in `config/config.example.yaml` must be a real config field.
+
+    A typo'd or renamed key in the example is not an error: pydantic ignores unknown
+    fields by default, so the example keeps parsing, `load_config` succeeds,
+    `inspect-environment` exits 0, and the documented knob silently does nothing. The
+    example is the only install documentation a new operator reads, so a dead key there
+    reads as "this is how you set it".
+
+    The section map is derived from `PipelineConfig` rather than typed out, because a list
+    of sections copied into a test is a second opinion nobody checks: it would go stale the
+    moment a section is added, and a stale guard is worse than none.
+    """
+
+    example = staticmethod(shipped_example)
+
+    SECTIONS = {
+        name: field.annotation
+        for name, field in PipelineConfig.model_fields.items()
+        if isinstance(field.annotation, type) and issubclass(field.annotation, _Model)
+    }
+
+    def test_the_section_map_is_not_silently_empty(self) -> None:
+        """A broken derivation would make every test below vacuously green."""
+        assert len(self.SECTIONS) >= 15, sorted(self.SECTIONS)
+        assert "stories" in self.SECTIONS
+
+    def test_the_stories_section_exists_at_all(self, shipped_example: dict) -> None:
+        """Its absence was a real defect: StoriesConfig's own docstring claimed otherwise.
+
+        The stage is on by default and spends tokens, so the shipped example was the only
+        place an operator would look for its knobs, and there was nothing there.
+        """
+        assert "stories" in shipped_example, sorted(shipped_example)
+
+    def test_every_example_section_is_a_known_pipeline_field(self, shipped_example: dict) -> None:
+        unknown = set(shipped_example) - set(self.SECTIONS)
+        assert not unknown, f"config.example.yaml documents unknown section(s): {sorted(unknown)}"
+
+    @pytest.mark.parametrize("section", sorted(SECTIONS))
+    def test_every_documented_key_is_a_real_field(self, shipped_example: dict, section: str) -> None:
+        if section not in shipped_example:
+            pytest.skip(f"the shipped example does not document a {section} section")
+        fields = self.SECTIONS[section].model_fields
+        unknown = set(shipped_example[section]) - set(fields)
+        assert not unknown, f"config.example.yaml {section}: unknown key(s) {sorted(unknown)}"
 
 
 class TestMasking:

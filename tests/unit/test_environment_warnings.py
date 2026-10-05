@@ -168,6 +168,7 @@ class TestSpacyDegradationIsAnnounced:
         assert not config.translation.endpoint_configured
         assert not warnings_containing(_environment_warnings(config), "spaCy model")
 
+
     def test_no_warning_when_english_processing_is_off(
         self, base_config: PipelineConfig, tmp_path: Path
     ) -> None:
@@ -202,6 +203,71 @@ class TestSpacyDegradationIsAnnounced:
         self.install(tmp_path, "en_core_web_lg")
         assert not warnings_containing(_environment_warnings(config), "spaCy model")
 
+
+
+class TestStoriesEndpointIsAnnounced:
+    """`stories` is **on by default** and spends tokens, so an unconfigured endpoint has to
+    appear in `inspect-environment` before a run, not in a per-video status file after one.
+
+    The gap this class exists for: `translation` announces its unconfigured endpoint and
+    `stories` did not, despite both defaulting to enabled and both sharing one endpoint.
+    An operator following the README's install path got the translation warning, assumed
+    the LLM stages were covered, and only learned the second one was skipping by reading
+    seven status files. Skipping is correct behaviour — it is being silent about it that
+    costs an afternoon.
+    """
+
+    def test_an_unconfigured_endpoint_is_warned_about(self, base_config: PipelineConfig) -> None:
+        config = base_config.model_copy(deep=True)
+        assert config.stories.enabled, "stories no longer defaults to on; re-read this test"
+        assert not config.stories.endpoint_configured
+        assert warnings_containing(_environment_warnings(config), "stories")
+
+    def test_the_warning_names_the_stage_and_the_consequence(self, base_config: PipelineConfig) -> None:
+        """A warning that does not say what will happen is not actionable."""
+        warning = next(
+            w for w in _environment_warnings(base_config.model_copy(deep=True))
+            if "stories" in w
+        )
+        assert "skipped" in warning
+
+    def test_a_configured_endpoint_produces_no_stories_warning(
+        self, base_config: PipelineConfig
+    ) -> None:
+        config = base_config.model_copy(deep=True)
+        object.__setattr__(config.stories, "base_url", "https://gateway.invalid/v1")
+        object.__setattr__(config.stories, "api_key", "a-real-looking-key-value")
+        object.__setattr__(config.stories, "model", "chat")
+        assert config.stories.endpoint_configured
+        assert not warnings_containing(_environment_warnings(config), "stories")
+
+    def test_a_disabled_stories_stage_is_not_warned_about(
+        self, base_config: PipelineConfig
+    ) -> None:
+        """The same rule as every other stage: do not warn about what is switched off."""
+        config = base_config.model_copy(deep=True)
+        object.__setattr__(config.stories, "enabled", False)
+        assert not warnings_containing(_environment_warnings(config), "stories")
+
+    def test_mock_provider_never_warns(self, base_config: PipelineConfig) -> None:
+        """`mock` is the offline-testing provider: it is configured by definition."""
+        config = base_config.model_copy(deep=True)
+        object.__setattr__(config.stories, "provider", "mock")
+        assert config.stories.endpoint_configured
+        assert not warnings_containing(_environment_warnings(config), "stories")
+
+    def test_it_sits_next_to_the_translation_warning(self, base_config: PipelineConfig) -> None:
+        """Both default to enabled and share an endpoint, so they must be read together.
+
+        `base_config` disables translation (it is the warn-about-nothing fixture), so this
+        turns it back on rather than assuming the fixture's defaults.
+        """
+        config = base_config.model_copy(deep=True)
+        object.__setattr__(config.translation, "enabled", True)
+        warnings = _environment_warnings(config)
+        translation = next(i for i, w in enumerate(warnings) if "translation" in w)
+        stories = next(i for i, w in enumerate(warnings) if "stories" in w)
+        assert stories == translation + 1, warnings
 
 class TestUvProjectsWarnOnlyWhenAbsent:
     def test_absent_uv_project_is_warned(self, base_config: PipelineConfig, tmp_path: Path) -> None:
