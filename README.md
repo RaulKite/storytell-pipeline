@@ -1949,8 +1949,8 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1963 tests, ~35 s
-uv run --with pytest pytest tests/e2e -q      # 42 tests, ~110 s (needs ffmpeg + uv)
+uv run --with pytest pytest tests/unit -q     # 1964 tests, ~90 s
+uv run --with pytest pytest tests/e2e -q      # 42 tests, ~285 s (needs ffmpeg + uv)
 ```
 
 Unit tests avoid mocks wherever a mock would hide the bug: media tests call real
@@ -2006,7 +2006,7 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1963 tests
+tests/unit/                1964 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
