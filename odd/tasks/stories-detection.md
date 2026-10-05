@@ -11,7 +11,7 @@ see "Probe" below — and the schema below is shaped by what the endpoint actual
 
 ## Probe measurements (2026-10-01, `/tmp/probe_stories.py`, raw under `/tmp/stories-probe/`)
 
-Endpoint: the translation endpoint itself (`nienna-llm.inf.um.es/v1`, model `chat`),
+Endpoint: the translation endpoint itself (the configured `LITELLM_BASE_URL`, model `chat`),
 key from `.env`. 2 runs × 3 real clips, temperature 0:
 
 | clip | transcript | stories run1 | stories run2 | identical | schema-invalid |
