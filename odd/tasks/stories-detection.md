@@ -92,8 +92,12 @@ key from `.env`. 2 runs × 3 real clips, temperature 0:
       4 present-not-exported (+1 absent on the two), validate ok 7/7. Hash diff: +27
       files, 0 measured tables changed — all additions are the new stories outputs, all
       changes are logs/status/manifest/provenance.
-- [ ] S16c Independent verification agent + a descriptive README section for the stage
-      (the count guards above are already honest; the prose tour of `stories/` is open).
+- [x] S16c Independent verification of `9f39903`: done, 4 defects found and fixed in
+      `8f41689` (see §S16c below, which is the record of it, and the parent's integrity
+      confirmation of the verifier's own run).
+- [ ] **Still open, split out of S16c:** a descriptive README section for the stage. The
+      count guards are honest; the prose tour of `stories/` that every other stage has is
+      not written, and the README currently reveals the stage only through one artifact row.
 
 ### Parent spot-check of the writer's review_focus (2026-10-01)
 
