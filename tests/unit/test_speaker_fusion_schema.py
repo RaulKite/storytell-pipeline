@@ -168,7 +168,7 @@ class TestLayoutRegistration:
         proves the reverse direction for these two files, so adding the stage cannot leave
         the layout diagram quietly describing a dataset without them.
         """
-        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+        readme = (Path(__file__).resolve().parents[2] / "docs" / "datasets.md").read_text(encoding="utf-8")
         assert "fusion_pyannote.parquet" in readme
         assert "fusion_nemotron.parquet" in readme
 

@@ -204,7 +204,7 @@ class TestLayoutRegistration:
         proves the reverse direction for this file, so adding the stage cannot leave the
         layout diagram quietly describing a dataset without it.
         """
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme = (ROOT / "docs" / "datasets.md").read_text(encoding="utf-8")
         assert "normalized.parquet" in readme
 
 
