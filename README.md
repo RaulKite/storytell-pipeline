@@ -1464,6 +1464,35 @@ uv run python scripts/make_elan_view.py \
   data/processed/<dataset>/elan/annotations.eaf /tmp/view.html
 ```
 
+### Sending an `.eaf` to someone who will open it in ELAN
+
+`scripts/make_review_bundle.sh` builds the `.tgz` a collaborator actually needs: two datasets'
+full trees, each clip at the path its own `.eaf` points at, a regenerated `view.html` per dataset,
+a cover note, and a sha256. It is a script rather than a directory copy because the two things that
+silently break a hand-assembled bundle are invisible until ELAN is open, hours later, on someone
+else's laptop:
+
+- **The media layout is derived, not chosen.** The export computes `RELATIVE_MEDIA_URL` from the
+  real output tree it was written into, so the `.eaf` asks for `../../../input_videos/<name>`. A
+  bundle that picks a tidier name for the clip directory opens in ELAN with an empty grid and no
+  waveform, which reads as "the export is broken" when the bundle was assembled wrong. The script
+  parses that URL, refuses to guess if its depth is not the three levels it expects, and then
+  resolves the URL from the `.eaf` before it will emit the tarball.
+- **Two redactions, inside the bundle only.** The internal LLM gateway hostname becomes
+  `LLM-ENDPOINT.REDACTED`, and API keys are already `***masked***` before they reach disk. Raw
+  pipeline output under `data/` is never rewritten — a bundle is a copy, and the byte-identical
+  rule applies to the corpus, not to what leaves it.
+
+The cover note is deliberately not kept in the repository: every number in it is measured from one
+export, so it is regenerated per bundle and passed in as `BUNDLE_README=/path/to/README.md`. The
+script warns rather than fails when the file is missing, because the rebuild that deletes a
+previously good note is the failure mode here.
+
+```bash
+BUNDLE_README=/tmp/bundle-notes/README-<date>.md \
+  scripts/make_review_bundle.sh /tmp/storytel-bundle storytel-demo-<date>
+```
+
 ---
 
 ## Stage graph
@@ -1997,7 +2026,7 @@ whole graph, English linguistics included, with no network and no credentials.
 ## Testing
 
 ```bash
-uv run --with pytest pytest tests/unit -q     # 1968 tests, ~90 s
+uv run --with pytest pytest tests/unit -q     # 1969 tests, ~90 s
 uv run --with pytest pytest tests/e2e -q      # 42 tests, ~285 s (needs ffmpeg + uv)
 ```
 
@@ -2055,10 +2084,11 @@ workers/                   heavy ML entry points, run inside the isolated envs
                          acoustic, activespeaker)
 environments/              one uv project per dependency-heavy tool
 config/                    example template (committed) + local config (ignored)
-tests/unit/                1968 tests
+tests/unit/                1969 tests
 tests/e2e/                 42 CLI-driven tests
 scripts/                   fixture + spaCy model installers, dataset figure renderer,
-                           ELAN .eaf HTML viewer (no ELAN needed to eyeball a tier layout)
+                           ELAN .eaf HTML viewer (no ELAN needed to eyeball a tier layout),
+                           and the shareable review bundle builder
 docs/assets/               committed figures (synthetic-schema demos, regenerable)
 odd/tasks/                 Gentle-AI ODD feature document (decisions, evidence)
 data/input_videos/         synthetic fixtures (committed, ~330 KB)
