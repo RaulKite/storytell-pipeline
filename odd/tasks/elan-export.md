@@ -604,3 +604,32 @@ every number in it is measured from one export and a committed copy would go sta
 tiers change. Which is also why the script warns instead of staying silent when the file is missing:
 `rm -rf` on the work directory deletes whatever note the last build put there, so a rebuild that
 forgets the flag produces a bundle with no README and no signal that one was expected.
+
+The endpoint host is discovered from the bundle's own provenance rather than named in the script,
+because a redaction that spells out what it hides publishes it and the repository is the copy every
+future clone reads. Finding the hosts is easy; the part that cost a run was **proving the rewrite
+took**. The first substitution built a sed pattern by escaping the host, GNU sed read the `\n` of a
+host beginning with those letters as a newline, the pattern matched nothing, all six files came back
+unchanged, and the script reported `redacted 6 file(s)` — a redaction that does nothing is
+indistinguishable from one that worked unless somebody re-reads the tree. The substitution is a
+literal string replacement now, and the archive is refused outright if a host survives it.
+
+Two things are left in the bundle on purpose: `provenance/tools.json` names the build machine and the
+logs quote absolute build paths. Those are the record that makes a number in a bundle checkable, and
+the first version of the cover note overclaimed by saying the bundle was scrubbed of build paths
+after measuring that eight files per dataset still contained them. The note now states what travels.
+
+### A claim in a commit message that the bundle disproved
+
+Commit `7fa6cfa` says the clean-extraction check found "no hostname and no build path anywhere in the
+tree". The hostname half is true. The build-path half is false, and measuring the same extraction
+that was supposed to support it gives **58 files carrying `/data/home`** — 20 stage logs and 38 raw
+tool dumps, manifests, `status.json` and provenance files, two of each dataset's records plus the
+logs. Only the two generated `view.html` files are genuinely free of it, and that is the narrow
+result the sentence should have reported: views are generated with relative paths on purpose, so
+their `<title>` names a path a reviewer's laptop can contain.
+
+The claim was written from the one file that had been checked rather than from the tree, which is the
+same failure this repository has already been caught at twice. History is not rewritten over it, so
+the correction lives here and in the commit that follows; the artifact it describes is unchanged,
+because the fix is the sentence.

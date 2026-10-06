@@ -1478,10 +1478,18 @@ else's laptop:
   waveform, which reads as "the export is broken" when the bundle was assembled wrong. The script
   parses that URL, refuses to guess if its depth is not the three levels it expects, and then
   resolves the URL from the `.eaf` before it will emit the tarball.
-- **Two redactions, inside the bundle only.** The internal LLM gateway hostname becomes
-  `LLM-ENDPOINT.REDACTED`, and API keys are already `***masked***` before they reach disk. Raw
-  pipeline output under `data/` is never rewritten — a bundle is a copy, and the byte-identical
-  rule applies to the corpus, not to what leaves it.
+- **The endpoint host is discovered, not written here.** The script finds every `*base_url` host in
+  the bundle's own `provenance/config.json`, rewrites it to `LLM-ENDPOINT.REDACTED` in the bundle
+  copy, and then refuses to emit the tarball if the host is still anywhere in the tree. It does not
+  name the host: a redaction that spells out what it hides publishes it, and the repository is the
+  copy every future clone reads. API keys are already `***masked***` before they reach disk.
+  Nothing under `data/` is ever rewritten — a bundle is a copy, and the byte-identical rule is about
+  the corpus, not about what leaves it.
+
+What the script deliberately leaves alone: `provenance/tools.json` names the machine that ran the
+pipeline, and the stage logs quote absolute build paths. Both are the record that makes a number in a
+bundle checkable, so falsifying them to look tidier trades a real property for a cosmetic one. A
+bundle therefore carries a hostname and a filesystem layout; say so out loud when you forward one.
 
 The cover note is deliberately not kept in the repository: every number in it is measured from one
 export, so it is regenerated per bundle and passed in as `BUNDLE_README=/path/to/README.md`. The
