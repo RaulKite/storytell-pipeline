@@ -584,3 +584,23 @@ to match the prose.
 at 10 ms / 100 ms; the honest generalisation is the trade-off table above, and the constants
 (`FRAME_WINDOW_SECONDS`, `FRAME_MIN_FILL`, the three quantisations) are the knobs that table says
 to re-measure before quoting a different sampling regime.
+
+### The bundle is a script now, not a directory copy
+
+The first bundle was assembled by hand. The second one was scripted (`scripts/make_review_bundle.sh`)
+after the hand-assembled layout turned out to be wrong in a way nothing on this machine could see:
+the export computes `RELATIVE_MEDIA_URL` from the output tree it was written into, so the `.eaf` asks
+for `../../../input_videos/<name>`, and the hand-built bundle had put the clips in `input/`. ELAN
+opens that file, resolves nothing, and shows an empty grid — which reads to the reviewer as "the
+export is broken" when the bundle was assembled wrong. The script parses the URL out of the `.eaf`,
+refuses to guess if the depth is not the three levels it expects, copies the clip where that URL
+points, and then resolves the URL from the `.eaf` before it will emit the tarball. The first version
+of that check was itself wrong: it tested the bundle-relative path after the `..` had already been
+stripped, so it looked for the clip inside `out/<dataset>/elan/`, failed on the first dataset, and
+that failure is the only reason the mistake was caught here rather than by the operator.
+
+The cover note is deliberately kept outside the repository and passed in as `BUNDLE_README=`, because
+every number in it is measured from one export and a committed copy would go stale the moment the
+tiers change. Which is also why the script warns instead of staying silent when the file is missing:
+`rm -rf` on the work directory deletes whatever note the last build put there, so a rebuild that
+forgets the flag produces a bundle with no README and no signal that one was expected.
