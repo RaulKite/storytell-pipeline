@@ -105,10 +105,17 @@ class TestStageWiring:
         assert summary["annotations"] == 10
         assert summary["skipped_tiers"] == ["segments_src", "gloss_en", "turns_nemotron",
                                             "fusion_pyannote", "fusion_nemotron",
-                                            "person_tracks", "voiced_blocks",
-                                            "spacy_source_tokens", "spacy_source_sentences",
-                                            "spacy_english_tokens", "spacy_english_sentences",
-                                            "acoustic_segments"]
+                                            "person_tracks",
+                                            "voiced_blocks", "f0_blocks", "intensity_blocks",
+                                            "formant_blocks"]
+        # Emitted plus skipped must be the whole tier list. The two hand-typed lists above can both
+        # be right while the record silently forgets a tier that exists, and a tier nobody counted is
+        # exactly the state the coverage property exists to make visible — so the partition is
+        # checked against the module's own TIERS rather than against another typed list. Note
+        # `summary["tiers"]` counts the TIER elements actually written, which on a fixture with
+        # absent tables is the emitted count, not len(TIERS).
+        assert sorted(list(summary["tier_counts"]) + summary["skipped_tiers"]) == sorted(
+            tier.tier for tier in TIERS), "a tier is neither emitted nor recorded as skipped"
         assert summary["media_url"] == dataset["video"].resolve().as_uri()
         assert summary["mimetype"] == "video/mp4"
         assert summary["bytes"] == ctx.artifact("elan_annotations").stat().st_size
@@ -526,8 +533,11 @@ class TestStageWiring:
 
         stage = ElanStage()
         assert set(SECONDARY_INPUTS["person_tracks"]) == {"person_frames", "frame_index"}
-        assert stage.inputs == tuple(spec.artifact for spec in TIERS) + tuple(
-            name for _tier, names in SECONDARY_INPUTS.items() for name in names)
+        # The same list the stage builds from: four tiers read `acoustic_frames`, and the
+        # declaration de-duplicates so `status --plan` does not print one dependency four times.
+        from multimodal_pipeline.elan import ALL_INPUTS
+        assert stage.inputs == ALL_INPUTS
+        assert list(stage.inputs).count("acoustic_frames") == 1
         assert "person_frames" in stage.inputs and "frame_index" in stage.inputs
         assert set(stage.inputs) <= set(ARTIFACT_LAYOUT)
 
@@ -872,7 +882,7 @@ class TestRecordReportsWhatWasLeftOut:
         assert summary["coverage"] == on_disk
         assert summary["coverage"]["pose_face"]["state"] == "present, not exported"
         assert summary["coverage"]["speech_words"] == {
-            "state": "exported", "tier": "words", "path": "speech/words.parquet"}
+            "state": "exported", "tiers": ["words"], "path": "speech/words.parquet"}
 
     def test_a_skipped_tier_and_an_unrepresented_table_are_different_answers(
             self, stage_config, dataset) -> None:
@@ -1094,7 +1104,8 @@ class TestValidateChecksCoverageAgainstTheDocument:
         summary = record_of(stage, ctx)
         assert "words" in summary["skipped_tiers"], summary["skipped_tiers"]
         assert summary["coverage"]["speech_words"]["state"] == "exported"
-        assert summary["coverage"]["speech_words"]["tier"] not in summary["tier_counts"]
+        assert summary["coverage"]["speech_words"]["tiers"] == ["words"]
+        assert "words" not in summary["tier_counts"]
         # The four tiers the fixture can still build are all it declares, and that is fine.
         assert stage.validate(ctx)["tiers"] == summary["tiers"]
 
@@ -1138,7 +1149,7 @@ class TestValidateChecksCoverageAgainstTheDocument:
         stage.run(ctx)
         path = ctx.artifact("elan_annotations")
         artifacts = coverage_artifacts_of(path)
-        artifacts["speech_words"]["tier"] = "words_that_do_not_exist"
+        artifacts["speech_words"]["tiers"] = ["words_that_do_not_exist"]
         rewrite_coverage(path, artifacts)
         with pytest.raises(ValidationError, match="named by no coverage entry") as raised:
             stage.validate(ctx)
@@ -1271,33 +1282,36 @@ class TestValidateChecksCoverageAgainstTheDocument:
                     if relative.endswith(".parquet")]) == 24
         assert stage.validate(ctx)["tiers"] == 5
 
-    @pytest.mark.parametrize("bad_tier", [
-        pytest.param(["words"], id="list"),
+    @pytest.mark.parametrize("bad_tiers", [
+        pytest.param("words", id="bare-string-not-a-list"),
         pytest.param({"name": "words"}, id="dict"),
-        pytest.param(["words", "segments_src"], id="two-element-list"),
+        pytest.param(7, id="number"),
+        pytest.param(["words", 7], id="list-holding-a-non-string"),
+        pytest.param([["words"]], id="list-holding-a-list"),
     ])
-    def test_validate_rejects_a_tier_field_that_cannot_be_a_name(
-            self, stage_config, dataset, bad_tier) -> None:
-        """A hand-edited `tier` must fail as a refused document, never as a crash.
+    def test_validate_rejects_a_tiers_field_that_cannot_be_a_list_of_names(
+            self, stage_config, dataset, bad_tiers) -> None:
+        """A hand-edited `tiers` must fail as a refused document, never as a crash.
 
         `validate` is also the reuse gate, and an exception that is not `ValidationError` escapes
         both that contract and the orchestrator's handling of it. The field is read straight out of
-        JSON, so nothing in the file format stops an editor from writing a list or an object where a
-        name belongs — the value then reaches `claimed.add(tier)` and raises `TypeError: unhashable
-        type`, which is what an operator would otherwise see instead of "this .eaf was modified
-        after elan wrote it".
+        JSON, so nothing in the file format stops an editor from writing an object, a bare string or
+        a nested list where a list of names belongs. The v2 shape made the old guard's failure mode
+        *worse*, not merely different: `claimed.update(value)` on the string `"words"` would add
+        five one-character entries (`w`,`o`,`r`,`d`,`s`) and report a document that claims nothing
+        as one that claims nonsense, while a dict raises `TypeError: unhashable type`. So the check
+        is now "a list whose every element is a string", and each shape below is refused by name.
 
-        The `state` sibling already handles this shape (an unhashable state is formatted into a
+        The `state` sibling already handled this shape (an unhashable state is formatted into a
         message and the entry is skipped), so the check was not blind to malformed JSON in general:
-        it was blind to it on the one field it puts into a set. A scalar wrong name (`7`) was
-        already reported correctly, which is why the fix is about hashability and not about type.
+        it was blind to it on the one field it puts into a set.
         """
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
         stage.run(ctx)
         path = ctx.artifact("elan_annotations")
         artifacts = coverage_artifacts_of(path)
-        artifacts["speech_words"]["tier"] = bad_tier
+        artifacts["speech_words"]["tiers"] = bad_tiers
         rewrite_coverage(path, artifacts)
         with pytest.raises(ValidationError) as raised:
             stage.validate(ctx)
@@ -1306,6 +1320,27 @@ class TestValidateChecksCoverageAgainstTheDocument:
         # reported: the edit costs the tier its provenance, and that is the fact worth printing.
         assert "speech_words" in message, message
         assert "named by no coverage entry" in message, message
+        # And it is a refusal, not a traceback about hashability.
+        assert "unhashable" not in message, message
+
+    def test_a_multi_tier_list_is_accepted_as_the_frame_table_shape(
+            self, stage_config, dataset) -> None:
+        """The positive case of the v2 shape: several names in one entry is legal, by design.
+
+        `acoustic_frames` is read by four tiers, so a real document's entry for it lists four.
+        Refusing a list would refuse the export's own output, and the reason this is asserted on a
+        hand-written entry rather than only on the frame table is that the fixture dataset writes
+        no frames: the check has to accept the *shape*, not a specific tier set.
+        """
+        stage = ElanStage()
+        ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
+        stage.run(ctx)
+        path = ctx.artifact("elan_annotations")
+        artifacts = coverage_artifacts_of(path)
+        artifacts["speech_words"]["tiers"] = ["words", "segments_src"]
+        rewrite_coverage(path, artifacts)
+        # words really is in the document, so claiming two real tiers passes both directions.
+        assert stage.validate(ctx)["tiers"] == 5
 
     def test_an_unhashable_tier_on_a_summarised_entry_is_refused_too(
             self, stage_config, dataset) -> None:
@@ -1324,7 +1359,7 @@ class TestValidateChecksCoverageAgainstTheDocument:
         path = ctx.artifact("elan_annotations")
         artifacts = coverage_artifacts_of(path)
         artifacts["speech_words"]["state"] = "summarised"
-        artifacts["speech_words"]["tier"] = ["words"]
+        artifacts["speech_words"]["tiers"] = {"words": True}
         rewrite_coverage(path, artifacts)
         with pytest.raises(ValidationError) as raised:
             stage.validate(ctx)

@@ -471,3 +471,116 @@ same eight lines. The line-level substantive claim stopped moving between the se
 pass: the check is now `tails != {expected}` over decoded URL tails, tested against substring,
 directory-name, and one-URL-only mutants. Recorded here so the next reader knows the decision
 was made with the findings open, not by ignoring them.
+
+## T22-R: five tiers withdrawn, and the frame tiers re-blocked by 100 ms windows (2026-10-05)
+
+Operator request, after opening the first review bundle: *"quitar las capas de spaCy y
+acoustic_segments"* and, on the acoustic tiers, *"los bloques de f0/intensity/formants se ven
+mal en ELAN, muchas barritas feas"*. Both were acted on, and the second one turned out to be a
+measurement question rather than a taste question, which is why this section is long.
+
+### What left the export, and what did not leave the corpus
+
+`spacy_source_tokens`, `spacy_source_sentences`, `spacy_english_tokens`,
+`spacy_english_sentences` and `acoustic_segments` are no longer written as tiers. Neither table
+was deleted: `linguistic/*.parquet` and `acoustic/segment_features.parquet` are still produced,
+still shipped in the review bundle, and each now appears in the document's own coverage property
+as `present, not exported` with a reason. The export went 17 tiers → 15, `ALL_INPUTS` 19 names →
+14, and the coverage property went from naming 22 registry tables to naming 23 (the registry grew
+`stories` after the last export refresh).
+
+The reason is the one this export has used for every other tier: **a bar may only claim what was
+measured at the instant the bar sits on.** The four linguistic tiers carried real morphology, and
+placed it on times that come from a word alignment the pipeline cannot always prove — the labels
+said so honestly (`placement=segment context (not token aligned)`), but an honest label on a bar
+in the wrong place is still a bar in the wrong place, and ELAN has no *time unknown* annotation to
+put it in. `acoustic_segments` was worse: its labels were 874-character runs of per-segment
+summary statistics sitting on the **transcript segment's** interval, so the mean F0 of a segment
+was drawn as an event spanning whatever the diarizer thought the segment was. `TIER_SEMANTICS`
+withdrawn both explicitly rather than letting the tier list imply they never existed.
+
+A second, quieter change came with the removal: the coverage entry key was `tier` (a string) and
+is now `tiers` (a list), because four frame tiers read one table and a single-valued key cannot
+say that. `COVERAGE_VERSION` went 1 → 2 and the version moved *inside* the JSON, so the document
+carries its own version next to the thing it versions rather than in a property name a reader has
+to parse.
+
+### Why "muchas barritas feas" was a measurement
+
+The first cut of the frame tiers binned each frame and broke a bar on every label change. Measured
+over the corpus with `/tmp/decide_frame_blocking.py` (4 clips, all four frame tables, three bin
+widths × 12 blocking strategies):
+
+| strategy | KABC f0 | La-1 f0 | demo f0 | demo frm | median bar width | bars whose label no frame inside them had |
+|---|---|---|---|---|---|---|
+| raw, fine bins | 100 | 165 | 127 | 673 | 10–30 ms | 0 |
+| raw, mid bins | 62 | 115 | 81 | 515 | 10–50 ms | 0 |
+| 5-point median, mid | 34 | 84 | 63 | 317 | 30–70 ms | **4–51** |
+| 9-point median, mid | 33 | 81 | 52 | 251 | 50–90 ms | **1–72** |
+| hold-5 hysteresis, mid | 29 | 53 | 51 | 35 | 70–220 ms | 0 |
+| hold-9 hysteresis, mid | 15 | 35 | 42 | 7 | 120–1330 ms | 0 |
+
+The complaint was right and the instinct behind the first cut was wrong in a specific way: raw
+binning is truthful and unreadable — 63–97 % of its bars are under 50 ms, narrower than a click in
+ELAN's grid. But the two obvious fixes are both dishonest, and the `unbacked` column is what
+proved it. **Median smoothing invents values**: a 5-point median of 100 Hz and 200 Hz is 150 Hz, a
+pitch no frame in that bar had, so up to 72 formant bars out of 251 carried a label no measurement
+supported. **Hysteresis misattributes without saying so**: `hold` never prints a label no frame
+had, but it lets a bin that flickered for a frame or two sit under the *previous* bar, and
+measuring that
+directly (`/tmp/hold_miscover.py`) puts **18–41 % of pitched frames under a `hold5` bar whose label
+is not their own bin**, rising to **26–64 % at `hold9`**. The bar is defensible and the measurement
+underneath it is contradicted by it, which is a worse combination than a visible hole.
+
+So the chosen rule is neither: **100 ms windows aligned to the clock, labelled by the bin
+containing the window's low median, refused below half fill.** It is honest the way `hold` is
+honest — a low median is always one of the window's own values, never an interpolated midpoint —
+and it keeps every measurement `raw` keeps, because a window is refused only when it mostly has
+nothing to say. What it costs is that a bar is no longer a run of equal labels: it is a fixed
+100 ms sampling of a continuous signal, and the label says so (`f0 med E3`, `int med 62 to 64 dB`,
+`med F1~600Hz F2~1200Hz F3~2000Hz`). On the corpus that produced KABC 24/37/27 bars and La-1
+45/64/44 with a median width of exactly one window, against 100–673 bars per tier before.
+
+Two properties the alternatives could not offer came free and are now asserted by tests: the three
+tiers share their window boundaries exactly, so pitch can be lined up against loudness against
+formants by eye at the same instant; and a refused window **breaks** a bar instead of being spanned
+by one, so "Praat lost the pitch here" is visible as a hole rather than hidden under a long bar.
+
+### The bug the corpus found and no fixture could
+
+Membership in a window was tested as `low <= t < low + step` while the printed upper edge was
+computed as `grid + (i+1) * step`. Those two floats are not always equal, and on the KABC clip the
+frame at 1.021406 s sat inside window 9's median while window 9's bar closed at that same 1021 ms:
+**a bar narrower than the frames its own label was computed from.** Every fixture passed, because
+every fixture used round timestamps. Fixed by computing the edges once, in `window_edges()`, and
+using that one list for both the membership test and the printed slot. The regression tests are
+`test_the_corpus_praat_tiers_place_only_measured_frames` and
+`test_the_corpus_praat_tiers_cover_every_frame_their_own_rule_accepts` — corpus tests, on the real
+10 ms grid with its real float residues, which is the only place that defect is visible.
+
+A related honesty rule fell out of the same reasoning and is stated in `TIER_SEMANTICS`: the frame
+tiers add **no** median grid-step extension at their ends, unlike `asd_speaking`,
+`pose_presence` and `voiced_blocks`. A window edge is a boundary of the interval the label
+describes; it is not a claim about how long one frame's measurement lasted.
+
+### Intensity's floor, which is not a bug
+
+`pipeline_silent` prints one bar reading `int med -300 to -298 dB`. That is Praat's floor value:
+the clip is digital silence, Praat measures −300 dB, and the tier prints the measurement it was
+given rather than filtering it, because −300 dB is a true answer about that track and dropping it
+would make the clip look unmeasured. That is also why the intensity label reads `x to y dB`: the
+previous `x-y dB` form rendered `-300--298 dB`, which is unreadable.
+
+### Suite
+
+`tests/unit` + `tests/e2e`: **1996 passed, 14 skipped**, `-p no:randomly`, pyflakes clean over
+`src tests scripts`. Corpus regenerated with `--only-stage elan` (7 completed, 0 failed) and
+`validate --json` reports 0 problems on all seven. The README ratchet moved 2021 → 1968 unit
+tests; the tier-count claims, the ELAN census table, the coverage-state counts and the
+bundle-facing claims in `README.md` were re-measured against the files on disk rather than edited
+to match the prose.
+
+**Not claimed:** that the window rule is right for every corpus. It is right for these four clips
+at 10 ms / 100 ms; the honest generalisation is the trade-off table above, and the constants
+(`FRAME_WINDOW_SECONDS`, `FRAME_MIN_FILL`, the three quantisations) are the knobs that table says
+to re-measure before quoting a different sampling regime.
