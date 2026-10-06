@@ -1,4 +1,4 @@
-"""The README's checkable claims, checked against the tree.
+"""The README and linked guides' checkable claims, checked against the tree.
 
 Documentation rots silently: a sentence that was true when a stage was added stays
 true forever in the file while the thing it describes moves. Two commit messages in
@@ -23,7 +23,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-README = (ROOT / "README.md").read_text(encoding="utf-8")
+GUIDE_PATHS = (
+    "docs/getting-started.md", "docs/cli.md", "docs/datasets.md", "docs/modalities.md",
+    "docs/elan.md", "docs/architecture.md", "docs/configuration.md", "docs/development.md",
+)
+# Only the user-facing manual: never let an old ODD receipt satisfy a current claim.
+DOCUMENTATION = "\n\n".join(
+    (ROOT / path).read_text(encoding="utf-8") for path in ("README.md", *GUIDE_PATHS)
+)
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
@@ -31,7 +38,7 @@ def fenced_blocks(language: str | None = None) -> list[str]:
     pattern = re.compile(r"^```(\w*)\n(.*?)^```", re.DOTALL | re.MULTILINE)
     return [
         body
-        for lang, body in pattern.findall(README)
+        for lang, body in pattern.findall(DOCUMENTATION)
         if language is None or lang == language
     ]
 
@@ -52,7 +59,7 @@ class TestLicense:
     def test_readme_does_not_claim_an_undeclared_license(self) -> None:
         # The sentence this test was written for: pyproject declared MIT for the whole
         # project's life while the README still said nothing had been chosen.
-        assert "Not yet declared" not in README
+        assert "Not yet declared" not in DOCUMENTATION
 
 
 class TestCliInvocation:
@@ -90,7 +97,7 @@ class TestEnvironmentCount:
         )
 
     def test_readme_syncs_every_environment_directory(self) -> None:
-        synced = set(re.findall(r"environments/(\w+)\s+&& uv sync", README))
+        synced = set(re.findall(r"environments/(\w+)\s+&& uv sync", DOCUMENTATION))
         missing = set(self.environments()) - synced
         assert not missing, f"environments present but never synced by the quick start: {missing}"
 
@@ -98,11 +105,11 @@ class TestEnvironmentCount:
         words = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
         count = len(self.environments())
         expected = words[count]
-        assert f"[Why {expected} environments]" in README
-        assert f"{expected} environments" in README.lower()
+        assert f"[Why {expected} environments]" in DOCUMENTATION
+        assert f"{expected} environments" in DOCUMENTATION.lower()
         for other in words.values():
             if other != expected:
-                assert f"Why {other} environments" not in README
+                assert f"Why {other} environments" not in DOCUMENTATION
 
     def test_no_stale_heavy_tool_count_remains(self) -> None:
         # "The four heavy tools" survived the fifth environment being added, because the
@@ -111,7 +118,7 @@ class TestEnvironmentCount:
         words = {3: "three", 4: "four", 5: "five", 6: "six"}
         for number, word in words.items():
             if number != count:
-                assert f"{word} heavy" not in README.lower()
+                assert f"{word} heavy" not in DOCUMENTATION.lower()
 
 
 class TestDocumentedTestCounts:
@@ -138,12 +145,12 @@ class TestDocumentedTestCounts:
 
     def test_readme_states_the_real_suite_sizes(self) -> None:
         unit, e2e = self.counts()
-        assert f"pytest tests/unit -q     # {unit} tests" in README, (
+        assert f"pytest tests/unit -q -p no:randomly     # {unit} tests" in DOCUMENTATION, (
             f"README does not say {unit} unit tests")
-        assert f"pytest tests/e2e -q      # {e2e} tests" in README, (
+        assert f"pytest tests/e2e -q -p no:randomly      # {e2e} tests" in DOCUMENTATION, (
             f"README does not say {e2e} e2e tests")
-        assert f"tests/unit/                {unit} tests" in README
-        assert f"tests/e2e/                 {e2e} CLI-driven tests" in README
+        assert f"tests/unit/                {unit} tests" in DOCUMENTATION
+        assert f"tests/e2e/                 {e2e} CLI-driven tests" in DOCUMENTATION
 
 
 class TestDocumentedCommandsExist:
@@ -160,7 +167,7 @@ class TestDocumentedCommandsExist:
             for command in app.registered_commands
         }
         assert names, "the CLI exposes no registered commands to check against"
-        table = re.search(r"## Commands\n(.*?)\n\n", README, re.DOTALL)
+        table = re.search(r"## Commands\n(.*?)\n\n", DOCUMENTATION, re.DOTALL)
         assert table, "the Commands section moved; update this test's anchor"
         documented = set(re.findall(r"^\| `([a-z-]+)`", table.group(1), re.MULTILINE))
         assert documented, "no commands parsed from the table"
@@ -188,7 +195,7 @@ class TestDocumentedFlagsExist:
 
     def test_stage_control_flags_exist_on_run(self) -> None:
         # `--([a-z-]+)` would also match the `---` horizontal rules of the markdown.
-        documented = set(re.findall(r"^--([a-z][a-z-]*)\s", README, re.MULTILINE))
+        documented = set(re.findall(r"^--([a-z][a-z-]*)\s", DOCUMENTATION, re.MULTILINE))
         assert {"only-stage", "from-stage", "to-stage", "force-stage", "video"} <= documented
         real = self.options("run")
         missing = {f"--{name}" for name in documented} - real
@@ -211,7 +218,7 @@ class TestDocumentedFlagsExist:
             "inspect-environment now accepts --json; the README's flag prose and this "
             "test should both be updated together"
         )
-        assert "no flag needed" in README, (
+        assert "no flag needed" in DOCUMENTATION, (
             "the Commands table must say inspect-environment is JSON unconditionally"
         )
 
@@ -225,7 +232,7 @@ class TestDatasetLayoutMatchesTheRegistry:
     def test_every_parquet_in_the_diagram_is_registered(self) -> None:
         from multimodal_pipeline.artifacts import ARTIFACT_LAYOUT
 
-        listed = set(re.findall(r"([a-z_]+)\.parquet", README))
+        listed = set(re.findall(r"([a-z_]+)\.parquet", DOCUMENTATION))
         known = {
             Path(relative).name.removesuffix(".parquet")
             for relative in ARTIFACT_LAYOUT.values()
@@ -246,8 +253,8 @@ class TestInstallChainNamesRealIdentifiers:
     SECTION = "## Install from nothing"
 
     def section(self) -> str:
-        start = README.index(self.SECTION)
-        rest = README[start + len(self.SECTION):]
+        start = DOCUMENTATION.index(self.SECTION)
+        rest = DOCUMENTATION[start + len(self.SECTION):]
         end = rest.index("\n---\n")
         return rest[:end]
 
@@ -374,7 +381,7 @@ class TestInspectEnvironmentWarningsAreQuotedVerbatim:
         assert any("translation will be skipped" in m for m in messages)
 
     def test_every_warning_message_is_still_in_the_readme(self) -> None:
-        normalised = " ".join(README.split())
+        normalised = " ".join(DOCUMENTATION.split())
         missing = [m for m in self.static_messages() if m not in normalised]
         assert not missing, (
             "inspect-environment says things the README no longer quotes (or the wording "
@@ -398,13 +405,13 @@ class TestInspectEnvironmentWarningsAreQuotedVerbatim:
 
         warnings = _environment_warnings(load_config(ROOT / "config" / "config.example.yaml"))
         assert any("HF_TOKEN is not set" in warning for warning in warnings), warnings
-        normalised = " ".join(README.split())
+        normalised = " ".join(DOCUMENTATION.split())
         # The input-directory warning ends in the config's own path, so it is quoted by its
         # stable prefix plus the value the shipped example actually holds.
         unquoted = [w for w in warnings
                     if w not in normalised
                     and not (w.startswith("input directory does not exist")
-                             and "/data/videos" in README)]
+                             and "/data/videos" in DOCUMENTATION)]
         assert not unquoted, f"warnings the shipped config produces but the README omits: {unquoted}"
 
 
@@ -424,7 +431,7 @@ class TestDenseTableHonesty:
         A bare "at 25 FPS" sentence about TalkNet's sampling rate is fine; "one row per
         25 FPS frame" without the qualifier is the sentence that cost a reader a wrong join.
         """
-        mentions = [line for line in README.splitlines() if "25 FPS" in line]
+        mentions = [line for line in DOCUMENTATION.splitlines() if "25 FPS" in line]
         assert mentions, "the active-speaker table is no longer described as 25 FPS"
         claims = [line for line in mentions if "row" in line or "dense" in line]
         assert claims, "no per-row 25 FPS claim left to police"
@@ -447,17 +454,17 @@ class TestDenseTableHonesty:
         `source_timestamp` and forbid `frame_number`, and must never state the reverse.
         """
         join_forward = re.search(
-            r"join on `source_timestamp`,? never (?:on )?`frame_number`", README)
+            r"join on `source_timestamp`,? never (?:on )?`frame_number`", DOCUMENTATION)
         assert join_forward, (
             "README no states the pose/active-speaker join rule in the true direction "
             "(join on `source_timestamp`, never `frame_number`)")
         join_backward = re.search(
-            r"join on `frame_number`,? never (?:on )?`source_timestamp`", README)
+            r"join on `frame_number`,? never (?:on )?`source_timestamp`", DOCUMENTATION)
         assert join_backward is None, (
             "README states the inverted join rule: `frame_number` is the ASD stage's 25 FPS "
             "grid index, not a source frame, so joining pose to it on `frame_number` "
             "silently misaligns every non-25 fps clip")
-        assert "source_timestamp" in README
+        assert "source_timestamp" in DOCUMENTATION
 
     def test_the_frame_columns_come_from_the_grid_not_the_source(self) -> None:
         """Pinned against the code, not the prose: frame_number *is* the 25 FPS index."""
@@ -528,10 +535,10 @@ class TestWorkedExampleMatchesTheManifest:
         stated_corpus = re.search(
             r"five of the seven datasets list \*\*(\d+)\*\* artifacts with that one "
             r"absence,\s*\n?while `person_demo` and `pipeline_silent` list "
-            r"\*\*(\d+)\*\* and declare\s*\n?three", README)
+            r"\*\*(\d+)\*\* and declare\s*\n?three", DOCUMENTATION)
         stated_stages = re.search(
             r"Why (\d+) stages and (\d+) artifacts when the registry declares "
-            r"(\d+) manifest keys", README)
+            r"(\d+) manifest keys", DOCUMENTATION)
         assert stated_corpus and stated_stages, (
             "the corpus-count sentences the README makes about this machine changed shape; "
             "re-point this test at them instead of deleting the check")
@@ -636,7 +643,7 @@ class TestWorkedExampleMatchesTheManifest:
             f"the guard's promise was that exactly the opt-in renderings are absent from "
             f"every dataset on this disk; disk disagrees: {sorted(absent)}")
         absent_paths = {ARTIFACT_LAYOUT[key] for key in absent}
-        section = README[README.index("### One dataset, file by file"):]
+        section = DOCUMENTATION[DOCUMENTATION.index("### One dataset, file by file"):]
         section = section[:section.index("### How to consume it")]
         walked = []
         for line in section.splitlines():
@@ -654,7 +661,7 @@ class TestWorkedExampleMatchesTheManifest:
     def test_the_worked_example_is_the_regenerable_dataset(self) -> None:
         # §20.6 asks for real values; the *reproducible* half only holds for the fixture
         # corpus, which is why that is the one walked file by file.
-        section = README[README.index("### One dataset, file by file"):]
+        section = DOCUMENTATION[DOCUMENTATION.index("### One dataset, file by file"):]
         assert "pipeline_demo" in section
         assert "make_fixtures.sh" in section
 
@@ -663,7 +670,7 @@ class TestWorkedExampleMatchesTheManifest:
         # asks for 14 s and -shortest trims it. Both sentences must keep agreeing.
         script = (ROOT / "scripts" / "make_fixtures.sh").read_text(encoding="utf-8")
         assert "-shortest" in script
-        assert README.count("9.985") >= 2
+        assert DOCUMENTATION.count("9.985") >= 2
 
     def test_the_verbatim_snippet_output_is_actually_verbatim(self) -> None:
         """"Output, verbatim" must survive the next column rename.
@@ -680,7 +687,7 @@ class TestWorkedExampleMatchesTheManifest:
         dataset = ROOT / "data" / "processed" / "pipeline_demo"
         if not (dataset / "manifest.json").is_file():
             pytest.skip("the verbatim claim is scoped to this machine's dataset, absent here")
-        section = README[README.index("### One dataset, file by file"):]
+        section = DOCUMENTATION[DOCUMENTATION.index("### One dataset, file by file"):]
         section = section[:section.index("### How to consume it")]
         snippet = re.search(r"^```python\n(.*?)^```", section, re.DOTALL | re.MULTILINE)
         claimed = re.search(r"^```text\n(.*?)^```", section, re.DOTALL | re.MULTILINE)

@@ -1004,3 +1004,83 @@ corollary worth keeping in mind for anyone extending it: the guard reads the sta
 **declares** (its first bolded run), not the whole cell, because a row that records its own
 correction keeps the stale wording inside a parenthetical — and a guard that punishes that
 trains people to delete the audit trail.
+
+## 42. A visual README, with the manual still reachable (2026-10-06)
+
+**Decision and assumption:** the operator asked for a more professional, structured README,
+not a change to pipeline behavior. Use progressive disclosure: a 151-line English landing page
+replaces the 2112-line manual, with eight linked guides under `docs/` holding installation,
+CLI, datasets/analysis, modalities, ELAN, architecture, configuration and development details.
+The alternative was to retain one long file behind collapsible panels; separate guides give
+readers stable topic links and keep the first visit focused. Rollback is local and reversible:
+`checkpoint/readme-before-redesign-f60d6a0` preserves the previous state. No model rerun,
+media edit, dependency pin change or runtime pipeline change is part of this unit.
+
+**Visual choice:** reuse the three committed synthetic schema illustrations for speaker turns,
+active-speaker evidence and BODY_25 keypoints. Captions and alt text explicitly name their
+synthetic origin; they are not ELAN screenshots or evidence of model accuracy. Do not display
+the existing stage graph: it still says 17 stages, the current pipeline has 18, and its labels
+overlap. The text branch overview and stage table now include `stories`, `persons` and
+`pose_normalized`; regenerating/re-laying-out the PNG is a separate follow-up.
+
+**Content preservation:** a read-only comparison with `f60d6a0:README.md` retained 1734 of
+1808 nonblank lines exactly after rebasing link URLs. The 74 non-identical old lines were
+checked: introduction/license wording, outdated diagrams/status sample, illustration captions,
+section pointers, test counts, and explicit factual corrections. No worked dataset example,
+consumer invariant or ELAN coverage/projection explanation was removed. Corrected the old
+inventory's 17-tier/19-input claim to 15 tiers/14 inputs, added missing person/story directories,
+called the worked dataset local rather than committed, described formant bins as finite widths
+(300/600/1000 Hz for F1/F2/F3), and stopped calling stories the only token-spending stage —
+translation spends endpoint tokens too.
+
+**Guards:** existing claim checks read an explicit README-plus-eight-guides set, never ODD
+history. The pose/fusion inventory checks follow the moved dataset diagram. New navigation
+checks cover local files, image paths, cross-guide heading fragments, backlinks, guide TOCs
+and synthetic labels. Commands use `uv run` and test commands disable randomized order.
+The development guide records 2036 collected unit cases and 42 e2e cases.
+
+**Work-unit boundary:** one atomic documentation relocation, tests included. The physical
+add/delete diff exceeds 400 lines because moving the manual duplicates lines in Git's raw
+accounting; slicing it into half-moved navigation would be less recoverable. This is not a
+runtime multi-feature change and no oversized PR is being opened. The bounded writer supplied
+the guides and navigation guard but did not complete the unit; its task was cancelled and the
+primary agent finished inline, with no simultaneous tracked writers.
+
+**Verification so far:** focused documentation/schema checks: 175 passed, 3 skipped (guides
+without shell commands). E2e: 42 passed in 277.65 s. Unchanged unit surfaces: 1844 passed,
+14 skipped in 84.69 s. The optional committed-PNG reproducibility check was observed skipping
+because matplotlib is absent; no current-byte-identity claim is made. Full-unit, independent
+verification and rendered-page checks are recorded below when complete. Native review authority
+is only what the live tool reports, not a status inferred from this document.
+
+**Completed checks:** the read-only independent verifier found no blockers and ran the full
+unit suite: **2019 passed, 17 skipped in 86.32 s** (2036 collected). Its numerical cross-checks
+confirmed the 18-stage order, 15 ELAN tiers/14 unique inputs and finite formant bin widths.
+The new guard was observed RED on eight guide-TOC cases, then GREEN after completing the
+TOC entries and fixing its multiline matcher. A deliberately broken cross-guide fragment in
+`getting-started.md` killed
+`TestLinksResolve::test_every_local_link_and_image_resolves_from_its_own_document` with
+`no heading #deliberately-missing-heading`; the file was restored in `finally`, and all
+navigation checks passed again (62 passed, 3 skipped).
+
+**Rendered readback:** the local Markdown preview returned all eight guides with working
+TOC IDs. Chrome DOM checks at 1280 px and 390 px found three loaded images and no page-wide
+horizontal overflow; the README's local-render height fell from 49122 px to 4262 px on the
+same desktop preview. Browser-tool screenshot capture failed, so a separate headless Chrome
+capture of the same localhost page supplied desktop/mobile screenshots; both were inspected.
+This checks a GitHub-like local renderer, not GitHub's live styling. Screenshots and audit
+logs remain ignored under `.atl/`, not committed or presented as real pipeline screenshots.
+
+**Review applicability:** native ASSESS initially could not assess intended untracked guides,
+so its returned plan treated the candidate as high risk and required independent verification;
+that verification is complete above. After staging all 14 intended files, native INSPECT stopped
+at `managed_assets_outdated`, with zero lineages and no approval. Its continuation is
+`/data/home/raulagent/.pi/agent/npm/node_modules/gentle-pi/.gentle-ai/v4.0.0/gentle-ai sync --agent pi`.
+Assumption: a managed-asset refresh is separate harness maintenance, not part of the requested
+README redesign; defer it instead of silently modifying tooling or review policy. RDD remains
+on. ASSESS with `nativeReviewOutcome: unavailable` then classified the staged candidate as
+medium risk with a runtime large writer, requiring self-verification but no separate verifier;
+the completed independent check exceeds that fallback plan. This is not native-reviewed work.
+
+**Rollback:** revert this documentation-and-guard work unit; no datasets or pipeline outputs
+need to be regenerated.
