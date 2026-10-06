@@ -550,22 +550,23 @@ class ElanStage(Stage):
                 continue
             if state not in (COVERAGE_EXPORTED, COVERAGE_SUMMARISED):
                 continue
-            tier = entry.get("tier")
-            if not tier:
+            tier_or_tiers = entry.get("tiers")
+            if not tier_or_tiers:
                 # A shape defect rather than a claim about the tiers: an entry that says a table is
                 # represented and names nothing is not a claim that can be checked, so it is not a
                 # claim. Absent/present-not-exported carry no tier and are silent by design.
                 issues.append(f"{name}: coverage says {artifact} is {state} but names no tier")
                 continue
-            if not isinstance(tier, str):
+            if not isinstance(tier_or_tiers, list) or any(
+                    not isinstance(tier, str) for tier in tier_or_tiers):
                 # Same reasoning as the `state` branch above: a value this code cannot interpret is
-                # reported, not acted on. It cannot go in the set — a list or dict raises
+                # reported, not acted on. It cannot go in the set — a dict raises
                 # `TypeError: unhashable type` there, and `validate` is the reuse gate, so a
                 # non-ValidationError escape is a crashed pipeline rather than a rerun.
-                issues.append(f"{name}: coverage entry for {artifact} names tier {tier!r}, "
-                              "expected a tier name as a string")
+                issues.append(f"{name}: coverage entry for {artifact} names tiers "
+                              f"{tier_or_tiers!r}, expected a list of tier names as strings")
                 continue
-            claimed.add(tier)
+            claimed.update(tier_or_tiers)
         unclaimed = sorted(present - claimed)
         if unclaimed:
             issues.append(f"{name}: {len(unclaimed)} declared tier(s) are named by no coverage "

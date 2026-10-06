@@ -4,26 +4,30 @@ Pure functions over files on disk: no stage imports, no config, no subprocess �
 whole mapping from Parquet to EAF can be driven against a synthetic dataset directory in a
 test, and ``stages/elan.py`` stays the reader, the writer and the reuse guarantee around it.
 
-Why seventeen fixed flat tiers instead of a hierarchy, and why seventeen is not "one per module".
+Why fifteen fixed flat tiers instead of a hierarchy, and why fifteen is not "one per module".
 ELAN's tier structure is a parent/child relation between annotation tiers, and deriving it from
-the data (one tier per speaker, one per detected face) would make the file's *shape* depend on
-what happened in a clip: two datasets could then not be compared column-for-column, and a tier
-rename would look like a new tier. Seventeen tiers with fixed names are the contract every other
-stage follows — the schema is known before the file is opened, and an absent producer is an
-absent tier rather than a renamed one. What they are *not* is a module list: those seventeen tiers
-read nineteen of the twenty-two normalised tables, because two diarizers and two fusions account
-for four of them, ``person_tracks`` reads two more as **support** for its sightings (the per-frame
-detections and the clip's frame list place them; neither has a tier of its own, and neither is an
-exported analysis), and the hand, face and normalised-pose tables get no tier. The four spaCy
-tables (source and english, tokens and sentences) do have tiers of their own
-and they are flat peers, not a parent/child chain: see :func:`spacy_token_rows` for why the
-sentence tier is not the token tier's parent and why no tier is created per token. The last tier
-added, ``acoustic_segments``, is the per-segment acoustic aggregate — one flat peer, not a parent
-of the frame-based ``voiced_blocks`` tier, because the two tables answer different questions and
-a hierarchy would make the file's shape depend on which of the two a run produced. Which tables
-still belong on a coverage list is settled with the corpus refresh, not here. A tier is a
-decision, so adding one is a change to this list rather than a name being reused for something
-else.
+the data (one tier per speaker, one tier per detected face) would make the file's *shape* depend
+on what happened in a clip: two datasets could then not be compared column-for-column, and a tier
+rename would look like a new tier. A fixed set of named tiers is the contract every other stage
+follows — the schema is known before the file is opened, and an absent producer is an absent tier
+rather than a renamed one. What they are *not* is a module list: those fifteen tiers read
+fourteen of the normalised tables, because two diarizers and two fusions account for four tiers
+over two turn tables, the four Praat block tiers (`voiced_blocks`, `f0_blocks`, `intensity_blocks`,
+`formant_blocks`) all read the one frame table, ``person_tracks`` reads two more tables as
+**support** for its sightings (the per-frame detections and the clip's frame list place them;
+neither has a tier of its own and neither is an exported analysis), and the hand, face,
+normalised-pose, linguistic and per-segment-acoustic tables get no tier.
+
+The tier set changed once, on 2026-10-05, and how it changed is part of the contract. The four
+spaCy tiers and the per-segment acoustic tier were withdrawn after the operator opened them in
+ELAN: a token's bar and a per-segment summary's bar both borrowed another producer's timeline —
+they printed a claim at a moment nobody had measured for that claim — and they read as clutter
+over the tiers that own their own time. The three Praat frame tiers went in: the same
+measurements, placed on the 10 ms grid Praat actually sampled. Tables do not leave the corpus
+when their tier does (the coverage inventory records why each one is unread), so a withdrawal is
+a change of what the *document claims*, not of what the pipeline kept. Which tables still belong
+on a coverage list is settled with the corpus refresh, not here. A tier is a decision, so adding
+or removing one is a change to this list rather than a name being reused for something else.
 
 Absence is a named state here, exactly as ``face_status`` makes it in the ASD table. Each tier
 reads one producer's file — one, plus whatever :data:`SECONDARY_INPUTS` declares for it — and
@@ -41,10 +45,9 @@ summarised, present and not exported, absent — derived from :data:`ARTIFACT_LA
 function of the same objects this function iterates, and a future artifact appears in it without
 anyone editing a list.
 
-Nine things are not obvious from reading the code — four about the format, one about what a
-tier is *for*, one about what a person tier is entitled to claim, one about what a linguistic
-tier's bar is entitled to claim, one about what a tier of numbers is entitled to claim, one
-about what an inventory of a file's own contents is entitled to claim:
+Seven things are not obvious from reading the code — four about the format, one about what a
+tier is *for*, one about what a tier over a continuous signal is entitled to claim, one about
+what an inventory of a file's own contents is entitled to claim:
 
 * **Time slots are integer milliseconds, ``start < end`` is a hard requirement, and a row with no
   usable time is not exported at all.** See :func:`seconds_to_ms` and :func:`interval_ms`. ELAN has
@@ -60,9 +63,12 @@ about what an inventory of a file's own contents is entitled to claim:
   what an analyst reads anyway. Because the three grids differ, each block's end is extended
   by *that table's own* median step (`median_positive_step`), never by a shared constant. The
   block ELAN then stores is half-open — `start ≤ t < end`, with `end` already carrying that
-  extension — so the last sampled frame is inside the block rather than on its edge. The person
-  tier is the deliberate exception: a sighting is one frame and nothing says the next one was
-  ever sampled, so its interval is never widened by a step (see :func:`person_track_rows`).
+  extension — so the last sampled frame is inside the block rather than on its edge. Two tiers
+  refuse that rule. The person tier is one: a sighting is one frame and nothing says the next one
+  was ever sampled, so its interval is never widened by a step (see :func:`person_track_rows`).
+  The three Praat frame tiers are the other, and they refuse the *grouping* rather than the
+  extension: equal-label runs need an equal label, and on Praat's floats almost no two adjacent
+  frames share one, so that rule draws a bar per frame (see :func:`frame_window_labels`).
 * **A label is the only place a tier's meaning lives.** Every value printed here is a summary
   of a producer's row, and the parts of it that could be misread — which id space an id came
   from, whether a number was measured, whether a segment-level translation is a word gloss —
@@ -77,26 +83,17 @@ about what an inventory of a file's own contents is entitled to claim:
   no sampling grid, no record of frames looked at and found empty — so the only adjacency that
   can be checked comes from ``source/frame_index.parquet``, and everything the index cannot place
   or confirm becomes a lone mark that says so in the label.
-* **A linguistic bar is placed by whatever time its row actually carries, and says which one it
-  was.** See :func:`spacy_token_rows`. A token is a span of *text*, not an event: an English token
-  has no word timings at all (the worker is never given a word list for that variant), a source
-  token's times can be non-finite or unmatched, and a sentence row carries only its segment's
-  bounds. So a row with finite token times is placed on them, a row without them is placed on its
-  enclosing segment and labelled ``placement=segment context (not token aligned)``, and a row with
-  neither is dropped and counted rather than exported at second zero. No tier is created per token
-  and no sentence tier is a parent: the four linguistic tiers are flat peers linked by ids.
-* **A tier of numbers prints its units, its denominators, and the filter behind each number.** See
-  :func:`acoustic_segment_rows`. ``acoustic_segments`` is the one tier whose labels are mostly
-  measurements, and a printed value is read as one whatever produced it, so every number carries
-  its unit (Hz, dB, seconds), each 0-1 value names what it is a ratio of, and a missing value says
-  ``unknown`` with no unit after it. The bar is the *transcript* segment's interval — the acoustic
-  stage aggregated the frames inside it — so the label says the numbers describe a window and are
-  not independently timed, which is the linguistic tiers' lesson about a borrowed interval in the
-  tier where it is easiest to miss, because the numbers really were measured. And the producer
-  filters its two families differently: the F0 statistics cover the frames its worker flagged
-  ``voiced`` while ``voiced_blocks`` blocks on ``f0_hz`` being present and never reads that flag,
-  so the label names which filter each family used rather than letting a reader compare the
-  numbers against the bars above them and see a contradiction.
+* **A tier over a continuous signal prints a bin, never a value, and refuses what it cannot say.**
+  See :func:`frame_window_labels` and :func:`merge_labelled_windows`. A Praat frame tier cannot
+  show a curve, so its bar is a 100 ms window and its label is the semitone / 2 dB / formant-band
+  bin of that window's *low median* — the low median is one of the window's own measurements,
+  where a plain median of two middle frames invents a value no frame had. Units and the word `med`
+  travel in the label, because a tier value gets quoted out of the file and the README does not
+  travel with it. A window whose measurements are mostly missing gets no bar rather than a bar
+  summarising the minority that was measured, the refusal is counted on a log line, and the hole
+  breaks a run: absence stays visible as a gap. That is the lesson the withdrawn linguistic and
+  per-segment tiers left behind — those two printed a claim at a moment borrowed from another
+  producer's timeline, and a bar's interval is part of its claim.
 * **Rows that overlap in time inside one tier are re-cut before they are written.** ELAN tiers are
   independent: two annotations in the same tier may not overlap, and pympi neither enforces that
   nor complains — the corpus's own tables (two people in one frame, two TalkNet tracks alive at
@@ -379,6 +376,10 @@ class TierDependencyMissing(Exception):
     """
 
 
+def _silence(message: str) -> None:
+    """The default :attr:`TierInput.log`: a tier with no logger writes the same rows."""
+
+
 @dataclass(frozen=True)
 class TierInput:
     """What one tier builder may read: its own table, its secondary inputs, and the dataset.
@@ -388,12 +389,19 @@ class TierInput:
     sampled on, which lives in the ASD *frames* table. Passing the directory rather than a
     pre-read table keeps that dependency explicit at the call site instead of threading a
     sixth optional argument through every builder.
+
+    ``log`` is here because the Praat frame tiers decline to write *some of what they read*
+    and no bar in the document says so: a window of the frame grid whose measurements are
+    mostly missing gets no label, and that is a fact a reader of a sparse tier cannot
+    reconstruct from the file. It defaults to :func:`_silence` so a builder can be called
+    from a test without a logger and still produce the same rows.
     """
 
     tier: str
     artifact: str
     path: Path
     dataset_dir: Path
+    log: Callable[[str], None] = _silence
 
     def rows(self, columns: Sequence[str]) -> list[dict[str, Any]]:
         """The table's rows, projected to the columns the tier actually reads.
@@ -536,11 +544,6 @@ def _field(value: Any, *, null_is_answer: bool = False) -> str:
 
 
 #: Document property holding the per-table provenance of the linguistic tiers (model + variant).
-#: Named in :data:`TIER_SEMANTICS` so a reader of the file can find it without the README.
-LINGUISTIC_PROVENANCE_PROPERTY = "pipeline-linguistic-provenance"
-
-#: Shape/version marker of that property's JSON.
-LINGUISTIC_PROVENANCE_VERSION = 1
 
 
 # ----------------------------------------------------- independent-tier overlap projection
@@ -694,7 +697,7 @@ COVERAGE_STATES: tuple[str, ...] = (COVERAGE_EXPORTED, COVERAGE_SUMMARISED,
                                     COVERAGE_PRESENT_NOT_EXPORTED, COVERAGE_ABSENT)
 
 #: Shape/version marker of the property's JSON, so a later re-shaping is visible in the file.
-COVERAGE_VERSION = 1
+COVERAGE_VERSION = 2
 
 #: Why one artifact has no tier, keyed by registry artifact name.
 # Only the artifacts that really go unread are here, and each entry states what the export
@@ -718,6 +721,23 @@ STORIES_TABLE_REASON = (
     "(`segments_src`, `words`) block over individual segments' own rows and never group them, "
     "so a story's span and its `why_it_is_a_story` have no bar to reach")
 
+SPACY_TABLES_REASON = (
+    "token- and sentence-level morphosyntax is not represented by this export: these tables "
+    "carry no independently measured timing — a token's bar could only ever borrow its "
+    "segment's span or a word alignment the stage cannot always prove — so an ELAN bar over "
+    "them would place a linguistic claim on a timeline it does not own. The tables are "
+    "unchanged on disk and readable as Parquet; the withdrawn tiers are `spacy_source_tokens`, "
+    "`spacy_source_sentences`, `spacy_english_tokens` and `spacy_english_sentences` (operator "
+    "decision 2026-10-05, after opening them in ELAN)")
+
+ACOUSTIC_SEGMENT_SUMMARY_REASON = (
+    "per-segment acoustic summaries are not represented by this export: their bars were the "
+    "transcript segment's times, so a row of measured numbers sat over an interval the "
+    "acoustic stage never timed. The same Praat measurements are on the timeline where they "
+    "were actually sampled — `f0_blocks`, `intensity_blocks` and `formant_blocks` block over "
+    "acoustic/frame_features.parquet's own 10 ms grid — and `acoustic_segments` was withdrawn "
+    "(operator decision 2026-10-05). The table stays on disk as Parquet")
+
 TIER_ABSENT_REASONS: dict[str, str] = {
     "pose_hands": POSE_DENSE_TRACK_REASON,
     "pose_face": POSE_DENSE_TRACK_REASON,
@@ -732,6 +752,15 @@ TIER_ABSENT_REASONS: dict[str, str] = {
         "change of basis over the same BODY_25 keypoints the pose tier already blocks over — "
         "`pose_presence` reads pose/body.parquet's timestamps and confidences and never a "
         "coordinate, so neither x_norm/y_norm nor the basis columns here have a bar to reach"),
+    # The five withdrawn tables land here for the same reason `stories` does: the file is on
+    # disk, no tier reads it, and `COVERAGE_REASON_UNKNOWN` would misreport a decision as an
+    # oversight. Each wording names the tier set that now answers the question instead, which
+    # makes it falsifiable: a tier reading these tables again would make its reason false.
+    "spacy_source_tokens": SPACY_TABLES_REASON,
+    "spacy_source_sentences": SPACY_TABLES_REASON,
+    "spacy_english_tokens": SPACY_TABLES_REASON,
+    "spacy_english_sentences": SPACY_TABLES_REASON,
+    "acoustic_segments": ACOUSTIC_SEGMENT_SUMMARY_REASON,
 }
 
 #: A reason the export could not name specifically says so, rather than going silent.
@@ -773,6 +802,47 @@ FACE_TRACK_NS = "face_track_id"
 #: verdict says its own namespace; the tier name carries the same fact but does not travel.
 ENGINE_NS = "engine"
 
+#: The Praat frame tiers' blocking and quantisation steps, defined here rather than beside the
+#: builders because :data:`TIER_SEMANTICS` *formats* them: a semantics clause that typed
+#: "100 ms", "2 dB" and "150 Hz" would be a claim about behaviour that no edit to the constant
+#: would update, which is the failure :data:`NEGATIVE_TOLERANCE_SECONDS` is formatted for in the
+#: same property. The functions that apply them (:func:`pitch_label`, :func:`intensity_label`,
+#: :func:`formant_label`, :func:`frame_window_blocks`) live with the frame tier builders below.
+
+#: Pitch labels: the semitone bin containing the window's median ``f0_hz``, printed as a
+#: scientific pitch name — ``G2`` means [G2, one semitone above G2), never "the pitch was G2".
+PITCH_SEMITONES_PER_OCTAVE = 12
+
+#: Loudness labels: the interval of width :data:`INTENSITY_DB_STEP` containing the median.
+#: Floor, not round, so the printed bounds always contain the value they were computed from.
+INTENSITY_DB_STEP = 2
+
+#: Formant labels: F1/F2/F3 each floored to its band (Hz), printed as one label. One tier
+#: rather than three, because a vowel is the *combination*: three tiers of blocks would triple
+#: the visual load for a fact that only means something read across all three columns at once.
+FORMANT_BANDS_HZ: tuple[int, int, int] = (300, 600, 1000)
+
+#: Blocking window of the three Praat frame tiers, in seconds.
+#:
+#: Measured 2026-10-05 on the four corpus clips that have a frame table (KABC 417 frames,
+#: La-1 798, pipeline_demo 1001, pipeline_silent 400, all on the worker's 10 ms grid). One bar
+#: per *frame* — the shape a naive "one run of an equal bin" produces — gives 100-673 bars per
+#: clip with a median bar of 10-20 ms, because Praat's floats differ at every frame and no two
+#: adjacent frames share a bin: 81-96% of the bars are under 50 ms, which is unreadable in
+#: ELAN's grid and is the confetti the operator asked to stop seeing. 100 ms gives 24-89 bars
+#: per tier at a median width of exactly one window, which is still finer than a word.
+FRAME_WINDOW_SECONDS = 0.1
+
+#: Least share of a window's frames that must carry a measurement for the window to be labelled.
+#:
+#: 0.5 rather than any, because 50% is where "this window describes what Praat measured here"
+#: stops being a stretch: at 0.5 a bar over a window that was mostly unmeasured is still a bar
+#: about the minority of frames that were. Measured on the same clips, 0.5 costs 3-8% of the
+#: pitched frames on the pitch tier (KABC 305/315, La-1 411/441, demo 584/634) and 0% on the
+#: loudness and formant tiers, where nearly every frame is measured; 0.0 would label windows
+#: holding one frame in ten and read as a continuous signal where the producer found almost none.
+FRAME_MIN_FILL = 0.5
+
 #: What the tiers summarise and what they leave out, written into every document.
 #:
 # A tier label is the part of this file that travels — into a screenshot, an issue, a paper —
@@ -809,7 +879,9 @@ TIER_SEMANTICS: str = (
     "Blocks are half-open in milliseconds: a block in asd_speaking, pose_presence or "
     "voiced_blocks covers [start, end), where end already carries that tier's own median "
     "grid-step extension, so the last sampled frame is inside the block rather than on its "
-    "edge; person_tracks is the deliberate exception and adds no grid step of its own. "
+    "edge; person_tracks is the deliberate exception and adds no grid step of its own, and "
+    "neither do the three Praat frame tiers, whose edges are window boundaries rather than "
+    "claims about a frame's own duration. "
     "Persons: person_id is a tracker trajectory, not a human — ids are recycled and lost, so "
     "counts of ids are not counts of people; 'sighting run N frames of M' is this id's own "
     "N de-duplicated sightings joined only across consecutive source frames that "
@@ -846,74 +918,52 @@ TIER_SEMANTICS: str = (
     "lists per affected tier the logical_row_count (rows the tables carried) beside the "
     "final_annotation_count (annotations this tier emits), because those two numbers are "
     "different facts and only the second one is what ELAN shows. "
-    "Linguistic tiers: spacy_source_tokens, spacy_source_sentences, spacy_english_tokens and "
-    "spacy_english_sentences are four flat peer tiers, not a hierarchy — a sentence tier is not "
-    "the parent of a token tier and no tier is created per token; they link by the sentence_id "
-    "and segment_id printed on every row. A token is a span of text, not an event, so each row "
-    "says how it was placed, and the words follow the bar rather than the variant: a token whose "
-    "own token_start_time and token_end_time are finite, usable (defined below) and ordered sits "
-    "on them, "
-    "and a row without usable token times sits on its enclosing segment's bounds with a placement "
-    "fragment that says 'segment context (not token aligned)', keeping that row's own "
-    "timestamp_alignment_status and timestamp_alignment_confidence rather than improving or "
-    "discarding them. Such a bar is context, not a word boundary, and every English row — of "
-    "spacy_english_tokens and of spacy_english_sentences alike — says that its text is '"
-    # The exact text of ENGLISH_TRANSLATION_TEXT, inlined the way this property already inlines
-    # the placement fragments defined below it (a module-level constant cannot forward-reference).
-    # `test_the_semantics_property_...` checks the constant and this clause still agree.
-    "translation text, not word alignment to the source'; the status no_timing "
-    "is printed on the rows whose own column holds it, which is every English row this pipeline "
-    "writes. A sentence is never timed by its first token — the only bounds the sentence table "
-    "carries are the segment's. Usable means finite, ordered, and no further below zero than "
-    # The tolerance, in the same words the code applies: quoting a number here is a claim about
-    # behaviour, so it is formatted from the constant rather than typed twice. A test ratchets it.
-    f"{NEGATIVE_TOLERANCE_SECONDS * 1000.0:g} ms: "
-    "a value within half a millisecond of zero is rounding noise at the start of the clip and "
-    "is placed at 0 ms, "
-    "while a materially negative endpoint is a producer defect that no tier clamps onto second "
-    "zero — the refusal lives in interval_ms, the one time path every tier takes, so a negative "
-    "costs its row (dropped and counted with a missing timestamp) in words and person_tracks and "
-    "the linguistic tiers alike. A row with neither usable token times nor usable segment bounds "
-    "is dropped and "
-    "counted rather than placed at second zero. 'none' and 'unknown' are two words, and which "
-    "one a null takes is decided per column because the producer writes these columns "
-    "differently: ent_type is written as token.ent_type_ or None, so the producer's own answer "
-    "'this token is inside no named entity' arrives as a null and an empty value never reaches "
-    "that column — there a null prints 'none'; morph is written as str(token.morph), so there an "
-    "empty string prints 'none' (spaCy answered: no morphology on this token) and only a null "
-    "prints 'unknown' (nothing reached the table). The four lexical flags work the same way on "
-    "the whole fragment: a row that flagged none of the four says 'flags none', a row whose four "
-    "flag columns are all null says 'flags unknown', and a confidence the producer measured as "
-    "zero prints as a measured 0.000. A dependency head is printed as text inside its "
-    "token's own label and is never an ELAN reference relation. Which spaCy model and which "
-    "variant produced each linguistic table is recorded in the " + LINGUISTIC_PROVENANCE_PROPERTY
-    + " property, once per table rather than on every token, read from the table's own metadata; "
-    "a table that never recorded its model says 'unknown' there. "
-    "Acoustic summary tier: acoustic_segments prints one transcript segment's measured numbers, "
-    "read from acoustic/segment_features.parquet, and the bar spans that row's own start_time "
-    "and end_time. Those are the transcript segment's times — they are the window the acoustic "
-    "stage aggregated frames inside — so the numbers describe a window and the bar is not "
-    "independently timed: nothing here measured when a pitch or a pause began or ended. Units "
-    "travel with the values: f0_mean, f0_median, f0_min, f0_max, f0_std, f1_mean, f2_mean and "
-    "f3_mean are Hz, intensity_mean, intensity_median, intensity_min, intensity_max and "
-    "intensity_std are dB, and duration and pause_duration are seconds. The two dimensionless "
-    "values name their denominators instead of a unit: pause_ratio is pause_duration over this "
-    "row's duration, and that column is the span the producer was handed — the source media "
-    "duration when the stage knew it, the segment span only when it did not — which is why the "
-    "label calls it 'as reported' rather than calling it the segment's length; the producer "
-    "leaves pause_ratio null whenever that span is unknown or zero, and a null there prints "
-    "'unknown' rather than the 0.000 that would claim a window with no silence in it. "
-    "voiced_ratio is the share of the frames sampled in the window. pause_count is a count of "
-    "clipped silence runs, not a measurement. The pitch family covers the frames the producer "
-    "flagged voiced, which is not the same criterion the voiced (f0) blocks are built on — that "
-    "tier blocks on f0_hz being present and never reads the flag — while the intensity and "
-    "formant means are summarised over every frame in the window, so the pitch numbers neither "
-    "describe nor contradict the bars above them. Values are rounded to three decimals for "
-    "display and a missing or non-finite one prints 'unknown' with no unit after it, because a "
-    "unit on a non-measurement is the same lie as a zero; a measured zero still prints 0.000. A "
-    "row whose own two times are null, non-finite, reversed or zero-width carries no time this "
-    "export may place, so it is dropped and counted rather than widened by the display rule and "
-    "given a full set of statistics over a bar no audio spans. "
+    "Praat frame tiers: f0_blocks, intensity_blocks and formant_blocks all read "
+    "acoustic/frame_features.parquet — Praat's 10 ms grid as the worker wrote it. A continuous "
+    "signal cannot be a curve in this file (pympi serialises only alignable and referenced "
+    "annotations, not ELAN's time-series type), so each tier turns the grid into bars. They are "
+    "NOT runs of an equal label, which is how the other block tiers here work: on Praat's floats "
+    f"that rule puts a bar on nearly every frame, so these three cut the timeline into fixed "
+    f"windows of {FRAME_WINDOW_SECONDS * 1000:g} ms from the table's first timestamp and print "
+    "one label per window. Bar boundaries are therefore the same instants on all three tiers and "
+    "can be lined up by eye across them. "
+    "A window's label is the bin containing that window's *low median*: the lower of the two "
+    "middle measurements, which is one of the window's own frames and never a midpoint invented "
+    "between two frames (the plain median of 100 Hz and 200 Hz is 150 Hz, a pitch Praat measured "
+    "at no frame at all). Adjacent windows whose printed label comes out alike share one bar, so "
+    "a long bar is a reading of several windows and its label is a claim about all of them. "
+    "f0 blocks print the semitone bin of that median as a scientific pitch name ('G2' means [G2, "
+    f"one semitone above G2), A4 = 440 Hz, {PITCH_SEMITONES_PER_OCTAVE} bins per octave, floored). "
+    f"intensity blocks print the interval of {INTENSITY_DB_STEP} dB containing it, written 'x to "
+    "y dB' because a hyphen separator and Praat's own -300 dB floor read as one signed number; "
+    "they are built from every frame Praat measured a level on, deliberately not filtered by "
+    "voicing — the tier that filters on pitch presence is f0_blocks. formant blocks print all "
+    f"three formants as coarse bands ({FORMANT_BANDS_HZ[0]} Hz for F1, {FORMANT_BANDS_HZ[1]} Hz "
+    f"for F2, {FORMANT_BANDS_HZ[2]} Hz for F3, each floored) in one label, because a vowel is the "
+    "combination and three tiers would triple the bars for a fact that only means something read "
+    "across the three. "
+    f"A window holding fewer than {FRAME_MIN_FILL:.0%} of its frames measured in every column the "
+    "tier labels gets no bar: it is refused, not stretched, because a bar says 'this held here' "
+    "and a mostly-unmeasured window says 'Praat could not measure here'. Refusals are counted on "
+    "one run-log line per tier and they break a run, so no bar spans one. Where f0_hz was missing "
+    "for most of a window f0_blocks has a hole there while intensity_blocks may run straight "
+    "across it, and that disagreement is information about what Praat could measure, not noise. "
+    "Nothing interpolates, bridges or carries a measurement forward, and no bar claims a value "
+    "the frames under it did not have. voiced_blocks reads the same column as f0_blocks by a "
+    "different rule — it groups runs of pitch presence, so its bars are longer, fewer, and every "
+    "frame inside one is pitched. "
+    "Withdrawn tiers: spacy_source_tokens, spacy_source_sentences, spacy_english_tokens, "
+    "spacy_english_sentences and acoustic_segments are not written by this export and are not "
+    "renamed versions of any tier here. Their tables stay on disk and readable as Parquet, and "
+    "the " + COVERAGE_PROPERTY + " property gives each one the state 'present, not exported' "
+    "with the reason naming what the export declines to represent. The reason is the same for "
+    "the four linguistic tables and the acoustic summary alike: their bars could only borrow "
+    "another producer's timeline — a token's interval came from a word alignment the stage "
+    "cannot always prove, a segment summary's from the transcript's own bounds — so the bar "
+    "placed a claim at a moment nobody had measured for it. That is a fact about the document's "
+    "claims, not a judgement that the tables are useless: for the linguistic tables the timing "
+    "defect is the stage's, and the morphology itself is untouched. Nothing in this file "
+    "describes those tables any more, and a reader who needs them reads the Parquet. "
     "Coverage: this document is a summary of the dataset's tables, not every number in them "
     "— dense per-frame signals are collapsed to runs and nothing here is a raw measurement. "
     "What represents each normalised table is named per artifact in the " + COVERAGE_PROPERTY
@@ -1581,617 +1631,262 @@ def _shift(value: Any, step: float) -> Any:
     return None if value is None else float(value) + step
 
 
-# --------------------------------------------------------------- linguistic tiers
+# ------------------------------------------------------ praat frame block tiers
 
-#: The four linguistic tiers' ``artifact`` keys. Named for the **registry keys** and not for the
-#: :data:`~multimodal_pipeline.schemas.TABLE_SCHEMAS` aliases ``linguistic_source_tokens`` /
-#: ``linguistic_english_sentences``: those two registries are not the same namespace, and the one
-#: this module can actually resolve a path with is ``ARTIFACT_LAYOUT`` (see
-#: :func:`artifact_path`), which spells them ``spacy_*``. Reusing the schema alias as an artifact
-#: name would fail every one of these tiers on a well-formed dataset, silently, through the
-#: per-tier skip line.
-SPACY_SOURCE_TOKENS = "spacy_source_tokens"
-SPACY_SOURCE_SENTENCES = "spacy_source_sentences"
-SPACY_ENGLISH_TOKENS = "spacy_english_tokens"
-SPACY_ENGLISH_SENTENCES = "spacy_english_sentences"
+#: The three tiers below all read ``acoustic/frame_features.parquet``: Praat's 10 ms grid as
+#: the worker wrote it. ELAN does have a time-series annotation type, but pympi cannot serialise
+#: one — measured on the pinned pympi-ling, whose writer emits ALIGNABLE_ANNOTATION and
+#: REF_ANNOTATION only, with no time-series API to add one through. Hand-rolling XML around the
+#: library would split every guarantee this file makes (drop counters, overlap projection, media
+#: descriptor) into a second code path, so a continuous Praat signal enters the way every other
+#: dense signal here already does: as alignable blocks. What is *not* the way every other dense
+#: signal enters is the blocking rule. `voiced_blocks`, `pose_presence` and `asd_speaking` group
+#: runs of an equal label, and that rule is unusable here: it needs an equal label to group, and
+#: on a continuous signal every frame has a different one.
+#:
+#: Measured 2026-10-05 on the four corpus clips that carry a frame table. One bar per frame gives
+#: 100-673 bars per tier with a median width of 10-20 ms and 81-96% of bars under 50 ms: Praat's
+#: floats differ at every frame, so no two adjacent frames share a semitone, a 2 dB step or a
+#: formant band. Two fixes were tried against that and both fail on a claim rather than on looks:
+#: *sustained change* (a new bin takes over once it holds k frames, so flicker is absorbed into
+#: the bar before it) is legible but covers 25-70% of frames whose own bin differs from the bar's
+#: label; *drop the short runs* is honest and discards 25-58% of the frames Praat measured. A
+#: third rule is both: cut the timeline into fixed :data:`FRAME_WINDOW_SECONDS` windows and put
+#: each window's own **median** into :data:`FRAME_WINDOW_SECONDS` of its own bin, which is a
+#: measurement every covered frame took part in and is never stamped over a frame that disagrees.
 
-#: How a linguistic annotation was placed, printed on every row of the four linguistic tiers.
-# The pipeline's other tiers are timed by the event they describe: a sighting has a PTS, a turn has
-# a diarizer's endpoints. A spaCy token is not an event — it is a span of *text* inside a segment,
-# and whether it has a time of its own depends on the variant, on the tokeniser, and on whether the
-# alignment could name the word. One word for all four cases would put a bar on the timeline and
-# leave the reader to guess which of these three claims the bar is entitled to make.
-#: The token carries its own ``token_start_time``/``token_end_time`` and they are usable (finite,
-#: non-negative, ``start < end``, per :func:`_valid_pair`), so the bar spans the interval the
-#: producer measured for that token.
-TIMING_TOKEN_ALIGNED = "token aligned"
-#: The token carries usable times, but the producer's own ``timestamp_alignment_status`` says the
-#: pairing is only a borrowing (``approximate``: the timestamp is right while the 1:1 pairing is not
-#: provable; ``unmatched``: no timestamp, so no time could be fabricated from it either). The bar is
-#: still placed on the times the table holds; the label says they are not a provable word boundary.
-TIMING_TOKEN_REPORTED = "token time as reported"
-#: No usable time for this token, so the bar spans its **segment's** endpoints. The label says the
-#: bar is segment context and not a token-aligned span, and it keeps the row's own alignment status
-#: and confidence, because those are the producer's statement about the timing and nothing here
-#: improves or discards them. Printed only of a row the export actually placed there: it names
-#: where the bar sits, so it cannot be added to a variant on the strength of what that variant
-#: usually looks like (see :data:`ENGLISH_TRANSLATION_TEXT`).
-TIMING_SEGMENT_CONTEXT = "placement=segment context (not token aligned)"
-
-#: The exact ``timestamp_alignment_status`` values this module branches on, quoted from the
-#: producer's vocabulary (`workers/spacy_worker.py`) rather than paraphrased: ``aligned`` is the one
-#: state allowed to claim a token's own span, and ``no_timing`` is what the English variant carries
-#: on every row because the worker is given no word list for a translation at all. ``unmatched`` is
-#: deliberately absent: it has no branch here — an unmatched row may still hold finite times, and
-#: this module places those and prints the producer's word unchanged.
-STATUS_ALIGNED = "aligned"
-STATUS_NO_TIMING = "no_timing"
-
-#: The linguistic tier's own words for "this row's variant has no timing to place it by", built
-#: from :data:`STATUS_NO_TIMING` so the label can never drift from the column value it names.
-#: Named rather than inlined because :data:`TIMING_SEGMENT_CONTEXT` already contains the word
-#: ``context``, so a test that looked for the bare phrase would pass on a token row. Printed on a
-#: row only when its own status column holds that value **and** the row was placed on its segment —
-#: which is every English row of every table this pipeline writes today, and still a measurement of
-#: the row rather than a property of the tier name.
-LINGUISTIC_NO_TIMING = f"variant {STATUS_NO_TIMING}"
-
-#: The English tier's claim about its own **text**, printed on every English row whatever the bar
-#: is placed on. Separate from the placement words on purpose: "this text translates a source line
-#: and is not a word-level alignment to it" is true of an English row whether or not the table
-#: happens to carry token times for it, while "segment context" is a statement about the interval
-#: and belongs only on a row the export really placed on its segment.
-ENGLISH_TRANSLATION_TEXT = "translation text, not word alignment to the source"
-
-#: The four nullable lexical-flag columns, as ``(label printed, column name)``.
-#: One list so the "all four unread" state and the "which were true" list are read off the same
-#: columns and cannot drift apart.
-LEXICAL_FLAGS: tuple[tuple[str, str], ...] = (
-    ("alpha", "is_alpha"), ("stop", "is_stop"), ("digit", "is_digit"), ("num", "like_num"))
-
-#: Parquet key/value metadata key the spaCy stages write per table
-#: (``stages/spacy_source.py::normalize``). Read from the file's own schema metadata, never from
-#: config: the export runs over whatever is on disk, and the model that produced a table is a fact
-#: about that table, not about the settings of the run that happens to be configured now.
-SPACY_MODEL_METADATA_KEY = "spacy_model"
-
-#: A model name that reaches the table as the string ``"None"``
-# ``normalize`` writes ``"spacy_model": str(payload.get("selected_model"))``, and
-# ``write_table`` drops a metadata value only when it is ``None`` — so a document with no
-# ``selected_model`` lands on disk as the four-character string "None". That is a missing value
-# written through ``str()``, not a model anybody installed, so the export reports it as
-# :data:`UNKNOWN_DISPLAY` rather than naming a model that does not exist. It is not hypothetical:
-# nothing in either spaCy stage guarantees the key.
-UNWRITE_MODEL_NAMES: frozenset[str] = frozenset({"none", "null", "", "unknown"})
-
-#: Column sets read by the two linguistic builders, exported so a test can check them against
-#: ``TOKENS_SCHEMA`` / ``SENTENCES_SCHEMA`` rather than against this file's memory of them.
-SPACY_TOKEN_COLUMNS: tuple[str, ...] = (
-    "segment_id", "sentence_id", "token_id", "token_index", "speaker_id", "text", "lemma",
-    "pos", "tag", "morph", "dep", "head_token_id", "head_text", "head_pos", "ent_type",
-    "is_alpha", "is_stop", "is_digit", "like_num", "char_start", "char_end",
-    "segment_start_time", "segment_end_time", "token_start_time", "token_end_time",
-    "timestamp_alignment_status", "timestamp_alignment_confidence",
-)
-SPACY_SENTENCE_COLUMNS: tuple[str, ...] = (
-    "segment_id", "sentence_id", "sentence_index", "speaker_id", "text", "token_count",
-    "char_start", "char_end", "segment_start_time", "segment_end_time",
-)
+_PITCH_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
 
-def _valid_pair(start: Any, end: Any) -> bool:
-    """Do these two producer values form a time this export is allowed to print?
+def lower_median(values: Sequence[float]) -> float:
+    """The lower of the two middle values, so the result is always one of ``values``.
 
-    Finite, ``start`` no further below zero than :data:`NEGATIVE_TOLERANCE_SECONDS`, and
-    ``start < end``. Deliberately **not** the `start <= end` rule :func:`interval_ms` enforces:
-    that one widens a genuine zero-width measurement by a millisecond because ELAN cannot store a
-    zero-width bar, which is right for a real span and wrong for a segment context fallback. A row
-    whose segment bounds are equal or reversed is not a usable enclosing interval, and the honest
-    outcome is the row's own drop, not a bar whose width came from the display rule.
-
-    A **materially negative endpoint is not usable either**, which is a change from the first
-    version of this check. It used to allow negatives on the grounds that :func:`seconds_to_ms`
-    clamps them to 0; that is a converter's answer and it is the wrong one here, because the clamp
-    turns ``(-2.0, -1.0)`` into ``[0, 1) ms`` — a bar at the start of the clip, which is precisely
-    the invented placement :class:`MissingTimestamp` exists to refuse. No producer in this pipeline
-    writes negative times (`workers/spacy_worker.py` forwards WhisperX segment and word times
-    unmodified), so a negative is a producer defect, and the export's job is to drop the row and
-    count it rather than launder the defect into second zero.
-
-    The tolerance is shared with :func:`interval_ms` rather than restated as `>= 0` so the two
-    rules answer one question the same way: a token whose first frame time is `-1e-6` keeps **its
-    own** span instead of being demoted to segment context over a rounding artefact. This check can
-    therefore never call usable a pair the export would then refuse.
+    :func:`statistics.median` averages the middle pair on an even count, which invents a value
+    no frame had: on a window holding 100 Hz and 200 Hz it returns 150, a pitch Praat never
+    measured at any frame in that window, and it can then bin to a label no covered frame
+    supports. The low median is a frame's own measurement by construction.
     """
-    try:
-        first, second = float(start), float(end)
-    except (TypeError, ValueError):
-        return False
-    return (math.isfinite(first) and math.isfinite(second)
-            and first >= -NEGATIVE_TOLERANCE_SECONDS and second > first)
+    ordered = sorted(values)
+    return ordered[(len(ordered) - 1) // 2]
 
 
-def _alignment_fragment(row: dict[str, Any]) -> str:
-    """The producer's own alignment verdict, verbatim, with the confidence as a measured number.
+def pitch_label(f0_hz: float) -> str:
+    """Scientific pitch name of the semitone bin containing ``f0_hz`` (A4 = 440 Hz).
 
-    The status is :func:`_field`-formatted, so a null says ``unknown`` and an empty string says
-    ``none`` rather than both saying ``unknown``. The confidence is :func:`_num`-formatted, so a
-    real ``0.0`` prints ``0.000`` and not ``unknown``: the worker writes 0.0 as a *measured* "no
-    confidence in this pairing" for every ``unmatched`` and ``no_timing`` row, and hiding it behind
-    the word for "no measurement" would be the opposite collapse from the one :func:`_field` avoids.
+    The floor of the semitone index bins downward from the A4 anchor, so the bin edge, not the
+    distance, decides, and the label says which bin.
     """
-    return (f"alignment={_field(row.get('timestamp_alignment_status'))} "
-            f"conf={_num(row.get('timestamp_alignment_confidence'), 3)}")
+    midi = math.floor(PITCH_SEMITONES_PER_OCTAVE * math.log2(f0_hz / 440.0) + 69)
+    return f"{_PITCH_NAMES[midi % 12]}{midi // 12 - 1}"
 
 
-def _char_span(row: dict[str, Any]) -> str:
-    """The token's own character span inside the segment text, or ``char unknown``.
+def intensity_label(intensity_db: float) -> str:
+    """The ``intensity_db`` interval of width :data:`INTENSITY_DB_STEP` containing the value.
 
-    Character offsets are not a time and are never used to place a bar; they are printed because
-    they are the one span a linguistic row always has, and they let a reader find the token in the
-    sentence the same producer wrote. A null is not turned into ``0`` — ``char 0-0`` would claim
-    the token sits at the very start of the text.
+    ``to`` rather than a hyphen: Praat's own floor is -300 dB, which the pipeline emits verbatim
+    on a silent clip, and a range written with a separator that is also a minus sign reads as
+    "-300, -298" or "-300 to 298" depending on the eye. "-300 to -298 dB" has one parsing.
     """
-    start, end = row.get("char_start"), row.get("char_end")
-    if start is None or end is None:
-        return "char unknown"
-    return f"char {_id(start)}-{_id(end)}"
+    low = math.floor(intensity_db / INTENSITY_DB_STEP) * INTENSITY_DB_STEP
+    return f"{low:.0f} to {low + INTENSITY_DB_STEP:.0f} dB"
 
 
-def _flags_fragment(row: dict[str, Any]) -> str:
-    """The four nullable lexical flags as one fragment, with "unread" kept distinct from "all false".
+def formant_label(f1_hz: float, f2_hz: float, f3_hz: float) -> str:
+    """The coarse-band intervals of three formants, as one label.
 
-    ``is_alpha``/``is_stop``/``is_digit``/``like_num`` are nullable in ``TOKENS_SCHEMA``, and the
-    :func:`_flag` reading (null behaves like false) is right for the ASD boolean it was written
-    for and wrong for the label: a row whose flags were never measured printed exactly what a row
-    measured false on all four prints. So the fragment says ``unknown`` only when **all four**
-    columns are null, and otherwise names the ones that hold — one word of cost, no per-flag
-    commentary, because the pair of states worth separating is "answered none" and "not asked".
+    One label, not three tiers: see :data:`FORMANT_BANDS_HZ`.
     """
-    if all(row.get(key) is None for _label, key in LEXICAL_FLAGS):
-        return f"flags {UNKNOWN_DISPLAY}"
-    names = " ".join(label for label, key in LEXICAL_FLAGS if _flag(row, key))
-    return f"flags {names if names else ABSENT_DISPLAY}"
+    parts = []
+    for index, (band, value) in enumerate(zip(FORMANT_BANDS_HZ, (f1_hz, f2_hz, f3_hz))):
+        low = math.floor(value / band) * band
+        parts.append(f"F{index + 1}~{low:.0f}Hz")
+    return " ".join(parts)
 
 
-def _time_value(value: Any) -> str:
-    """A producer's seconds as the millisecond this export actually writes.
+#: The reason a labelled window is refused when it holds too few measured frames. Reported per
+#: tier on one logged line and never as a bar, because the alternative — a bar whose label
+#: summarises one frame in ten — is the lie this constant exists to prevent.
+FRAME_WINDOW_THIN_REASON = "less than half its frames measured"
 
-    Rendered through :func:`seconds_to_ms` rather than printed as seconds, so the fragment can be
-    compared against the document's own ``TIME_VALUE``. A non-finite value says ``non-finite`` and a
-    null says ``unknown``: neither reaches the file, because the row is dropped, but the fragment is
-    built before that decision and must not print a 0 that no bar carries.
+
+def window_count(first_timestamp: float, last_timestamp: float) -> int:
+    """How many :data:`FRAME_WINDOW_SECONDS` windows a table's grid spans, inclusive at both ends."""
+    return int(math.floor((last_timestamp - first_timestamp) / FRAME_WINDOW_SECONDS)) + 1
+
+
+def window_edges(first_timestamp: float, count: int) -> list[float]:
+    """The `count + 1` boundaries of `count` windows, computed **once**.
+
+    One formula, one list, because membership and printing must agree to the last bit. When they
+    do not, a bar gets printed narrower than the frames its label was computed from: measured on
+    the KABC clip, testing membership with `(grid + i*step) + step` while printing the edge as
+    `grid + (i+1)*step` put the frame at 1.021406 s inside window 9's median while the bar for
+    that window ended at the same 1021 ms — so the frame the label was computed from sat outside
+    the bar that printed it, in the grid's very first second. Two float paths, one truth.
     """
-    if value is None:
-        return "unknown"
-    try:
-        if not math.isfinite(float(value)):
-            return "non-finite"
-    except (TypeError, ValueError):
-        return "non-finite"
-    return f"{seconds_to_ms(value)} ms"
+    return [first_timestamp + index * FRAME_WINDOW_SECONDS for index in range(count + 1)]
 
 
-def _variant_of(item: TierInput) -> str:
-    """The variant a linguistic table holds, from the artifact key that named it.
+def frame_window_labels(rows: Sequence[dict[str, Any]], columns: Sequence[str]
+                        ) -> tuple[list[tuple[int, int, tuple[float, ...], int] | None],
+                                   dict[str, int]]:
+    """Label every :data:`FRAME_WINDOW_SECONDS` window of a frame table, or refuse it.
 
-    Read from the registry key rather than the table's own ``variant`` column: the column is
-    populated by the normalizer (``stages/spacy_source.py`` stamps it), but the *tier* is chosen by
-    which file is being read, and a label must not disagree with the file it came from. ``None``
-    means this is not a linguistic tier, and no caller in the registry reaches it.
+    ``rows`` must be sorted by ``timestamp`` and carry one (see :func:`_frame_block_tier`,
+    which separates the rows that do not because the shared drop counter owns them). Returns
+    one slot per window plus the counts that explain the refusals.
+
+    A slot is ``None`` — no bar — when the window holds fewer than :data:`FRAME_MIN_FILL` of
+    its frames measured in *every* column the tier labels: a bar says "this held here", and a
+    window that is mostly holes says "Praat could not measure here". Measured 2026-10-05 on the
+    four clips that have a frame table, this costs 3-8% of pitched frames and nothing at all on
+    the loudness and formant tiers.
+
+    A labelled slot is ``(window, window + 1, medians, covered_frames)``, where ``medians[k]``
+    is the low median of column ``k`` over exactly the ``covered_frames`` frames that were
+    measured: the label is computed from frames the bar will cover, never over a frame that
+    disagrees with it. Adjacent windows are *not* merged here — merging belongs to the printed
+    label, see :func:`merge_labelled_windows`.
     """
-    return {SPACY_SOURCE_TOKENS: "source", SPACY_SOURCE_SENTENCES: "source",
-            SPACY_ENGLISH_TOKENS: "english", SPACY_ENGLISH_SENTENCES: "english"}.get(item.artifact)
+    if not rows:
+        return [], {"thin_windows": 0, "windows": 0}
+    times = [float(row["timestamp"]) for row in rows]
+    count = window_count(times[0], times[-1])
+    edges = window_edges(times[0], count)
+    slots: list[tuple[int, int, tuple[float, ...], int] | None] = []
+    thin = 0
+    for index in range(count):
+        low, high = edges[index], edges[index + 1]
+        members = [row for row, stamp in zip(rows, times) if low <= stamp < high]
+        if not members:
+            slots.append(None)        # nothing sampled here: no claim, and not a thin window
+            continue
+        usable = [row for row in members
+                  if all(_is_measurement(row.get(column)) for column in columns)]
+        if len(usable) / len(members) < FRAME_MIN_FILL:
+            thin += 1
+            slots.append(None)
+            continue
+        medians = tuple(lower_median([float(row[column]) for row in usable])
+                        for column in columns)
+        slots.append((index, index + 1, medians, len(usable)))
+    return slots, {"thin_windows": thin, "windows": count}
 
 
-def spacy_model_of(item: TierInput) -> str:
-    """The model that produced one table, read from that table's own Parquet metadata.
+def merge_labelled_windows(slots: Sequence[tuple[int, int, tuple[float, ...], int] | None],
+                           label_of) -> list[tuple[int, int, str, int]]:
+    """Turn per-window labels into bars, merging neighbours whose *printed label* agrees.
 
-    One value per **table**, written once into the document's provenance property rather than
-    repeated on every annotation: the stage writes the same ``spacy_model`` for a whole file
-    (``normalize`` passes one ``selected_model`` per run), so a per-word copy would cost the
-    scannability the labels exist to keep and buy nothing a reader can check.
-
-    Three states, and only the first is a name: the key present and non-empty (the corpus's own
-    tables carry ``en_core_web_lg`` / ``es_core_news_lg`` / ``blank``, all of them reported exactly
-    as written); the key absent (a table written before the metadata existed, or by a different
-    normalizer) → :data:`UNKNOWN_DISPLAY`; the key present but holding the string ``"None"``
-    (``normalize`` formats it with ``str()``, and ``write_table`` drops only a real ``None``) →
-    :data:`UNKNOWN_DISPLAY`, because "None" is a missing value wearing a model name.
-
-    Config is never read. This function takes a table, not a context, and the answer it gives is a
-    fact about the bytes on disk: a dataset re-exported after somebody edited the config keeps the
-    model that actually produced its tokens.
-
-    An unreadable file yields :data:`UNKNOWN_DISPLAY` rather than raising: this is provenance about
-    a tier that was read successfully (the rows are read separately, under the per-tier guard), and
-    losing the model name is not a reason to lose the tier a second time.
+    Merging on the label rather than on the medians is what makes the tier readable: two 100 ms
+    windows whose medians are 120.4 Hz and 120.9 Hz fall in the same semitone, say one thing,
+    and belong in one bar. Merging on the medians would split them and put back the confetti the
+    window rule exists to remove. A ``None`` slot breaks a run, so no bar spans a refused window.
     """
-    try:
-        # The footer's schema metadata, not the rows: this answers "what did the writer record about
-        # this file", and a tokens table on a long clip is thousands of rows read for one key.
-        import pyarrow.parquet as pq
-
-        metadata = pq.read_schema(item.path).metadata or {}
-    except Exception:  # noqa: BLE001 - provenance is not worth a second tier failure
-        return UNKNOWN_DISPLAY
-    raw = metadata.get(SPACY_MODEL_METADATA_KEY.encode())
-    if raw is None:
-        raw = metadata.get(SPACY_MODEL_METADATA_KEY)
-    if raw is None:
-        return UNKNOWN_DISPLAY
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", "replace")
-    text = " ".join(str(raw).split())
-    if text.lower() in UNWRITE_MODEL_NAMES:
-        return UNKNOWN_DISPLAY
-    return text
-
-
-def spacy_token_rows(item: TierInput) -> list[dict[str, Any]]:
-    """One annotation per spaCy token: the text first, then the analysis that describes it.
-
-    The word leads for the reason :func:`words_rows` gives for its own: this is the tier an analyst
-    reads, and a row that opened with ``seg000001-s001-t0003`` would put every token a page-turn
-    away. Everything after it is a ``key value`` pair with a name, because the parts of a spaCy row
-    that are easy to misread — which ``head`` is meant literally, whether an empty ``morph`` means
-    "no morphology" or "no analysis", whether a bar over ``[1.0, 2.0)`` ms is *the token's* time or
-    its segment's — have to be stated rather than inferred from column order.
-
-    The head is labelled ``dep head`` and never drawn as an ELAN relation: ELAN's
-    ``REF_ANNOTATION`` points a *child tier* at a parent's annotation, which is the hierarchy this
-    module refuses on purpose (see the module docstring and :func:`spacy_sentence_rows`). A
-    dependency arc inside one tier has no representation in the format that is not a hierarchy, so
-    the arc travels as text.
-
-    Timing is decided per row and printed as one of the :data:`TIMING_TOKEN_ALIGNED` /
-    :data:`TIMING_TOKEN_REPORTED` / :data:`TIMING_SEGMENT_CONTEXT` states:
-
-    * finite, non-negative, valid ``token_start_time``/``token_end_time`` → the bar spans **those**
-      times. The producer's own ``timestamp_alignment_status`` still rides on the label, so an
-      ``approximate`` borrowing reads as one instead of being laundered into a word boundary;
-    * token times missing, non-finite, negative or not a span → the bar spans the **enclosing
-      segment's** bounds, labelled :data:`TIMING_SEGMENT_CONTEXT`, with the row's original
-      alignment status and confidence preserved so the label does not claim more than the token's
-      own row did;
-    * neither pair usable → the row carries ``start = end = None`` and :func:`interval_ms` raises
-      :class:`MissingTimestamp` in `build_eaf`, which drops the row and counts it. No time is
-      invented here, and no time is invented at zero.
-
-    The fragment therefore follows **the bar**, on every variant including English. The English
-    tier used to overwrite it unconditionally with the no-timing/segment-context wording, on the
-    reasoning that the worker is given no word list for a translation and so every row lands on its
-    segment — true of every table this pipeline writes today, and still not a licence to print a
-    placement the row does not have: a row that ever carried finite token times was drawn over the
-    token's bounds while its own label denied it. What the English tier states unconditionally is
-    :data:`ENGLISH_TRANSLATION_TEXT`, because that is a claim about the *text*, and
-    :data:`LINGUISTIC_NO_TIMING` is printed whenever the row's own status really holds
-    :data:`STATUS_NO_TIMING` **and** the row was placed on its segment.
-
-    The sort is segment-first rather than time-first, and that is not an oversight. English rows all
-    share their segment's interval, so a time sort would order them by Parquet's accident; segment
-    then ``token_index`` is the order the sentence was written in, and for a source token it
-    disagrees with a time sort only where the producer's own alignment says the pairing is loose.
-    """
-    rows = item.rows(SPACY_TOKEN_COLUMNS)
-    # From the artifact key the tier was registered under, so a label can never disagree with the
-    # file it came from (see :func:`_variant_of`).
-    variant = _variant_of(item) or UNKNOWN_DISPLAY
-    rows.sort(key=lambda row: (_seconds(row.get("segment_start_time")),
-                               str(row.get("segment_id") or ""),
-                               -1 if row.get("token_index") is None else int(row["token_index"])))
-    annotations: list[dict[str, Any]] = []
-    for row in rows:
-        token_ok = _valid_pair(row.get("token_start_time"), row.get("token_end_time"))
-        segment_ok = _valid_pair(row.get("segment_start_time"), row.get("segment_end_time"))
-        status = row.get("timestamp_alignment_status")
-        if token_ok:
-            start, end = row["token_start_time"], row["token_end_time"]
-            timing = (TIMING_TOKEN_ALIGNED if status == STATUS_ALIGNED
-                      else TIMING_TOKEN_REPORTED)
-        elif segment_ok:
-            start, end = row["segment_start_time"], row["segment_end_time"]
-            timing = TIMING_SEGMENT_CONTEXT
-            if status == STATUS_NO_TIMING:
-                # The producer's own word for "this variant had no timing to place by", printed
-                # from the column and only on the rows placed where that leaves them.
-                timing = f"{LINGUISTIC_NO_TIMING} · {timing}"
+    open_bar: list[Any] | None = None
+    out: list[tuple[int, int, str, int]] = []
+    for slot in slots:
+        if slot is None:
+            if open_bar is not None:
+                out.append(tuple(open_bar))          # a refused window closes the run
+                open_bar = None
+            continue
+        first, last, medians, covered = slot
+        text = label_of(*medians)
+        if open_bar is not None and open_bar[2] == text and open_bar[1] == first:
+            open_bar[1] = last
+            open_bar[3] += covered
         else:
-            # No fabricated time: build_eaf drops this row and counts the reason.
-            start, end = None, None
-            timing = "no usable timing (token and segment bounds both unusable)"
-        if item.artifact == SPACY_ENGLISH_TOKENS:
-            # What an English row states about itself whatever the bar is placed on: the text is a
-            # translation of a source line, not a word aligned to a word in it. Naming that on the
-            # row is what stops a reader from reading two English bars over the same second as two
-            # words that were spoken in that second.
-            timing = f"{timing} · {ENGLISH_TRANSLATION_TEXT}"
-        analysis = (f"lemma {_field(row.get('lemma'))} · pos {_field(row.get('pos'))} · "
-                    f"tag {_field(row.get('tag'))} · morph {_field(row.get('morph'))} · "
-                    f"dep {_field(row.get('dep'))} · "
-                    f"dep head {_field(row.get('head_text'))} ({_field(row.get('head_pos'))}) "
-                    f"[{_id(row.get('head_token_id'))}] · "
-                    f"ent {_field(row.get('ent_type'), null_is_answer=True)}")
-        flags = _flags_fragment(row)
-        annotations.append({
-            "start": start,
-            "end": end,
-            "text": _text(f"{_text(row.get('text'))} · {_id(row.get('speaker_id'))} · "
-                          f"{variant} · "
-                          f"token {_id(row.get('token_id'))} · sentence "
-                          f"{_id(row.get('sentence_id'))} · [{_id(row.get('segment_id'))}] · "
-                          f"{analysis} · {_char_span(row)} · {timing} · "
-                          f"placed {_time_value(start)}-{_time_value(end)} · "
-                          f"{_alignment_fragment(row)} · "
-                          f"{flags}"),
-            "_id_keys": ("token_id", "sentence_id", SEGMENT_NS, SPEAKER_NS),
-            **{key: row[key] for key in ("token_id", "sentence_id", "segment_id", "speaker_id")},
-        })
-    return annotations
+            if open_bar is not None:
+                out.append(tuple(open_bar))
+            open_bar = [first, last, text, covered]
+    if open_bar is not None:
+        out.append(tuple(open_bar))
+    return out
 
 
-def spacy_sentence_rows(item: TierInput) -> list[dict[str, Any]]:
-    """One annotation per spaCy sentence, always placed by its segment's bounds.
+def _window_edge(rows: Sequence[dict[str, Any]], index: int) -> float:
+    """One edge of one window, from :func:`window_edges` — the only clock this tier cuts with.
 
-    A sentence has no timing of its own anywhere in the pipeline: ``SENTENCES_SCHEMA`` carries only
-    ``segment_start_time``/``segment_end_time``, so the only interval a sentence row can honestly
-    print is its enclosing segment's. The label says so, and nothing here measures a sentence's
-    onset by its first token: that would turn the *tokeniser's* idea of a boundary into an event on
-    the timeline, and for the English variant there is no word timing to take an onset from in the
-    first place.
-
-    That makes the segment pair the tier's **only** candidate, so it goes through the same
-    :func:`_valid_pair` check the token tier uses rather than straight to :func:`interval_ms`.
-    The difference is one row's worth of time: `interval_ms` exists to keep a *measured* interval
-    storable, so it widens an equal or reversed pair to a 1 ms bar at whatever millisecond the
-    conversion produced — a zero-width segment at 2.0 s used to export as ``[2000, 2001)`` and a
-    reversed one at 3.0 s as ``[3000, 3001)``, and a negative pair was clamped onto second zero.
-    All three are the row having no usable time, and the honest outcome is the drop
-    :func:`interval_ms` performs for a null or a materially negative endpoint, reached here by
-    checking the pair first (see :func:`spacy_token_rows`).
-
-    The tier is a flat peer of the token tier, not its parent. Making it a parent would put ELAN's
-    ``REF_ANNOTATION`` hierarchy into the file — a shape two datasets could no longer compare
-    column-for-column, and one this module has refused since the first tier list. The link between
-    them is the ``sentence_id`` printed on both, exactly as ``segment_id`` links `words` to
-    `segments_src`.
-
-    What an English **sentence** states about its own text is the same claim an English token
-    states: :data:`ENGLISH_TRANSLATION_TEXT`. The prose and the document's semantics property both
-    promised that on every English row, and this tier was the one that did not deliver it — a
-    translated sentence is exactly as little a word alignment to the source as a translated token
-    is, and the worker is given no word list for either. It travels with the variant prefix, so it
-    is a property of the table being read (one constant, not a per-row inference) rather than of
-    where the bar happens to sit.
+    The labelling and the printing share that function deliberately: a bar must not be drawn
+    narrower or wider than the window its label was computed from (see :func:`window_edges` for
+    what the two-arithmetic version did on a real clip). And unlike every other block tier here,
+    a frame window adds **no** median-grid-step extension: its edge is a boundary of the interval
+    the label describes, not a claim about a frame's own duration.
     """
-    rows = item.rows(SPACY_SENTENCE_COLUMNS)
-    variant = _variant_of(item) or UNKNOWN_DISPLAY
-    # The English sentence table is the one whose text is not what anybody said, so its rows carry
-    # the variant marker and the claim about that text ahead of the placement fragment. Built once,
-    # not per row, because the tier is chosen by the file being read and cannot vary inside it.
-    english_prefix = (f"{LINGUISTIC_NO_TIMING} · {ENGLISH_TRANSLATION_TEXT} · "
-                      if item.artifact == SPACY_ENGLISH_SENTENCES else "")
-    rows.sort(key=lambda row: (_seconds(row.get("segment_start_time")),
-                               str(row.get("segment_id") or ""),
-                               -1 if row.get("sentence_index") is None
-                               else int(row["sentence_index"])))
-    annotations: list[dict[str, Any]] = []
-    for row in rows:
-        usable = _valid_pair(row.get("segment_start_time"), row.get("segment_end_time"))
-        annotations.append({
-            # Unusable pair → no time at all, so build_eaf drops the row and counts the reason.
-            "start": row["segment_start_time"] if usable else None,
-            "end": row["segment_end_time"] if usable else None,
-            "text": _text(f"{_text(row.get('text'))} · {_id(row.get('speaker_id'))} · "
-                          f"{variant} sentence {_id(row.get('sentence_id'))} · "
-                          f"tokens {_id(row.get('token_count'))} · "
-                          f"[{_id(row.get('segment_id'))}] · {_char_span(row)} · "
-                          f"{english_prefix}{TIMING_SEGMENT_CONTEXT} · the only bounds this "
-                          f"table carries are the segment's, never a sentence-onset "
-                          f"measurement"),
-            "_id_keys": ("sentence_id", SEGMENT_NS, SPEAKER_NS),
-            **{key: row[key] for key in ("sentence_id", "segment_id", "speaker_id")}})
-    return annotations
+    count = window_count(float(rows[0]["timestamp"]), float(rows[-1]["timestamp"]))
+    return window_edges(float(rows[0]["timestamp"]), count)[index]
 
 
-# --------------------------------------------------------- acoustic summary tier
+def _is_measurement(value: Any) -> bool:
+    """A column this tier may print: a real number, not a null and not a NaN or inf.
 
-#: Columns the acoustic segment builder reads, exported so a test can check them against
-#: ``ACOUSTIC_SEGMENTS_SCHEMA`` rather than against this file's memory of them.
-#
-#: `pause_ratio` is read and never recomputed: `acoustics.aggregate_segment` divides
-#: `pause_duration` by the span its *caller* supplied, and `stages/acoustic.py` supplies the
-#: source media duration (falling back to end−start only when the metadata had none), so the
-#: denominator is a fact about the run that no longer exists by the time the export reads the
-#: table. Recomputing it from `end_time − start_time` here would print a different number from
-#: the column and silently disagree with the stage's own validator, which rejects a stored
-#: `pause_ratio` above 1.0.
-ACOUSTIC_SEGMENT_COLUMNS: tuple[str, ...] = (
-    "segment_id", "speaker_id", "start_time", "end_time", "duration",
-    "voiced_ratio", "f0_mean", "f0_median", "f0_min", "f0_max", "f0_std",
-    "intensity_mean", "intensity_median", "intensity_min", "intensity_max", "intensity_std",
-    "f1_mean", "f2_mean", "f3_mean", "pause_count", "pause_duration", "pause_ratio",
-)
-
-#: How many decimals a summary number is shown with.
-# Three, because that is what the quantities live in: the producer rounds to six decimals, and a
-# formant mean differs between segments in the first decimal, so 584.424409 in a label says no
-# more than 584.424. Rounding to three decimals is lossy and is not claimed to separate nearby
-# values: 147.699967 and 147.70002 both print 147.700. A ratio lives in [0, 1], so three decimals
-# resolve 0.001 - a tenth of a percent - which is the same precision the linguistic tiers print
-# their alignment confidence with, for the same reason.
-ACOUSTIC_PLACES = 3
-
-#: The four families the label groups its numbers under, printed once each as a header.
-# Named as headers rather than repeating a prefix per number because the label is 20 values long:
-# a key-per-number dump is unreadable in a screenshot, and the four families are how the
-# producer's own docstring groups them. Two of the headers carry a qualifier, and both are the
-# producer's behaviour rather than this file's inference — see :func:`acoustic_segment_rows`.
-ACOUSTIC_PITCH_FAMILY = "pitch (over the frames flagged voiced, not the voiced (f0) bars)"
-ACOUSTIC_INTENSITY_FAMILY = "intensity (over every frame in the window)"
-ACOUSTIC_FORMANT_FAMILY = "formants (F1, F2, F3 mean over every frame in the window)"
-ACOUSTIC_PAUSE_FAMILY = "pauses (clipped silence runs inside the window)"
-
-#: What the row's own `duration` column actually holds, printed because it is not the segment's
-#: span wherever the pipeline knew the media length.
-ACOUSTIC_DURATION_NOTE = "as reported: source duration when known, else segment span"
-
-
-def _acoustic_value(value: Any, unit: str = "") -> str:
-    """A summary number with its unit, or ``unknown`` **without** one.
-
-    :func:`_num` already refuses to turn a null into ``0.000``; this only appends the unit, and
-    appends it to the number rather than to the word for "no number". ``unknown Hz`` would put a
-    unit on a non-measurement, which is the same small lie as the zero it replaces — the person
-    tier's reported gap already follows this rule for the same reason.
+    A non-finite value is not "measured and large": :func:`interval_ms` refuses a NaN timestamp
+    for the same reason, and a block that printed an infinite formant would be the identical
+    claim in a different column.
     """
-    rendered = _num(value, ACOUSTIC_PLACES)
-    return f"{rendered} {unit}" if unit and rendered != UNKNOWN_DISPLAY else rendered
+    return value is not None and math.isfinite(value)
 
 
-def _acoustic_ratio(column: str, value: Any, denominator: str) -> str:
-    """One dimensionless column, named, with what it is a ratio *of*.
+def _frame_block_tier(item: TierInput, columns: tuple[str, ...], label_of) -> list[dict]:
+    """Shared plumbing of the three Praat frame tiers: one window rule, one refusal rule.
 
-    A bare 0-1 number is the one kind of value in this table with no physical unit, so its
-    meaning is entirely its denominator. Naming both the column and the denominator is what stops
-    a reader from taking `pause_ratio 0.098` for a share of the clip when it is a share of the
-    span the producer divided by, or `voiced_ratio 0.759` for a share of the audio's time. The
-    column name is printed even when the value is missing, so the state is "this ratio was not
-    computed" rather than a bare word no reader can attribute to a column.
+    A frame whose timestamp the producer never wrote is emitted with no time on purpose: the
+    shared millisecond path in :func:`build_eaf` refuses it and counts it as a missing
+    timestamp, which is where every other tier's untimeable row goes too. Placing it in the
+    window at second zero instead would put a claim at an instant nobody recorded.
     """
-    return f"{column} {_acoustic_value(value)} of {denominator}"
+    rows = item.sorted_rows(("timestamp",) + columns, "timestamp")
+    if not rows:
+        return []
+    untimed = [row for row in rows if row.get("timestamp") is None]
+    timed = [row for row in rows if row.get("timestamp") is not None]
+    slots, notes = frame_window_labels(timed, columns)
+    if notes["thin_windows"]:
+        item.log(f"elan: tier {item.tier} left {notes['thin_windows']} of "
+                 f"{notes['windows']} {FRAME_WINDOW_SECONDS * 1000:g} ms window(s) unlabelled "
+                 f"({FRAME_WINDOW_THIN_REASON})")
+    out = [{"start": None, "end": None, "text": _unplaced_frame_text(columns, row),
+            "_id_keys": ()} for row in untimed]
+    if not timed:
+        return out
+    for first, last, text, _covered in merge_labelled_windows(slots, label_of):
+        # A tier row is exactly what build_eaf turns into an annotation, so no bookkeeping key
+        # is added here: an extra one would ride into the overlap projection's `source` map.
+        # What a reader needs is the logged thin-window line; what a test needs is available by
+        # calling frame_window_labels directly.
+        out.append({"start": _window_edge(timed, first),
+                    "end": _window_edge(timed, last),
+                    "text": _text(text), "_id_keys": ()})
+    return out
 
 
-def _acoustic_pair(row: dict[str, Any]) -> tuple[Any, Any]:
-    """The row's own two times, or ``(None, None)`` for a pair this export may not place.
+def _unplaced_frame_text(columns: Sequence[str], row: dict[str, Any]) -> str:
+    """The row's own measurements, for the row that has no instant to be placed at."""
+    return " ".join(f"{column}={_num(row.get(column), 2)}" for column in columns)
 
-    Three states, and the third is deliberately left for :func:`interval_ms` to answer:
 
-    * a null endpoint → ``(None, None)``, so `build_eaf` counts a missing timestamp;
-    * a finite pair that is reversed, zero-width or materially negative → ``(None, None)``, on
-      the same line. Handing it to :func:`interval_ms` instead would take its 1 ms widening —
-      right for a genuine zero-width measurement, wrong for a broken row, because twenty
-      measured statistics would then sit over a bar no audio spans. :func:`_valid_pair` is the
-      check the linguistic tiers already use, so the two tiers cannot disagree about what a
-      usable pair is;
-    * a NaN or an infinity → passed through unchanged. The producer wrote a value that is not a
-      number, which is the *other* counted state: rewriting it to null would move the row from
-      the non-finite line onto the missing one and merge two defects the run log keeps apart on
-      purpose (:class:`NonFiniteTimestamp` and :class:`MissingTimestamp` exist for that split).
+def f0_block_rows(item: TierInput) -> list[dict]:
+    """Pitch blocks from ``f0_hz`` — the windows where Praat found a pitch; thin = no bar."""
+    return _frame_block_tier(item, ("f0_hz",), lambda f0: f"f0 med {pitch_label(f0)}")
+
+
+def intensity_block_rows(item: TierInput) -> list[dict]:
+    """Loudness blocks from ``intensity_db`` — windows where Praat measured intensity.
+
+    Deliberately not filtered by voicing: this is the signal Praat computes over the whole
+    waveform, and the tier that filters on pitch presence is ``f0_blocks``, which says so in
+    its own label. The two tiers disagreeing at a window is information, not noise.
     """
-    start, end = row.get("start_time"), row.get("end_time")
-    if start is None or end is None:
-        return None, None
-    try:
-        first, second = float(start), float(end)
-    except (TypeError, ValueError):
-        return None, None
-    if not (math.isfinite(first) and math.isfinite(second)):
-        return start, end
-    return (start, end) if _valid_pair(first, second) else (None, None)
+    return _frame_block_tier(item, ("intensity_db",),
+                             lambda db: f"int med {intensity_label(db)}")
 
 
-def acoustic_segment_rows(item: TierInput) -> list[dict[str, Any]]:
-    """One annotation per measured segment: the segment id, then the four families of numbers.
-
-    The id leads for the reason :func:`words_rows` gives for the word: this is the part of the
-    label that links. `segment_id` is the one key shared with `segments_src`, `gloss_en` and the
-    four linguistic tiers, so a quoted fragment stays traceable to the words and the translation
-    it describes. A label that opened with a pitch value could not be.
-
-    It is then repeated in the bracket the other tiers use — the label says the id twice, which is
-    a deliberate 14-character cost. Every tier in this file carries its segment link as
-    ``[segment_id]``, so one grep finds every annotation of every tier belonging to one segment;
-    the alternative (leading with the id and dropping the bracket) saves about 1.6 % of a label
-    that is already long and breaks that single cross-tier pattern. Rephrasing it away is the
-    reversible direction if a reviewer prefers the shorter label.
-
-    The four families are printed as headers rather than 20 prefixed numbers, and the units are
-    printed with the values (Hz, dB, seconds) because a tier value leaves the file — into a
-    screenshot, an issue, a slide — and ``f0 147.70`` is Hz or dB or a ratio depending only on a
-    column name that is no longer next to it.
-
-    Two of the family headers carry a qualifier, and both are read off the producer rather than
-    guessed:
-
-    * `acoustics.aggregate_segment` builds the pitch list from frames where ``voiced is True`` and
-      summarises that, while :func:`voiced_rows` builds the `voiced (f0)` blocks from
-      ``f0_hz is not None`` and documents that it deliberately does not read the flag. Those are
-      two criteria over two tables, so the pitch header names its own and says plainly that it is
-      not the bars a reader sees above it in the grid. Left unstated, a reader comparing
-      `f0_mean` against the block layout would see a disagreement where the tables answered
-      different questions.
-    * intensity and the formant means are summarised over *every* frame inside the interval, with
-      no voicing filter, so their headers say so. A single "voiced only" note placed over all
-      four families would have made three of them look narrower than they are.
-
-    Placement is the row's own `start_time`/`end_time`, and those are the **transcript**
-    segment's times: the acoustic stage aggregated the frames that fell inside them, so the bar
-    is a window and not an event, and the label says the numbers describe a window and are not
-    independently timed. That is the same lesson the linguistic tiers learned about a borrowed
-    interval, in a tier where the borrowing is easier to miss because the numbers really were
-    measured — it is the *when* that is someone else's.
-
-    A pair that is not usable — null, reversed, zero-width or materially negative — is refused here
-    rather than handed to :func:`interval_ms`, which widens an equal or reversed pair to a 1 ms bar
-    at whatever millisecond the conversion produced and clamps a negative onto t=0. That widening
-    and that clamp are right for a real measurement landing on a coarse grid and wrong for a broken
-    row: they would print twenty measured statistics over a bar no audio spans, or over a bar at the
-    start of a clip the row was never timed in, which is the invented placement every other tier
-    already refuses. The row's ``start``/``end`` stay ``None`` and `build_eaf` drops and counts it
-    on the existing missing line. :func:`_valid_pair` is the same check the linguistic tiers use, so
-    the two rules cannot disagree about what a usable pair is. A non-finite endpoint is the one
-    unusable pair *not* rewritten here, so that it reaches :func:`interval_ms` and is counted on the
-    non-finite line — see :func:`_acoustic_pair`.
-
-    The segment's `duration` is printed as *reported*, not as the segment's length. Measured in
-    the producer: `aggregate_segment` takes the span from its caller and `stages/acoustic.py`
-    passes the source media duration, falling back to end−start only when the metadata had none.
-    On this corpus that column reads 4.204204 s over segment spans of 3.152 s and 0.808 s, so
-    labelling it "segment duration" would put a false fact in the same label as the
-    `pause_ratio` that was divided by it.
-    """
-    rows = item.sorted_rows(ACOUSTIC_SEGMENT_COLUMNS, "start_time", "end_time")
-    annotations: list[dict[str, Any]] = []
-    for row in rows:
-        start, end = _acoustic_pair(row)
-        pitch = " · ".join(
-            f"{column} {_acoustic_value(row.get(column), 'Hz')}"
-            for column in ("f0_mean", "f0_median", "f0_min", "f0_max", "f0_std"))
-        loudness = " · ".join(
-            f"{column} {_acoustic_value(row.get(column), 'dB')}"
-            for column in ("intensity_mean", "intensity_median", "intensity_min",
-                           "intensity_max", "intensity_std"))
-        formants = " · ".join(
-            f"{column} {_acoustic_value(row.get(column), 'Hz')}"
-            for column in ("f1_mean", "f2_mean", "f3_mean"))
-        # `pause_count` is a count of runs and takes no unit; `pause_duration` is seconds.
-        pauses = (f"pause_count {_num(row.get('pause_count'), 0)} · "
-                  f"pause_duration {_acoustic_value(row.get('pause_duration'), 's')} · "
-                  + _acoustic_ratio("pause_ratio", row.get("pause_ratio"),
-                                    "this row's duration"))
-        annotations.append({
-            "start": start,
-            "end": end,
-            "text": _text(f"{_id(row.get('segment_id'))} · {_id(row.get('speaker_id'))} · "
-                          f"[{_id(row.get('segment_id'))}] · "
-                          f"acoustic summary over this window · "
-                          f"timed by the transcript segment, not independently timed · "
-                          f"duration {_acoustic_value(row.get('duration'), 's')} "
-                          f"({ACOUSTIC_DURATION_NOTE}) · "
-                          + _acoustic_ratio("voiced_ratio", row.get("voiced_ratio"),
-                                            "the frames sampled in the window") + " · "
-                          f"{ACOUSTIC_PITCH_FAMILY} · {pitch} · "
-                          f"{ACOUSTIC_INTENSITY_FAMILY} · {loudness} · "
-                          f"{ACOUSTIC_FORMANT_FAMILY} · {formants} · "
-                          f"{ACOUSTIC_PAUSE_FAMILY} · {pauses}"),
-            "_id_keys": (SEGMENT_NS, SPEAKER_NS),
-            **{key: row[key] for key in ("segment_id", "speaker_id")},
-        })
-    return annotations
+def formant_block_rows(item: TierInput) -> list[dict]:
+    """F1/F2/F3 blocks over the windows where all three are present in enough frames."""
+    return _frame_block_tier(item, ("f1_hz", "f2_hz", "f3_hz"),
+                             lambda f1, f2, f3: f"med {formant_label(f1, f2, f3)}")
 
 
-#: Registry artifact key -> dataset-relative path.
 def artifact_path(artifact: str) -> str:
     """The dataset-relative path of a registry artifact, read from the registry each call.
 
@@ -2236,24 +1931,19 @@ TIERS: tuple[TierSpec, ...] = (
     TierSpec("person_tracks", "person_tracks", person_track_rows, "YOLO person sightings"),
     TierSpec("pose_presence", "pose_body", pose_presence_rows, "body-present blocks"),
     TierSpec("voiced_blocks", "acoustic_frames", voiced_rows, "voiced blocks"),
-    TierSpec("spacy_source_tokens", SPACY_SOURCE_TOKENS, spacy_token_rows,
-             "source-language tokens"),
-    TierSpec("spacy_source_sentences", SPACY_SOURCE_SENTENCES, spacy_sentence_rows,
-             "source-language sentences"),
-    TierSpec("spacy_english_tokens", SPACY_ENGLISH_TOKENS, spacy_token_rows,
-             "English tokens"),
-    TierSpec("spacy_english_sentences", SPACY_ENGLISH_SENTENCES, spacy_sentence_rows,
-             "English sentences"),
-    TierSpec("acoustic_segments", "acoustic_segments", acoustic_segment_rows,
-             "per-segment acoustic summaries"),
+    TierSpec("f0_blocks", "acoustic_frames", f0_block_rows,
+             "pitch blocks, semitone bins, from the Praat frame table"),
+    TierSpec("intensity_blocks", "acoustic_frames", intensity_block_rows,
+             "loudness blocks, 2 dB bins, from the Praat frame table"),
+    TierSpec("formant_blocks", "acoustic_frames", formant_block_rows,
+             "F1/F2/F3 band blocks, from the Praat frame table"),
 )
 
-#: The four linguistic artifact keys, in tier order.
-# Used by `build_eaf` to decide which tiers carry per-table provenance, and exported so a test can
-# assert the set rather than re-listing it: a fifth linguistic tier that forgot to register here
-# would be written into the file with no model recorded beside it.
-LINGUISTIC_ARTIFACTS: tuple[str, ...] = (
-    SPACY_SOURCE_TOKENS, SPACY_SOURCE_SENTENCES, SPACY_ENGLISH_TOKENS, SPACY_ENGLISH_SENTENCES)
+#: The four tier names that read ``acoustic_frames``, in tier order. Exported so a test can
+#: assert the set rather than re-listing it, and so the coverage inventory's answer to "which
+#: tiers read this table" is one list rather than a re-derivation.
+PRAAT_FRAME_TIERS: tuple[str, ...] = ("voiced_blocks", "f0_blocks", "intensity_blocks",
+                                      "formant_blocks")
 
 #: Artifacts a tier reads besides its own, keyed by the tier that reads them.
 # A tier's primary artifact is what names it and what its absence skips it for. Some tiers need
@@ -2271,10 +1961,13 @@ SECONDARY_INPUTS: dict[str, tuple[str, ...]] = {
     "person_tracks": ("person_frames", "frame_index"),
 }
 
-#: Every artifact the export may read: each tier's own table, then the secondary inputs.
-#: Order is deliberate — tier order first, so the fingerprint's keys stay in tier order.
-ALL_INPUTS: tuple[str, ...] = tuple(spec.artifact for spec in TIERS) + tuple(
-    name for names in SECONDARY_INPUTS.values() for name in names)
+#: Every artifact the export may read: each tier's own table, then the secondary inputs,
+#: de-duplicated in first-seen order. Four tiers read ``acoustic_frames``, and a fingerprint
+#: that hashed one file four times would only be slow, but `Stage.inputs` feeds `status
+#: --plan`'s dependency display, where a name repeated reads as four dependencies.
+ALL_INPUTS: tuple[str, ...] = tuple(dict.fromkeys(
+    tuple(spec.artifact for spec in TIERS)
+    + tuple(name for names in SECONDARY_INPUTS.values() for name in names)))
 
 # ------------------------------------------------------------------ coverage inventory
 
@@ -2354,7 +2047,11 @@ def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None) ->
     artifact's wording.
     """
     root = Path(dataset_dir)
-    exported = {spec.artifact: spec.tier for spec in TIERS}
+    # An artifact may feed several tiers (the four Praat frame tiers read one table), so the
+    # export map is artifact -> every tier built from it, in tier order.
+    exported: dict[str, list[str]] = {}
+    for spec in TIERS:
+        exported.setdefault(spec.artifact, []).append(spec.tier)
     summarised: dict[str, str] = {}
     for tier, artifacts in SECONDARY_INPUTS.items():
         for artifact in artifacts:
@@ -2371,10 +2068,10 @@ def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None) ->
             # set says about this name. See the docstring's ordering rule.
             inventory[name] = {"state": COVERAGE_ABSENT, "path": relative}
         elif name in exported:
-            inventory[name] = {"state": COVERAGE_EXPORTED, "tier": exported[name],
+            inventory[name] = {"state": COVERAGE_EXPORTED, "tiers": exported[name],
                                "path": relative}
         elif name in summarised:
-            inventory[name] = {"state": COVERAGE_SUMMARISED, "tier": summarised[name],
+            inventory[name] = {"state": COVERAGE_SUMMARISED, "tiers": [summarised[name]],
                                "path": relative}
         else:
             entry: dict[str, Any] = {"state": COVERAGE_PRESENT_NOT_EXPORTED, "path": relative}
@@ -2574,11 +2271,6 @@ def build_eaf(dataset_dir: Path, video_path: Path,
     # Only the tiers that actually had to be re-cut, so the property names the exceptions instead
     # of restating seventeen unaffected tiers.
     projections: dict[str, Any] = {}
-    # Per-table provenance for the linguistic tiers: which model and which variant produced the
-    # bytes this tier was built from. One entry per table that was actually read, because a tier
-    # that was skipped has no provenance to report — writing `unknown` for it would read as "a
-    # table with no model was exported" rather than "no table was there".
-    linguistic: dict[str, Any] = {}
     # Computed before any table is opened, from the tier declarations themselves — see the
     # docstring. It is the one part of the document that describes the export rather than the clip.
     coverage = coverage_inventory(dataset_dir)
@@ -2595,7 +2287,7 @@ def build_eaf(dataset_dir: Path, video_path: Path,
             reason = ""
             try:
                 rows = spec.build(TierInput(tier=spec.tier, artifact=spec.artifact,
-                                            path=path, dataset_dir=dataset_dir))
+                                            path=path, dataset_dir=dataset_dir, log=log))
             except TierDependencyMissing as exc:
                 # The tier's own table was there; a file it needs in order to be truthful was
                 # not. Same one logged line as an absent primary input, and the same decision:
@@ -2641,14 +2333,6 @@ def build_eaf(dataset_dir: Path, video_path: Path,
                     eaf.add_annotation(spec.tier, annotation["start_ms"],
                                        annotation["end_ms"], annotation["value"])
                 built[spec.tier] = len(emitted)
-                if spec.artifact in LINGUISTIC_ARTIFACTS:
-                    item = TierInput(tier=spec.tier, artifact=spec.artifact, path=path,
-                                     dataset_dir=dataset_dir)
-                    linguistic[spec.tier] = {
-                        "artifact": relative,
-                        "variant": _variant_of(item),
-                        "spacy_model": spacy_model_of(item),
-                    }
                 # Recorded whether or not either counter is non-zero, so the record's shape does
                 # not depend on the data. `rows` is the count the log line prints its ratio
                 # against, and it is the tier builder's logical row count *before* the drops —
@@ -2687,12 +2371,6 @@ def build_eaf(dataset_dir: Path, video_path: Path,
     if projections:
         eaf.add_property(OVERLAP_PROJECTION_PROPERTY, json.dumps(
             {"version": OVERLAP_PROJECTION_VERSION, "tiers": projections},
-            ensure_ascii=False, separators=(",", ":"), default=str))
-    # Written only when a linguistic table was read. The model name is a property of the table, not
-    # of the annotation, so it appears once per table here rather than on every token bar.
-    if linguistic:
-        eaf.add_property(LINGUISTIC_PROVENANCE_PROPERTY, json.dumps(
-            {"version": LINGUISTIC_PROVENANCE_VERSION, "tiers": linguistic},
             ensure_ascii=False, separators=(",", ":"), default=str))
     log(f"elan: {len(built)} tier(s), {sum(built.values())} annotation(s) for "
         f"{Path(video_path).name}; skipped {len(skipped)} "
