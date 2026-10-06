@@ -114,16 +114,109 @@ PY
   echo "  + ${dataset} -> ${media_rel} (resolved from the .eaf)"
 done
 
-# Redact the gateway hostname inside the bundle only (fact 3 above). The pipeline's own output
+# Redact the LLM gateway host inside the bundle only (fact 3 above). The pipeline's own output
 # directory is never touched: raw output is preserved byte-identical on purpose.
-redacted=0
-while IFS= read -r -d '' file; do
-  if grep -q "nienna-llm" "${file}" 2>/dev/null; then
-    sed -i 's#nienna-llm\.inf\.um\.es#LLM-ENDPOINT.REDACTED#g' "${file}"
-    redacted=$((redacted + 1))
-  fi
-done < <(find "${WORK}" -type f \( -name "*.json" -o -name "*.txt" -o -name "*.log" \) -print0)
-echo "  redacted endpoint in ${redacted} file(s)"
+#
+# The host is not written into this script. A redaction that names the thing it hides publishes it,
+# and the repository is the one copy every future clone reads: a literal endpoint here would ship the
+# hostname in exactly the artifact that must not carry it. So the hosts to redact are discovered from
+# the bundle's own provenance, which is where the pipeline recorded them -- every *base_url in the
+# resolved config is an endpoint a reviewer has no use for.
+hosts="$(python3 - "${WORK}" <<'PY'
+import json
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+hosts = set()
+
+
+def walk(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key.endswith("base_url") and isinstance(value, str):
+                netloc = urlsplit(value).netloc
+                if netloc:
+                    hosts.add(netloc)
+            else:
+                walk(value)
+    elif isinstance(node, list):
+        for item in node:
+            walk(item)
+
+
+for path in Path(sys.argv[1]).rglob("config.json"):
+    try:
+        walk(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+print("\n".join(sorted(hosts)))
+PY
+)"
+if [[ -z "${hosts}" ]]; then
+  echo "  ! no *base_url host found in the bundle's provenance, so nothing was redacted." >&2
+  echo "    If an endpoint is in these files, this script is about to ship it. Refusing." >&2
+  exit 1
+fi
+# The substitution is one literal string replacement per file, deliberately not a sed expression. The
+# first version built a sed pattern by escaping the host, and GNU sed read the "\n" in a host
+# beginning with those two letters as a newline rather than a letter n: the pattern matched nothing,
+# every file came back unchanged, and only the verify-after step below noticed. Literal replacement is
+# both correct and free of that class of bug.
+redacted="$(python3 - "${WORK}" ${hosts} <<'RED'
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+hosts = [h for h in sys.argv[2:] if h]
+count = 0
+for path in sorted(work.rglob("*")):
+    if not path.is_file() or path.suffix not in {".json", ".txt", ".log"}:
+        continue
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        continue
+    hits = [host for host in hosts if host in text]
+    if not hits:
+        continue
+    for host in hits:
+        text = text.replace(host, "LLM-ENDPOINT.REDACTED")
+    path.write_text(text, encoding="utf-8")
+    count += 1
+print(count)
+RED
+)"
+# Prove the redaction took, on the tree that is about to be shared. That silent no-op was
+# indistinguishable from success: a redaction that does nothing looks exactly like a redaction that
+# worked, and the only party who would otherwise find out is the person the archive gets sent to.
+# Media is skipped because a video cannot carry a hostname this replacement could reach, and reading
+# 16 MB of H.264 for that certainty costs more than it tells.
+if python3 - "${WORK}" ${hosts} <<'CHECK'
+import sys
+from pathlib import Path
+
+hosts = [h for h in sys.argv[2:] if h]
+SKIP = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".wav", ".tgz"}
+for path in Path(sys.argv[1]).rglob("*"):
+    if not path.is_file() or path.suffix in SKIP:
+        continue
+    try:
+        blob = path.read_bytes().decode("utf-8", errors="ignore")
+    except OSError:
+        continue
+    if any(host in blob for host in hosts):
+        print(f"  ! {path.relative_to(sys.argv[1])} still carries an endpoint host", file=sys.stderr)
+        sys.exit(0)
+sys.exit(1)
+CHECK
+then
+  echo "  ! an endpoint host survived redaction; refusing to ship the bundle" >&2
+  exit 1
+fi
+# The host itself is never echoed: this output ends up in run notes, and those notes are how a
+# hostname travels further than the bundle does.
+echo "  redacted ${redacted} file(s) for $(echo "${hosts}" | wc -w) endpoint host(s)"
 
 # Views are generated, not copied: the .eaf under data/ is the record, and an HTML twin of it
 # would be a second artifact to keep in step. Generated with RELATIVE paths on purpose — the page
