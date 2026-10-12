@@ -1,151 +1,80 @@
 # Storytel Pipeline
 
-**From video recordings to traceable, time-aligned multimodal datasets.**
+**Video recordings → traceable, time-aligned multimodal datasets.**
 
-Transcribe speech, compare diarization engines, extract acoustic and visual features,
-and inspect the results in ELAN — with one dataset directory per video, normalized
-Parquet tables, original tool output and processing provenance.
+Transcribe speech, compare diarizers, extract acoustic and visual features, and
+inspect summaries in ELAN. Each video gets normalized Parquet tables, original tool
+output, logs and provenance in its own dataset directory.
 
-[Get started](docs/getting-started.md) · [Explore a dataset](docs/datasets.md) ·
-[ELAN guide](docs/elan.md) · [CLI reference](docs/cli.md)
+[Get started](docs/getting-started.md) · [Read the outputs](docs/datasets.md) ·
+[Architecture and design decisions](docs/architecture.md)
 
-![Synthetic schema demo: speaker turns and word timings on the same timeline](docs/assets/speaker_turn_strip.png)
+![Synthetic schema demo: speaker turns and word timings](docs/assets/speaker_turn_strip.png)
 
-*An illustration of the output schema, not a real recording or an ELAN screenshot.
-All figures on this page use synthetic data; no broadcast frames are redistributed.*
+*All committed figures use synthetic data, not recording frames or accuracy benchmarks.*
 
-## Why this pipeline?
+## What it does
 
-- **One shared timeline.** Times are expressed in seconds from the source video's
-  start, with explicit mappings between source frames and working grids.
-- **Resume instead of restart.** Reuse validated stage outputs; recompute only what
-  changed and the stages that depend on it.
-- **Keep the evidence.** Raw tool artifacts sit beside normalized tables, logs,
-  configuration fingerprints and tool/model provenance.
-- **Inspect, don't guess.** Missing prerequisites and skipped stages carry reasons;
-  an empty result is distinguishable from an analysis that never ran.
-- **Isolate heavy dependencies.** Seven separate `uv` environments keep incompatible
-  ML stacks out of the lightweight orchestrator.
-
-Execution is sequential: one video and one stage at a time. The console command is
-`multimodal-pipeline`; the project title does not change the CLI name.
-
-## What you can extract
-
-| Layer | Tools and outputs |
+| Layer | Tools / results |
 |---|---|
-| **Speech** | WhisperX transcription and word alignment; pyannote speaker turns; optional Nemotron diarization for comparison |
-| **Language** | Segment-level English translation through an OpenAI-compatible endpoint; spaCy tokens, lemmas, POS tags and dependencies when a trained model is available |
-| **Acoustics** | Praat/Parselmouth pitch, intensity and formants, plus per-segment aggregates and pause statistics |
-| **Pose** | OpenPose BODY_25, hand and face keypoints; a separate body-centred pose transform |
-| **People and speakers** | Optional YOLO person tracking, TalkNet active-speaker detection and audio–visual agreement tables |
-| **Narrative windows** | LLM-generated story candidates with transcript evidence, retained responses and explicit empty answers |
-| **ELAN** | A linked `.eaf` with up to 15 fixed summary tiers, plus an HTML viewing aid and a shareable bundle builder |
+| Speech | WhisperX transcription/alignment; pyannote turns; optional Nemotron comparison |
+| Language | English segment translations; spaCy source/English tokens and sentences |
+| Acoustics | Praat/Parselmouth pitch, intensity, formants and segment statistics |
+| Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks |
+| Speakers | Optional TalkNet visible-face activity and audio–visual agreement |
+| Stories | Transcript-bound LLM narrative candidates, not validated detections |
+| Inspection | Linked ELAN `.eaf` summaries, HTML preview and bundle helper |
 
-Each layer depends on its own configuration and prerequisites. The
-[modality guide](docs/modalities.md) explains the measurements and their limits;
-[architecture](docs/architecture.md) explains dependencies, failure propagation and reuse.
+Execution is sequential: one video and one stage at a time. Heavy tools use
+separate `uv` environments; syncing the root project alone does **not** install them.
+Stages can be disabled, and missing optional prerequisites have recorded reasons.
 
-## Quick start
+## First run
 
-> **Before running:** install `uv`, `ffmpeg` and `ffprobe`, then prepare the isolated
-> environments for the stages you enable. OpenPose needs a separate installation;
-> diarization and LLM stages have their own credential/endpoint requirements.
-> Follow the [full installation guide](docs/getting-started.md#install-from-nothing)
-> on a new machine — syncing the root project alone does not install the ML tools.
-
-Run from the repository root:
+Install `uv`, `ffmpeg` and `ffprobe`, then follow the
+[installation guide](docs/getting-started.md) for the tools you enable.
+Run these commands from the repository root, on a **fresh setup only**:
 
 ```bash
 uv sync --python 3.12
 cp config/config.example.yaml config/config.local.yaml
 cp .env.example .env
-$EDITOR config/config.local.yaml    # input/output paths, stages and endpoints
-$EDITOR .env                        # optional credentials; never commit this file
+$EDITOR config/config.local.yaml   # paths, stages and endpoints
+$EDITOR .env                      # credentials; never commit this file
 uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
 uv run multimodal-pipeline run -c config/config.local.yaml
 ```
 
-These copy commands are for a fresh setup: keep an existing local config or `.env`
-instead of overwriting it. Python 3.12 is shared by all seven environment ranges.
-The `.env` file is read automatically; explicitly exported variables take precedence.
-
-Inspect a completed run or find out why a stage will rerun:
+Keep existing local configuration and credentials instead of overwriting them.
+Translation and stories can send transcript text to an endpoint and incur costs;
+configure them deliberately or disable them.
 
 ```bash
 uv run multimodal-pipeline status -c config/config.local.yaml --plan
 uv run multimodal-pipeline validate -c config/config.local.yaml --json
 ```
 
-For the complete command set, stage-selection flags and exit codes, see the
-[CLI reference](docs/cli.md#commands). Configuration and troubleshooting live in the
-[configuration guide](docs/configuration.md).
+## Where to read next
 
-## Inside each dataset
-
-```text
-data/processed/<video_id>/
-├── manifest.json       # artifact paths and declared absences
-├── status.json         # per-stage state and reuse fingerprints
-├── speech/             # segments, words and speaker turns
-├── translation/        # English segment translations
-├── linguistic/         # source/English token and sentence tables
-├── acoustic/           # Praat frame features and segment summaries
-├── pose/               # measured keypoints and normalized coordinates
-├── persons/            # person detections and track summaries, when enabled
-├── speaker/            # active-speaker evidence and fusion tables
-├── stories/            # narrative candidates, when produced
-├── elan/               # linked annotation export
-├── source/ & audio/    # metadata, source-frame timings and extracted audio
-└── logs/ & provenance/ # how each result was produced
-```
-
-Start with `manifest.json`, not a guessed filename. The
-[dataset guide](docs/datasets.md#one-dataset-file-by-file) walks a processed example,
-then shows how to read Parquet with Arrow or pandas and join modalities safely.
-
-### A visual look at the schema
-
-| Active-speaker evidence | Pose keypoints |
+| Question | Guide |
 |---|---|
-| ![Synthetic schema demo: active-speaker scores, frame reasons and activity](docs/assets/active_speaker_strip.png) | ![Synthetic schema demo: BODY_25 skeletons and a missing detection](docs/assets/pose_skeleton_strip.png) |
-| Measured scores, carried scores and missing faces are separate states. | A missing detection stays missing; no skeleton is invented. |
+| How do I install and process a video? | [Getting started](docs/getting-started.md) |
+| How do I run, resume or select stages? | [CLI reference](docs/cli.md) |
+| What settings, credentials and failure messages matter? | [Configuration](docs/configuration.md) |
+| What files do I get, and how do I join their tables? | [Datasets and analysis](docs/datasets.md) |
+| What do the measurements mean, and what are their limits? | [Modalities](docs/modalities.md) |
+| What is exported to ELAN, and how do I share it? | [ELAN export](docs/elan.md) |
+| How is the pipeline structured, and why? | [Architecture](docs/architecture.md) |
+| Where is the code, and how do I test a change? | [Development](docs/development.md) |
 
-*These are synthetic schema illustrations, not accuracy benchmarks. Open an image
-at full size for the labels; generation details are in the [asset notes](docs/assets/README.md).*
+Start a dataset analysis from `manifest.json`, not guessed filenames. Its artifact
+paths and declared absences explain what was produced. Separate clocks and track-ID
+namespaces matter: see the [consumer rules](docs/datasets.md#consumer-rules).
 
-## Read the results with their limits
-
-- **Translation is not linguistic glossing.** The ELAN `gloss_en` tier contains
-  segment-level English translations, not Leipzig interlinear glosses. There is
-  no transliteration or gaze-estimation stage.
-- **Tracks are not identities.** Face tracks, person tracks and each diarizer's
-  speaker labels are different namespaces. Matching digits do not identify a person.
-- **A shared unit is not a shared frame grid.** TalkNet uses its own 25 FPS grid;
-  use source timestamps when joining it to source-frame measurements.
-- **ELAN is a summary, not the full dataset.** Its coverage inventory states what
-  was exported, summarized, left out or absent. Linguistic tables, dense pose
-  coordinates and story candidates remain outside the tier export.
-- **Story candidates are unvalidated claims.** Transcript-bound evidence makes
-  them auditable; it does not establish detection accuracy.
-
-See the [consumer invariants](docs/datasets.md#the-invariants-a-consumer-may-rely-on)
-and [ELAN semantics](docs/elan.md#elan-export-elan) before interpreting a bar as a measurement.
-
-## Documentation
-
-| I want to… | Guide |
-|---|---|
-| Install the tools and process my first video | [Getting started](docs/getting-started.md) |
-| Run, resume, select stages or validate outputs | [CLI reference](docs/cli.md) |
-| Understand the files and analyze their tables | [Datasets and analysis](docs/datasets.md) |
-| Interpret diarization, fusion, pose, people or stories | [Modalities](docs/modalities.md) |
-| Inspect annotation tiers or send an ELAN bundle | [ELAN export](docs/elan.md) |
-| Understand dependencies, timing, reuse and environments | [Architecture](docs/architecture.md) |
-| Configure endpoints, protect secrets or diagnose a failure | [Configuration and troubleshooting](docs/configuration.md) |
-| Run tests and navigate the source tree | [Development](docs/development.md) |
+Current work and deferred questions live in the compact
+[ODD tracker](odd/tasks/multimodal-video-pipeline.md). Historical plans and run diaries
+are retained in Git history, not in the user documentation.
 
 ## License
 
-[MIT](LICENSE). This license covers the repository; it does not grant rights to
-third-party input media, model weights or external tools.
+[MIT](LICENSE) covers this repository, not third-party media, model weights or tools.
