@@ -56,11 +56,8 @@ BACKLINK_RE = re.compile(r"\]\(\.\./README\.md\)")
 #: relative to the repository root, which is the only place they work.
 ROOT_CWD_SENTENCE = "run them from the repository root"
 
-#: The stale figure. ``docs/assets/stage_graph.png`` is regenerated from ``STAGE_ORDER``
-#: and ``STAGE_DEPENDENCIES``, but the committed PNG predates the ``stories`` stage: it
-#: draws a 17-stage graph for an 18-stage pipeline, and its labels overlap badly enough to
-#: be unreadable. Displaying a DAG that contradicts the pipeline is worse than displaying
-#: none, so no document may embed it while it is stale.
+#: The former graph PNG was stale and is no longer committed. Architecture publishes
+#: a dependency table checked against code; do not reintroduce the old image in a guide.
 STALE_FIGURE = "stage_graph.png"
 
 FENCE_RE = re.compile(r"^\s*```")
@@ -121,12 +118,11 @@ class TestLandingPage:
     def test_the_readme_routes_instead_of_being_the_manual(self) -> None:
         """The design decision, pinned.
 
-        The limit is generous on purpose (the page as written is ~185 lines). It exists
-        because length is what made the old README hard to start from, and length grows
-        one "useful paragraph" at a time until the file is a manual again.
+        Keep the overview short enough to route readers to focused guides rather than
+        accumulating a second manual one "useful paragraph" at a time.
         """
         lines = README.read_text(encoding="utf-8").splitlines()
-        assert len(lines) <= 220, (
+        assert len(lines) <= 120, (
             f"README.md is {len(lines)} lines; it is a landing page that routes to the "
             "eight guides under docs/, not the manual itself. Move the new content into "
             "the guide that owns the topic and link it.")
@@ -158,6 +154,8 @@ class TestGuidesExistAndAreNavigable:
         assert path.is_file(), f"docs/{name} is missing; the README links it"
         text = path.read_text(encoding="utf-8").lstrip()
         assert text.startswith("# "), f"docs/{name} has no H1 title"
+        assert len(text.splitlines()) <= 220, (
+            f"docs/{name} has grown past a focused guide; move history to Git, not prose")
         # Title, then a sentence saying what the guide is for — before any moved content.
         blocks = text.split("\n\n", 2)
         assert len(blocks) > 1 and len(blocks[1].strip()) > 40, (
@@ -266,9 +264,8 @@ class TestFigureHonesty:
     def test_the_stale_stage_graph_is_not_displayed_anywhere(self) -> None:
         offenders = [str(p.relative_to(ROOT)) for p in documents() if STALE_FIGURE in body(p)]
         assert not offenders, (
-            f"{STALE_FIGURE} is embedded in {offenders}. The committed PNG predates the "
-            "stories stage, so it draws a 17-stage graph for an 18-stage pipeline; the "
-            "text graph in docs/architecture.md follows STAGE_DEPENDENCIES.")
+            f"{STALE_FIGURE} is embedded in {offenders}. Use the code-checked dependency "
+            "table in docs/architecture.md instead of the removed image.")
 
     def test_the_committed_figures_are_the_ones_the_assets_index_lists(self) -> None:
         listed = (DOCS / "assets" / "README.md").read_text(encoding="utf-8")
