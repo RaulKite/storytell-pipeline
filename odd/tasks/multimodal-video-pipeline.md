@@ -84,7 +84,7 @@ invalidate story-stage reuse. Its historical source comment stays unchanged; all
   not a claim of a runtime bug fixed.
 - Final focused docs/contracts/assets: **130 passed, 12 skipped**. Four skips are guides
   without shell examples; eight require optional matplotlib, which is unavailable.
-- Final full unit suite: **2006 passed, 12 skipped** (84.61 s).
+- Pre-slice full unit suite: **2006 passed, 12 skipped** (84.61 s).
 - `git diff --check` passed; the example config loads. Executable AST comparison
   confirmed the two edited existing test docstrings do not change their logic.
 - Independent verifier: **no outstanding findings**, **275 passed, 12 skipped**
@@ -92,24 +92,24 @@ invalidate story-stage reuse. Its historical source comment stays unchanged; all
   It caught the source-byte fingerprint effect above and an inherited ELAN prose
   error: no transcript inputs normally skip, rather than fail, the stage. Source
   restored and guide corrected. No live inference/corpus/desktop/hosted-CI claim.
-- E2E: **42 passed** (313.44 s).
+- Pre-slice e2e: **42 passed** (313.44 s). Final combined unit/e2e rerun at
+  `d58d1bc`: **2048 passed, 12 skipped**, exit 0 (363.11 s).
 - The whole-scope START exceeded native context before authority creation. The
   operator requested small chunks, so local work-unit commits now replace that scope;
   no push, merge or change to RDD mode is part of this work.
 - CLI slice `de1e079`: native low-tier approval was acknowledged/consumed under
   `review-26592e44cb7261bf`; this is not a claim that model lenses ran for that tier.
-- Native ASSESS over each following committed boundary reports **no review due**:
-  pure docs/history are passive; config comments and assets are medium/under budget.
-  Their structural/self checks and independent verification satisfy the returned plan.
-- Assessed boundaries (commit / topic): `9091caf` overview/development; `b1e0ddd`
-  architecture; `aaad4cd` modalities; `5f8e7c6` datasets; `b4d5e6b` ELAN; `741a992`
-  installation; `ee3d3a2` config; `b52d10c` assets; `9d1ffca` derived-stage history;
-  `b8a347a` ELAN/story history. These are local chain slices, not release points.
-- Remaining guard/workflow slices are assessed separately, never hidden in the
-  passive-doc scope. Final branch checks and outcomes belong in their commit messages.
-- A candidate-view Git incident was diagnosed read-only: installed Git 2.34.1 rejects
-  `worktree list --porcelain -z`. No external runtime, worktree or authority repair
-  was attempted. Native outcomes must be read back, not inferred from this diagnosis.
+- Guide/history boundaries `9091caf`–`b8a347a` were assessed individually:
+  docs passive; config/assets medium, under budget. Required checks passed.
+- Policy/tracker `08dcf87` and guards `535bb23`/`222c086`: medium/under budget;
+  self-checks passed. No model review was due for these exact scopes.
+- Workflow comment `d58d1bc`: high; three native lenses approved under
+  `review-500d9040dc452f4e`, acknowledged/consumed. Fresh ASSESS confirmed
+  `closed` (derived), `consumed=true`, `reviewDue=false` (already reviewed).
+- Post-ack candidate-view cleanup was deferred with a Git worktree error; the
+  reviewed view remains registered and clean. Approval/consumption succeeded.
+  Git 2.34.1 rejects `worktree list --porcelain -z`; causality is not established.
+  No external upgrade, worktree removal or authority repair was attempted.
 - Checkpoint: `checkpoint/docs-cleanup-e7dc90e`, base `e7dc90e`.
   Work branch: `docs/clean-documentation`.
 - Rollback: revert the documentation/guard work unit or restore its files from the
