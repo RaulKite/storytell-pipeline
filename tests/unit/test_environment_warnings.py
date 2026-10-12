@@ -13,8 +13,8 @@ Two real degradations were invisible:
 * a configured spaCy model that is not installed — the resolver falls through to a
   family cousin or to ``blank``, and ``blank`` means tokenization plus a sentencizer
   only: the tables come back with empty lemmas/POS/dep and look like results. That cost
-  this project a wrong-language annotation incident (see
-  ``odd/tasks/multimodal-video-pipeline.md`` §16) and it produces *no warning at all*.
+  this project a wrong-language annotation incident (recorded in Git history), and
+  the pre-fix command produced no warning at all.
 
 A uv project that exists but has never been synced is deliberately **not** warned
 about: verified against a throwaway project on this machine, ``uv run --project``

@@ -1,17 +1,17 @@
-"""`stories`: narrative-window detection with the pipeline's own LLM (T16, ODD §20.3).
+"""`stories`: transcript-bound narrative candidates (see docs/modalities.md).
 
 Three things are tested, and each has a different failure it exists to catch.
 
 **The rejection path** (`TestValidation`). The probe measured that this endpoint answers
 with real ``segment_id``s and real boundary times on a clip that has a story, and with an
-empty list plus a stated reason on two that do not (`odd/tasks/stories-detection.md`). So a
+empty list plus a stated reason on two that do not (probe retained in Git history). So a
 parser that accepted an invented id or a fabricated timestamp would not be "lenient", it
 would be writing fiction into the corpus: the whole point of the table is that a human can
 check a story against the transcript. Every rejection test below names the one breach it
 refuses, and each guard was broken once to confirm the test dies.
 
-**Emptiness as a result** (`TestEmptyIsAResult`). §20.3 requires the output be allowed to
-be empty *and* something to count how often it is. An empty list with no reason is refused
+**Emptiness as a result** (`TestEmptyIsAResult`). The contract allows an empty
+answer and counts how often it occurs. An empty list with no reason is refused
 — that is the difference between "the model looked and found nothing" and "the model said
 nothing at all".
 
