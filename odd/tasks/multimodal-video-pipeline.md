@@ -95,8 +95,8 @@ invalidate story-stage reuse. Its historical source comment stays unchanged; all
 - Pre-slice e2e: **42 passed** (313.44 s). Final combined unit/e2e rerun at
   `d58d1bc`: **2048 passed, 12 skipped**, exit 0 (363.11 s).
 - The whole-scope START exceeded native context before authority creation. The
-  operator requested small chunks, so local work-unit commits now replace that scope;
-  no push, merge or change to RDD mode is part of this work.
+  operator requested small chunks, so local work-unit commits replaced that scope.
+  Later authorization adds view cleanup/normal branch push, not merge or changing RDD.
 - CLI slice `de1e079`: native low-tier approval was acknowledged/consumed under
   `review-26592e44cb7261bf`; this is not a claim that model lenses ran for that tier.
 - Guide/history boundaries `9091caf`–`b8a347a` were assessed individually:
@@ -106,10 +106,10 @@ invalidate story-stage reuse. Its historical source comment stays unchanged; all
 - Workflow comment `d58d1bc`: high; three native lenses approved under
   `review-500d9040dc452f4e`, acknowledged/consumed. Fresh ASSESS confirmed
   `closed` (derived), `consumed=true`, `reviewDue=false` (already reviewed).
-- Post-ack candidate-view cleanup was deferred with a Git worktree error; the
-  reviewed view remains registered and clean. Approval/consumption succeeded.
-  Git 2.34.1 rejects `worktree list --porcelain -z`; causality is not established.
-  No external upgrade, worktree removal or authority repair was attempted.
+- With operator authorization, all five session-owned review views were removed;
+  two staged snapshots were checkpointed first. Native authority stayed valid/unchanged.
+  Assumption: completed task views are disposable, not operator data; no Git upgrade.
+  Publication is limited to `docs/clean-documentation`: normal push, no merge/force.
 - Checkpoint: `checkpoint/docs-cleanup-e7dc90e`, base `e7dc90e`.
   Work branch: `docs/clean-documentation`.
 - Rollback: revert the documentation/guard work unit or restore its files from the
