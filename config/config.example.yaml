@@ -100,7 +100,7 @@ translation:
   # extra_body: {}               # gateway-specific request fields
 
 # Narrative windows found in the transcript. On by default like translation, and it is the
-# only stage that spends tokens per video, so `inspect-environment` announces an
+# other stage that spends tokens per video, so `inspect-environment` announces an
 # unconfigured endpoint the same way it announces translation's. It has its own section
 # rather than sharing translation's object because it has its own prompt version, batching
 # and retry budget: editing the story prompt must not invalidate every cached translation,
@@ -136,7 +136,7 @@ pose_normalized:
   origin_keypoint: MidHip        # becomes (0, 0) — every coordinate is measured from here
   basis_keypoint: Neck           # becomes (1, 0) — the longest two-point torso segment
                                  # BODY_25 offers, chosen over dfMaker's Neck→LShoulder
-                                 # by measuring the divisor (the README's table)
+                                 # for a longer, less jitter-sensitive torso baseline
   second_axis: perpendicular     # derived, not chosen: the clockwise perpendicular of the
                                  # first axis, (v.y, -v.x) in y-down image space — the exact
                                  # branch the reference fixtures were validated against
@@ -379,7 +379,7 @@ persons:
                             # ceiling would fail a legitimate long run
   # extra_args: []
 
-# Audio/visual agreement (T13 + T20): fuse a diarizer's turns with the per-frame active
+# Audio/visual agreement: fuse a diarizer's turns with the per-frame active
 # speaker table. Pure python -- no GPU, no extra uv environment -- so it costs a re-read
 # of two Parquet files. Its output is a SECOND diarization result beside the existing ones:
 # speaker_turns.parquet and every artifact built on it keep their meaning.
@@ -403,14 +403,13 @@ speaker_fusion:
   # not a speaker, however good its ratio looks.
   min_face_frames: 2
 
-# ELAN export (T22): one `.eaf` per video, one flat tier per module, linked to the source
+# ELAN export: one `.eaf` per video, fixed flat summary tiers, linked to the source
 # video. Pure python over Parquet that is already on disk -- no GPU, no uv environment, no
 # download -- so it is on by default where the GPU stages are off, and turning it off deletes
 # nothing. It runs last because every tier summarises some producer's tables.
 #
-# Twelve tiers with fixed names (words, segments_src, gloss_en, turns_pyannote,
-# turns_nemotron, fusion_pyannote, fusion_nemotron, asd_speaking, face_tracks, person_tracks,
-# pose_presence, voiced_blocks); a tier whose input file was never produced is skipped with one
+# Up to fifteen fixed tiers (see docs/elan.md), including transcript, diarizer/fusion,
+# visual-state and acoustic-window summaries. A tier whose input file is absent is skipped with one
 # logged line rather than written empty, so "nobody spoke" and "this engine never ran" stay two
 # different readings. Per-frame signals are collapsed into blocks, so the file has hundreds of
 # annotations rather than tens of thousands.
