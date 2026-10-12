@@ -5,7 +5,7 @@ name: unit
 # ffmpeg present so the media tests that need real ffmpeg/ffprobe actually run instead of
 # skipping. Nothing here touches a GPU, OpenPose, /opt/openpose, a Hugging Face token or
 # the translation endpoint, so the following are NOT verified by CI and remain verified
-# only by the live runs recorded in odd/tasks/:
+# separately by live tool runs (historical run notes are retained in Git):
 #
 #   - whisperx, diarization, activespeaker (GPU models)
 #   - openpose (needs a third-party install)
