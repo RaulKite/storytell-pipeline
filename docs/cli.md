@@ -1,8 +1,11 @@
 # CLI reference
 
-Every command the `multimodal-pipeline` console script exposes, the stage-selection flags, and what the exit codes mean.
+Use `multimodal-pipeline` through `uv run` to process, resume, inspect and validate
+videos. Commands operate on the output directory selected by the configuration.
 
 Back to the overview: [Storytel Pipeline](../README.md).
+
+Commands use repository-relative paths: run them from the repository root.
 
 ## Contents
 
@@ -11,68 +14,76 @@ Back to the overview: [Storytel Pipeline](../README.md).
 - [Status output](#status-output)
 - [Exit codes](#exit-codes)
 
----
-
 ## Commands
 
-| Command | What it does |
+| Command | Purpose |
 |---|---|
-| `run` | Process every discovered video, sequentially, one stage at a time |
-| `resume` | Continue an interrupted run, reusing every stage whose result is still valid |
-| `retry-failed` | Force-recompute exactly the stages that failed, then their dependants |
-| `process-video <file>` | Process one file by path (the smoke-test entry point) |
-| `status` | Per-video, per-stage state. `--plan` explains every reuse decision, `--json` for scripts |
-| `validate` | Re-run semantic validation over artifacts already on disk, without processing |
-| `inspect-environment` | Discovered tools, models and GPU/CUDA versions — JSON on stdout, always, no flag needed |
+| `run` | Process the discovered input videos sequentially |
+| `resume` | Continue using validated previous stage results |
+| `retry-failed` | Force failed stages, invalidating dependent results |
+| `process-video <file>` | Process a single explicit path |
+| `status` | Inspect stage outcomes; `--plan` explains reuse, `--json` supports scripts |
+| `validate` | Check existing artifacts without processing; optional `--json` |
+| `inspect-environment` | Tools/models/GPU inventory as JSON, always; no flag needed |
 
-### Stage controls
-
-Stage controls on `run`; `process-video` takes the same four stage controls and takes
-the file as its positional argument instead of a flag:
-
-```
---only-stage   acoustic              this stage plus whatever it needs
---from-stage   whisperx              start here
---to-stage     acoustic              stop here       (default: the last stage, elan)
---force-stage  whisperx,acoustic     recompute even if valid
---video        clip.mp4               one file (run only); a bare name resolves
-                                     against input.directory
+```bash
+uv run multimodal-pipeline --help
+uv run multimodal-pipeline run --help
+uv run multimodal-pipeline run -c config/config.local.yaml
+uv run multimodal-pipeline resume -c config/config.local.yaml
+uv run multimodal-pipeline retry-failed -c config/config.local.yaml
+uv run multimodal-pipeline process-video -c config/config.local.yaml path/to/clip.mp4
+uv run multimodal-pipeline status -c config/config.local.yaml --plan
+uv run multimodal-pipeline validate -c config/config.local.yaml --json
 ```
 
-`status` and `validate` take `--json` for machine output, and `inspect-environment`
-*is* JSON unconditionally; on all three, the human-readable tables go to **stderr**,
-so `| jq` and CI capture work without scraping. (`inspect-environment --json` is not a
-thing — it exits 2 with typer's "No such option", measured.)
+`validate` gets the output directory from config; it has no `-o` flag.
+JSON command output goes to stdout, human tables/messages to stderr.
+`inspect-environment` does not accept `--json` because JSON is unconditional.
 
-### Status output
+## Stage controls
 
-`status` numbers its stage columns by position instead of naming them, because eighteen
-stage names (or even eighteen abbreviations) do not fit the 80 columns `rich` assumes
-when its output is not a tty. The legend under the table gives both mappings — the letter
-and the stage behind each index — and each video's id is printed whole on its own line
-when it is too long to share one. There are currently 18 stage columns:
-`16=stories`, `17=finalization`, `18=elan`, followed by `ov=overall`.
-The state legend is `c=completed`, `F=failed`, `P=partial`, `.=pending`,
-`r=running`, `s=skipped`. Use `--plan` for the reason behind each reuse decision.
+`run` and `process-video` share these controls:
 
-That shape is not cosmetic. The previous `rich` table measured 143 columns against those
-80, and `rich` resolves that by stealing width in silence: `video_id` collapsed to a
-single `…` and every header to `m…`, exit code 0, so no row said which video it was.
-Shortening the headers could not fix it — a real id in this corpus is 72 characters, so
-the table never fits. `tests/unit/test_cli_status_layout.py` asserts the structure (which
-index holds which stage's mark, and that an id survives as one string) rather than the
-presence of a word, because "the id is in the output" is exactly the assertion that
-cannot see this failure.
+| Flag | Effect |
+|---|---|
+| `--only-stage acoustic` | Select that stage and its prerequisites |
+| `--from-stage whisperx` | Start the requested range here |
+| `--to-stage acoustic` | Stop the requested range here |
+| `--force-stage whisperx,acoustic` | Recompute these stages even if reusable |
 
-### Exit codes
+`run --video clip.mp4` selects one file; a bare filename resolves under
+`input.directory`. `process-video` instead takes its file as a positional argument.
+Stage names and ordering are in [Architecture](architecture.md#stage-dependencies).
 
-Exit codes are part of the API:
+```bash
+uv run multimodal-pipeline run -c config/config.local.yaml --only-stage elan
+uv run multimodal-pipeline run -c config/config.local.yaml --force-stage whisperx
+```
+
+In a full run, an upstream recomputation invalidates its downstream stages. An
+explicit selection restricts which stages execute; unselected dependants are not
+silently added just because you forced an upstream stage. In particular,
+`--only-stage elan` includes prerequisites: it is export-only **when they are already
+reusable**. Check `status --plan` before assuming an inexpensive refresh.
+
+## Status output
+
+Stage columns use numeric indices, with stage names and state marks in the legend.
+Long video IDs are printed separately rather than truncated. `ov` is overall status.
+
+Marks: `c=completed`, `F=failed`, `P=partial`, `.=pending`, `r=running`, `s=skipped`.
+Use `--plan` to distinguish configuration changes, missing outputs, validation
+failures and explicit skips. `status.json` remains the machine-readable resume record.
+
+## Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | every video completed |
-| `1` | `validate` found a broken artifact, or `status` was given an unknown video id |
-| `2` | `run`/`resume` had at least one failed or partial video; or a config/usage error |
+| `0` | Successful command; processing completed without failed/partial videos |
+| `1` | `validate` found an invalid artifact, or `status` received an unknown video ID |
+| `2` | Processing had a failed/partial video, or configuration/CLI usage was invalid |
 
-`run` uses `2` rather than `1` so a CI job can tell "a video needs attention" apart
-from "the pipeline was invoked wrongly".
+Code `2` does **not** distinguish a usage error from partial processing. Inspect
+stderr or structured output to tell them apart. See
+[Configuration troubleshooting](configuration.md#troubleshooting) for common causes.
