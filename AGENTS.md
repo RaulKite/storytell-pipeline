@@ -25,33 +25,18 @@ and no amount of code reading resolves them:
 - A destructive change to data the operator produced by hand (their TalkNet scripts,
   their clips, their `data/input_videos/`).
 
-Check the review mode with `gentle-ai review mode status`; do not trust prose, including
-this paragraph. It currently reads `receipt-driven development: on (decided by default)`.
-**Decision (2026-10-02, operator): RDD stays ON for this clone** — asked which mode produces
-better code, the operator chose the one that generates the best code, and the receipts answer
-it: native review found the defects no test reached, including `R3-output-alias`, where
-`--output-json clip.mp4` replaced the operator's own video, and `R4-nan-timestamp-aborts-
-export`, where one NaN timestamp killed a whole ELAN export. Expect consent prompts on
-eligible commits, and treat `mode status` — not any document — as the only authority on
-review state. A disable is always one command away (`gentle-ai review mode disable`, then
-confirm it reads back `off`), and the switch stays the operator's, not yours.
-
-This paragraph previously asserted the opposite: "disabled for this clone ... native review
-consent prompts therefore do not appear." That was stale, and the mechanism is recorded in
-master ODD ("Discrepancy about the review switch"): the clone-local `disable` was written at
-`08:25:28Z` and replaced eleven minutes later by a record of `mode: "inherit"`, which falls
-through to the default of on. A disable that is not visible in `mode status` output is not a
-disable. An agent following the stale paragraph wrote into a receipt document that a shipped
-chain had never been reviewed, because a policy file seemed cheaper to read than the tool it
-describes. The rule that survived the incident, in both directions: do not describe a change
-as reviewed when nothing reviewed it, and do not describe it as *unreviewed* on the strength
-of a document either.
+**Operator policy: RDD stays ON for this clone.** Check the actual mode with
+`gentle-ai review mode status`; prose is not authority and the switch stays with the
+operator. Native review found data-loss and malformed-timestamp defects that tests
+missed, so preserve this outside view. Consent prompts can appear on eligible changes.
+Inspect native authority before review; report only observed results. Neither this file,
+the ODD tracker nor historical receipts prove the review state of a current candidate.
 
 ## Commands that actually work here
 
 ```bash
-uv run --with pytest pytest tests/unit tests/e2e -q -p no:randomly   # full suite, ~2 min
-uv run --with pytest pytest tests/unit -q -p no:randomly             # unit only, ~25 s
+uv run --with pytest pytest tests/unit tests/e2e -q -p no:randomly
+uv run --with pytest pytest tests/unit -q -p no:randomly
 uv run multimodal-pipeline run -c config/config.local.yaml           # full batch
 uv run multimodal-pipeline status -c config/config.local.yaml --plan # why each stage reruns
 uv run multimodal-pipeline validate -c config/config.local.yaml --json
@@ -92,19 +77,16 @@ valid worktree is available — a routing fallback is acceptable, a stalled laun
 
 ## Verification standard
 
-A claim in a commit message, README or ODD document has to be something you observed.
-Two commit messages in this repo's history described README content that had not been
-written, and one claimed the worker refuses short clips when it silently drops those
-frames instead. Fix the artifact, or fix the claim — never leave the claim.
+A claim in a commit message, README or ODD document must be supported by an observed
+check or code evidence. Fix the artifact or fix the claim; report failed/skipped checks.
+Current docs explain contracts, and `odd/tasks/multimodal-video-pipeline.md` retains
+only live work and deliberate deferrals. Historical plans and run diaries live in Git.
 
 A test you have not seen fail is not evidence. For logic worth trusting, break it once
 and name the test that dies.
 
 ### Commit authorship
 
-Every commit is authored as the operator: `Raul Sanchez <raul@um.es>`, which is the
-repository's own git config. Do not add a `Co-Authored-By:` trailer naming Claude, Anthropic
-or any model, and do not name the model in the subject or body as a contributor. Three
-commits in this repository carry that trailer (`35119ef`, `31fde87`, `612e30f`) and it was
-an error, not a convention: the history reads as the operator's work, and the commit message
-already records what was measured and decided.
+Use the repository's configured operator authorship: `Raul Sanchez <raul@um.es>`.
+Do not add model `Co-Authored-By:` trailers or name a model as a contributor in the
+subject/body. Commit messages record the outcome, assumptions and observed checks.
