@@ -591,7 +591,9 @@ class TestCommittedAssetBudget:
         present = sorted(p.name for p in committed.glob("*.png")) if committed.is_dir() else []
         if not present:
             pytest.skip("docs/assets holds no PNGs yet")
-        expected = sorted(f"{name}.png" for name in figures.FIGURES)
+        # Only the three schema illustrations are published. The generator's DAG
+        # image remains optional; architecture uses a code-checked dependency table.
+        expected = sorted(f"{name}.png" for name in figures.FIGURES if name != "stage_graph")
         assert present == expected, f"committed set drifted: {present} != {expected}"
         figures.render_synthetic(tmp_path, seed=7)
         for name in expected:
