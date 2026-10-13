@@ -42,6 +42,11 @@ This is the possible layout, not a promise that every file exists in every run.
 `artifacts_not_generated` declares absent outputs. Artifact totals vary with
 configuration, available prerequisites and input. Do not hardcode a corpus count.
 
+Set `activespeaker.write_video: true` to retain TalkNet's native annotated video
+with audio as `speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest).
+It is opt-in and requires ASD recomputation. Turning it off preserves an existing
+video; manifest presence reports files on disk, not the current toggle.
+
 Raw outputs remain beside normalized tables. Provenance is stored in sidecars and
 the provenance directory rather than injected into original raw bytes. The config
 snapshot masks secrets, but logs/tool provenance can still contain machine paths.

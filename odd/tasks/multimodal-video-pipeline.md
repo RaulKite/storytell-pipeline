@@ -48,12 +48,22 @@ all artifact families, not maximum image dimensions. Renderings use a 640 px lon
 side to limit disk use; measured coordinates are unchanged. Alternative: set
 `openpose.image_max_side: null` for source-size renderings.
 
-ASD already retains its JSON, tracks/scores pickles, scenes CSV and two Parquet tables.
-There is no supported annotated-video retention switch; `keep_temp_files` does not
-control the worker's temporary directory. No new ASD export was implemented.
+ASD retains its JSON, tracks/scores pickles, scenes CSV and two Parquet tables.
+**Decision:** add opt-in `activespeaker.write_video` (enabled locally) to retain the
+native annotated AVI with audio in `speaker/raw/video_out.avi`, without recompression.
+Assumption: the requested preview is TalkNet's all-face overlay, not a visualization
+of normalized selected-face labels. The native score rule differs from the table's
+configurable stabilization; docs make that distinction explicit. Alternative: a new
+renderer over normalized labels is deferred, not silently substituted.
+
+The worker stages safe-named audio for upstream's unquoted shell mux, checks audio
+and video streams, then publishes AVI bytes atomically before temporary cleanup.
+Missing/empty enabled video bypasses raw-JSON reuse so resume repairs the export;
+disabling the toggle deletes nothing. `keep_temp_files` remains unrelated.
 The local config stays gitignored; recovery uses `.git/config.local.before-full.yaml`
-and Git checkpoint `checkpoint/full-local-outputs-bf7050c`. No corpus processing,
-paid requests, downloads or operator-data edits are part of this configuration change.
+and Git checkpoint `checkpoint/full-local-outputs-bf7050c`. The ASD feature checkpoint
+is `checkpoint/asd-video-3c463a6`; its config backup is `.git/config.local.before-asd-video.yaml`.
+No paid requests, downloads or operator-data edits are part of this feature.
 Enabling images invalidates OpenPose reuse; generating them requires a later run.
 
 Verification: the local-profile assertion failed before editing on
@@ -62,7 +72,16 @@ spaCy routing. Configuration/render tests: **121 passed**; environment preflight
 **exit 0, no warnings** (not an inference-success claim). `status --plan`: **exit 0**;
 OpenPose and both spaCy variants require recomputation, normalized pose/ELAN follow
 changed dependencies, ASD and both fusions remain reusable. The ignored local YAML
-was checked directly; native Git-scope assessment covers only this tracker, not YAML.
+was checked directly; that configuration-only assessment covered the tracker, not YAML.
+ASD feature verification: config/request and publication tests were observed RED
+before implementation; missing-video resume and empty-video validation also failed
+before their fixes. Focused ASD/config tests: **156 passed**. Real TalkNet runs in a
+repository-local mirror (existing checkpoints, no downloads) produced a 105-frame,
+4.2 s face-overlay AVI and a 100-frame, 4 s silent/no-face AVI. Both retain audio and
+decode with ffmpeg (exit 0); the face-overlay frame was inspected. Original inputs,
+processed datasets and external TalkNet scripts are unchanged. The local profile loads
+with `write_video=true`; `status --plan` reports ASD and its dependants need reruns.
+Current-candidate suite and review outcomes are recorded with the implementation commit.
 
 ## Known limitations
 

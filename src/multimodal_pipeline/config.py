@@ -571,6 +571,9 @@ class ActiveSpeakerConfig(_Model):
     python_version: str = "3.12"
     talknet_root: Path | None = None
     weights_dir: Path | None = None
+    #: Keep TalkNet's native annotated AVI with audio beside its raw data.
+    #: Opt-in: enabling this changes the request and reruns the model.
+    write_video: bool = False
     device: str = "auto"
     device_index: int = 0
     #: Smoothed score at or above which a frame counts as an active speaker.

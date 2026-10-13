@@ -250,6 +250,10 @@ activespeaker:
   # this at a directory holding pretrain_TalkSet.model and sfd_face.pth to keep the
   # checkout read-only (or to avoid re-downloading ~150 MB per machine).
   # weights_dir: /path/to/talknet-weights
+  # Native 25 FPS annotated AVI with audio, preserved byte-identically in
+  # speaker/raw/video_out.avi. Opt-in: enabling reruns ASD; disabling deletes nothing.
+  # Its per-face score overlays are not the stabilized selected-face Parquet labels.
+  write_video: false
   device: auto            # auto | cuda | cpu
   device_index: 0
   # TalkNet scores are unbounded logits; the upstream convention treats 0 as the

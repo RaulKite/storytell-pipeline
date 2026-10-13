@@ -61,6 +61,7 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "pose_hands": "pose/hands.parquet",
     "pose_face": "pose/face.parquet",
     "activespeaker_raw": "speaker/raw/active_speaker.json",
+    "activespeaker_video_raw": "speaker/raw/video_out.avi",
     "activespeaker_tracks_pkl": "speaker/raw/tracks.pckl",
     "activespeaker_scores_pkl": "speaker/raw/scores.pckl",
     "activespeaker_scenes_csv": "speaker/raw/scenes.csv",

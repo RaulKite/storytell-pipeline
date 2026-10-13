@@ -74,6 +74,11 @@ value. Unscored rows retain null scores rather than becoming zero-confidence fac
 The dense table follows a 25 FPS **working grid**, not source frames. Use the
 [dataset clock rules](datasets.md#consumer-rules) before joining it to pose.
 
+`activespeaker.write_video` optionally retains the native 25 FPS AVI with audio:
+all tracked-face boxes and native smoothed scores (green at score ≥ 0, red otherwise).
+These overlays are not the normalized table's scene-clipped smoothing, configurable
+threshold and selected-face hysteresis. An unscored overlay is not evidence of silence.
+
 ## Audio–visual agreement
 
 `speaker_fusion` adds evidence beside each selected diarizer's turns; it does not

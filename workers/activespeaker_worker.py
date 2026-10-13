@@ -40,6 +40,7 @@ import json
 import math
 import os
 import pickle
+import shlex
 import shutil
 import subprocess
 import sys
@@ -495,14 +496,24 @@ def resolve_device(requested: str) -> tuple[str, str | None]:
 
 
 def run_talknet(talknet_root: Path, temp_dir: Path, scenes_csv: Path, audio: Path,
-                device: str) -> tuple[Path, Path]:
+                device: str, *, write_video: bool = False) -> tuple[Path, Path]:
     runner = talknet_root / "run_talknet.py"
     if not runner.is_file():
         raise WorkerFailure(f"TalkNet runner not found: {runner}")
-    run_command([sys.executable, str(runner), "--pathToScenes", str(scenes_csv),
-                 "--videoName", TALKNET_VIDEO_NAME, "--videoFolder", str(temp_dir),
-                 "--audioFilePath", str(audio), "--device", device],
-                f"Running TalkNet on {device}", cwd=talknet_root)
+    if write_video:
+        # The native renderer uses an unquoted shell mux command. Do not feed it
+        # operator filenames; stage byte-identical audio under a checked safe path.
+        if shlex.quote(str(temp_dir)) != str(temp_dir):
+            raise WorkerFailure("annotated video needs a shell-safe temporary path; set TMPDIR")
+        staged_audio = temp_dir / "audio.wav"
+        shutil.copyfile(audio, staged_audio)
+        audio = staged_audio
+    command = [sys.executable, str(runner), "--pathToScenes", str(scenes_csv),
+               "--videoName", TALKNET_VIDEO_NAME, "--videoFolder", str(temp_dir),
+               "--audioFilePath", str(audio), "--device", device]
+    if write_video:
+        command.append("--visualisation")
+    run_command(command, f"Running TalkNet on {device}", cwd=talknet_root)
     work = temp_dir / "pywork"
     tracks, scores = work / "tracks.pckl", work / "scores.pckl"
     if not tracks.is_file() or not scores.is_file():
@@ -511,6 +522,30 @@ def run_talknet(talknet_root: Path, temp_dir: Path, scenes_csv: Path, audio: Pat
 
 
 # --------------------------------------------------------------------- output
+
+
+def retain_video(source: Path, destination: Path, ffprobe: str) -> None:
+    """Publish native AVI bytes atomically, only after checking video and audio.
+
+    TalkNet ignores its mux subprocess's exit code; a model run can succeed while
+    video_out.avi is missing or broken. Never replace a previous export with that.
+    """
+    if not source.is_file() or source.stat().st_size == 0:
+        raise WorkerFailure("TalkNet finished without a nonempty annotated video")
+    probe = run_command([ffprobe, "-v", "error", "-show_entries", "stream=codec_type",
+                         "-of", "json", str(source)], "Checking annotated video", capture=True)
+    kinds = {stream.get("codec_type") for stream in json.loads(probe.stdout).get("streams", [])}
+    if not {"video", "audio"} <= kinds:
+        raise WorkerFailure("TalkNet annotated video must contain video and audio streams")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".video_", suffix=".tmp")
+    os.close(handle)
+    try:
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def build_document(*, video_id: str, source_fps: float, stamps: Sequence[float],
@@ -615,6 +650,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--weights-dir", type=Path, default=None)
     parser.add_argument("--raw-dir", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
+    parser.add_argument("--output-video", type=Path, default=None,
+                        help="retain TalkNet's annotated AVI with audio")
     parser.add_argument("--result-path", type=Path, required=True)
     parser.add_argument("--video-id", default="unknown")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
@@ -670,7 +707,8 @@ def process(args: argparse.Namespace) -> dict[str, Any]:
         detect_scenes(scenedetect, converted, scenes_csv)
 
         tracks_path, scores_path = run_talknet(args.talknet_root, temp, scenes_csv,
-                                               args.audio, device)
+                                               args.audio, device,
+                                               write_video=args.output_video is not None)
         tracks, pickle_encoding = load_pickle(tracks_path)
         scores, _ = load_pickle(scores_path)
 
@@ -685,6 +723,8 @@ def process(args: argparse.Namespace) -> dict[str, Any]:
         args.raw_dir.mkdir(parents=True, exist_ok=True)
         for source in (tracks_path, scores_path, scenes_csv):
             shutil.copyfile(source, args.raw_dir / source.name)
+        if args.output_video is not None:
+            retain_video(temp / "pyavi/video_out.avi", args.output_video, ffprobe)
 
     params = {
         "speaker_threshold": args.speaker_threshold,

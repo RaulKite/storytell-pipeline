@@ -76,6 +76,7 @@ class ActiveSpeakerStage(WorkerStage):
     inputs = ("metadata", "audio")
     outputs = (
         "activespeaker_raw",
+        "activespeaker_video_raw",
         "activespeaker_tracks_pkl",
         "activespeaker_scores_pkl",
         "activespeaker_scenes_csv",
@@ -96,6 +97,7 @@ class ActiveSpeakerStage(WorkerStage):
             "weights_dir": str(ctx.config.resolve(cfg.weights_dir)) if cfg.weights_dir else None,
             "device": cfg.device,
             "device_index": cfg.device_index,
+            "write_video": cfg.write_video,
             "speaker_threshold": cfg.speaker_threshold,
             "score_window": cfg.score_window,
             "switch_margin": cfg.switch_margin,
@@ -186,7 +188,31 @@ class ActiveSpeakerStage(WorkerStage):
         ]
         if cfg.weights_dir is not None:
             args += ["--weights-dir", str(ctx.config.resolve(cfg.weights_dir))]
+        if cfg.write_video:
+            args += ["--output-video", str(ctx.artifact("activespeaker_video_raw"))]
         return args + list(cfg.extra_args)
+
+    @staticmethod
+    def video_present(ctx: StageContext) -> bool:
+        path = ctx.artifact("activespeaker_video_raw")
+        return path.is_file() and path.stat().st_size > 0
+
+    def outputs_present(self, ctx: StageContext) -> bool:
+        required = (name for name in self.outputs if name != "activespeaker_video_raw")
+        return (all(ctx.artifact(name).exists() for name in required)
+                and (not ctx.config.activespeaker.write_video or self.video_present(ctx)))
+
+    def execute(self, ctx: StageContext) -> dict[str, Any]:
+        # Whole-stage reuse checks are not enough: WorkerStage also caches raw
+        # JSON independently. Repair a deleted/empty optional video before that cache.
+        repair_video = ctx.config.activespeaker.write_video and not self.video_present(ctx)
+        if repair_video:
+            self.run_model(ctx, self.request(ctx), ctx.artifact(self.raw_artifact),
+                           self.request_digest(ctx))
+        result = super().execute(ctx)
+        if repair_video:
+            result["extra"]["raw_reused"] = False
+        return result
 
     # ------------------------------------------------------------ normalisation
 
@@ -323,6 +349,8 @@ class ActiveSpeakerStage(WorkerStage):
             return None
 
     def validate(self, ctx: StageContext) -> dict[str, Any]:
+        if ctx.config.activespeaker.write_video and not self.video_present(ctx):
+            raise ValidationError(self.name, ["annotated video missing or empty"])
         document = self.validate_raw(ctx)
         if not raw_request_matches(ctx.artifact(self.raw_artifact), self.request_digest(ctx)):
             raise ValidationError(
