@@ -67,6 +67,8 @@ decisions; datasets owns the output inventory; modalities and ELAN own interpret
 Machine-specific counts, historical section references and run diaries were removed.
 Four historical ODD documents and the unused stale stage-graph PNG were removed;
 the three synthetic schema illustrations remain.
+README now cites STORYTEL's official project context; speaker timing illustrates datasets,
+not the landing page. Assumption: explain the project first; no replacement diagram needed.
 
 Documentation guards now compare the actual DAG, Parquet registry, CLI/navigation
 and compact tracker. Old assertions about obsolete queue IDs, remembered test counts

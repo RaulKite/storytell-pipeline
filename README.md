@@ -6,12 +6,13 @@ Transcribe speech, compare diarizers, extract acoustic and visual features, and
 inspect summaries in ELAN. Each video gets normalized Parquet tables, original tool
 output, logs and provenance in its own dataset directory.
 
+Developed for [STORYTEL](https://storytel.uni-koeln.de/), a project studying spontaneous
+storytelling in face-to-face conversations through words, voice and bodily movement.
+Its higher-education teaching and learning activities bring together university teams
+from Cologne (coordinator), Erlangen–Nürnberg, Murcia and Bologna.
+
 [Get started](docs/getting-started.md) · [Read the outputs](docs/datasets.md) ·
 [Architecture and design decisions](docs/architecture.md)
-
-![Synthetic schema demo: speaker turns and word timings](docs/assets/speaker_turn_strip.png)
-
-*All committed figures use synthetic data, not recording frames or accuracy benchmarks.*
 
 ## What it does
 

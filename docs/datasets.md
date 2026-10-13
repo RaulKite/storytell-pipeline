@@ -12,6 +12,7 @@ Commands use repository-relative paths: run them from the repository root.
 
 - [Directory layout](#directory-layout)
 - [Table reference](#table-reference)
+- [Speaker timing example](#speaker-timing-example)
 - [Read a dataset](#read-a-dataset)
 - [Consumer rules](#consumer-rules)
 
@@ -77,6 +78,14 @@ Presence is determined by the manifest, not this inventory.
 | `speaker_fusion_pyannote` | `speaker/fusion_pyannote.parquet` | pyannote turn × face evidence agreement |
 | `speaker_fusion_nemotron` | `speaker/fusion_nemotron.parquet` | Nemotron turn × face evidence agreement |
 | `stories` | `stories/stories.parquet` | LLM candidates with transcript evidence and request identity |
+
+## Speaker timing example
+
+Speaker-turn intervals and word-timing markers are separate records. This synthetic
+example illustrates `speaker_turns` alongside `speech_words`, not measured accuracy
+or data from a recording. See [Consumer rules](#consumer-rules) before joining them.
+
+![Synthetic schema demo: speaker turns and word timings](assets/speaker_turn_strip.png)
 
 ## Read a dataset
 

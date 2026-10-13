@@ -243,6 +243,13 @@ class TestLinksResolve:
 
 
 class TestFigureHonesty:
+    def test_speaker_timing_example_belongs_to_the_dataset_guide(self) -> None:
+        filename = "speaker_turn_strip.png"
+        landing_images = IMAGE_RE.findall(body(README))
+        dataset_images = IMAGE_RE.findall(body(DOCS / "datasets.md"))
+        assert not any(target.endswith(filename) for _, target in landing_images)
+        assert any(target == f"assets/{filename}" for _, target in dataset_images)
+
     @pytest.mark.parametrize("path", documents(), ids=lambda p: str(p.relative_to(ROOT)))
     def test_every_embedded_figure_says_it_is_synthetic(self, path: Path) -> None:
         """No committed PNG may read as a frame of a real clip.
