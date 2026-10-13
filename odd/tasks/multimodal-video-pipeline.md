@@ -96,7 +96,7 @@ invalidate story-stage reuse. Its historical source comment stays unchanged; all
   `d58d1bc`: **2048 passed, 12 skipped**, exit 0 (363.11 s).
 - The whole-scope START exceeded native context before authority creation. The
   operator requested small chunks, so local work-unit commits replaced that scope.
-  Later authorization adds view cleanup/normal branch push, not merge or changing RDD.
+  The operator later authorized view cleanup, branch publication and master integration.
 - CLI slice `de1e079`: native low-tier approval was acknowledged/consumed under
   `review-26592e44cb7261bf`; this is not a claim that model lenses ran for that tier.
 - Guide/history boundaries `9091caf`–`b8a347a` were assessed individually:
@@ -109,9 +109,9 @@ invalidate story-stage reuse. Its historical source comment stays unchanged; all
 - With operator authorization, all five session-owned review views were removed;
   two staged snapshots were checkpointed first. Native authority stayed valid/unchanged.
   Assumption: completed task views are disposable, not operator data; no Git upgrade.
-  Publication is limited to `docs/clean-documentation`: normal push, no merge/force.
+  Master integration uses fast-forward after a fresh fetch and checkpoint; no force-push.
 - Checkpoint: `checkpoint/docs-cleanup-e7dc90e`, base `e7dc90e`.
-  Work branch: `docs/clean-documentation`.
+  Published branch `docs/clean-documentation` is now fast-forwarded into `master`.
 - Rollback: revert the documentation/guard work unit or restore its files from the
   checkpoint. No input media, raw output or processed dataset needs regeneration.
 - Review policy remains operator-owned; read `gentle-ai review mode status` and
