@@ -38,6 +38,32 @@ No new runtime features, paid requests, environment upgrades or dataset refreshe
 are authorized by this documentation task. A stories tier is not an implicit backlog
 item; the current export deliberately omits narrative claims.
 
+## Local full-output profile
+
+**Decision:** `config/config.local.yaml` enables every implemented stage/output family,
+including OpenPose skeleton JPGs (body, hands and face), both diarizers/fusions,
+source/English linguistics, normalized pose and ELAN. The complete example spaCy
+language routing is explicit; it does not install models. Assumption: “full” means
+all artifact families, not maximum image dimensions. Renderings use a 640 px longest
+side to limit disk use; measured coordinates are unchanged. Alternative: set
+`openpose.image_max_side: null` for source-size renderings.
+
+ASD already retains its JSON, tracks/scores pickles, scenes CSV and two Parquet tables.
+There is no supported annotated-video retention switch; `keep_temp_files` does not
+control the worker's temporary directory. No new ASD export was implemented.
+The local config stays gitignored; recovery uses `.git/config.local.before-full.yaml`
+and Git checkpoint `checkpoint/full-local-outputs-bf7050c`. No corpus processing,
+paid requests, downloads or operator-data edits are part of this configuration change.
+Enabling images invalidates OpenPose reuse; generating them requires a later run.
+
+Verification: the local-profile assertion failed before editing on
+`openpose.write_images=false`, then passed with every stage enabled and complete
+spaCy routing. Configuration/render tests: **121 passed**; environment preflight:
+**exit 0, no warnings** (not an inference-success claim). `status --plan`: **exit 0**;
+OpenPose and both spaCy variants require recomputation, normalized pose/ELAN follow
+changed dependencies, ASD and both fusions remain reusable. The ignored local YAML
+was checked directly; native Git-scope assessment covers only this tracker, not YAML.
+
 ## Known limitations
 
 - Person detection tables cannot prove sampled-frame coverage; sighting gaps are not
