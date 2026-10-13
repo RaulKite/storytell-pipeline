@@ -238,7 +238,9 @@ class ArtifactRegistry:
             if path is None:
                 continue
             if path.is_dir():
-                entries = [p for p in path.rglob("*") if p.is_file()]
+                # Folder guides are documentation, never raw tool artifacts.
+                entries = [p for p in path.rglob("*")
+                           if p.is_file() and p.name != "explanation.md"]
                 # An empty directory is not an artifact. ``ensure_dirs`` pre-creates
                 # ``pose/raw`` and ``translation/raw``, so reporting them would make
                 # the manifest promise a pose dataset that was never produced.

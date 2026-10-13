@@ -58,6 +58,11 @@ JSON counts. With video enabled, native output, normalization, mux and validatio
 staged before previous pose outputs are replaced. `extra_args` cannot override native
 video flags in this mode; upstream shell-based MP4 paths must be safe.
 
+Each dataset folder receives an English `explanation.md` on run/resume, including
+reused outputs. These are contract guides, not evidence that a module produced data;
+they are excluded from directory-artifact counts and model fingerprints. Unmarked
+hand-written guides are preserved; generator-marked guides can be refreshed.
+
 Raw outputs remain beside normalized tables. Provenance is stored in sidecars and
 the provenance directory rather than injected into original raw bytes. The config
 snapshot masks secrets, but logs/tool provenance can still contain machine paths.

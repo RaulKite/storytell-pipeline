@@ -3,13 +3,11 @@
 This is the live ODD tracker, not an implementation diary or a parallel specification.
 For how the project works, start with [README](../../README.md),
 [Architecture](../../docs/architecture.md) and [Datasets](../../docs/datasets.md).
-Completed plans, numbered issues/tasks, dated probes and old receipts remain in Git
-history; they are not current product or review status.
+Completed plans, probes and review receipts remain in Git history, not live authority.
 
 ## Delivered capabilities
 
-These capabilities exist in code. “Built” does not claim accuracy, a new corpus
-run, desktop usability or successful hosted CI.
+“Built” does not claim accuracy, corpus regeneration, desktop usability or hosted CI.
 
 | Stage | State | Current contract |
 |---|---|---|
@@ -17,149 +15,105 @@ run, desktop usability or successful hosted CI.
 | `persons` | built | Optional detections/tracks; IDs are not unique-human counts |
 | `stories` | built | Transcript-bound candidates, including legitimate empty answers |
 | `pose_normalized` | built | Separate body-centred table; measured pixels preserved |
-| `openpose` | built | Measured landmarks and opt-in skeleton renderings |
+| `openpose` | built | Measured landmarks, opt-in skeleton JPGs and native MP4 |
+| `activespeaker` | built | Dense selected-face tables and opt-in native annotated AVI with audio |
 | `elan` | built | Up to 15 flat summary tiers, explicit omissions and nonoverlap |
 
 ## Open and deferred work
 
 - [ ] **Operator:** check the current 15-tier export in ELAN on a laptop/desktop.
-  Earlier feedback led to removing verbose linguistic/acoustic-segment tiers and
-  windowing frame signals. Check the resulting labels and media playback, not the
-  withdrawn tiers. A headless HTML preview cannot close this usability question.
-- [ ] **Deferred:** add a committed non-English synthetic fixture and e2e coverage.
-  Historical Spanish live-run evidence is not the same as a reproducible CI fixture.
-- [ ] **Deferred, behavior decision required:** allow a different diarizer for
-  transcript speaker assignment. Today it uses pyannote; switching would change
-  existing labels, so separate engine outputs are intentionally preserved.
-- [ ] **Verification not established here:** observe a hosted CI run. The workflow
-  runs unit tests, not the GPU tools or e2e suite; configuration alone proves no run.
-
-No new runtime features, paid requests, environment upgrades or dataset refreshes
-are authorized by this documentation task. A stories tier is not an implicit backlog
-item; the current export deliberately omits narrative claims.
+  Check labels and media playback; a headless preview cannot close usability.
+- [ ] **Deferred:** committed non-English synthetic fixture and e2e coverage.
+  Historical Spanish live-run evidence is not a reproducible CI fixture.
+- [ ] **Deferred, behavior decision required:** different transcript-assignment diarizer.
+  It currently uses pyannote; changing it would redefine existing labels.
+- [ ] **Verification not established here:** observe hosted CI. Its unit-test workflow
+  does not certify GPU tools, corpus accuracy, desktop ELAN or an actual hosted run.
+- [ ] **Deferred:** a new ASD renderer over normalized selected-face labels. Native
+  TalkNet overlays intentionally remain a distinct interpretation, not that renderer.
 
 ## Local full-output profile
 
-**Decision:** `config/config.local.yaml` enables every implemented stage/output family,
-including OpenPose skeleton JPGs (body, hands and face), both diarizers/fusions,
-source/English linguistics, normalized pose and ELAN. The complete example spaCy
-language routing is explicit; it does not install models. Assumption: “full” means
-all artifact families, not maximum image dimensions. Renderings use a 640 px longest
-side to limit disk use; measured coordinates are unchanged. Alternative: set
-`openpose.image_max_side: null` for source-size renderings.
+**Decision:** the ignored `config/config.local.yaml` enables every implemented output
+family: both diarizers/fusions, linguistic variants, normalized pose, ELAN, OpenPose
+body/hands/face JPGs, `openpose.write_video` and `activespeaker.write_video`. Example spaCy routing
+is explicit, but YAML does not install missing models. Credentials remain in `.env`.
+Assumption: “full” means artifact families, not maximum dimensions. Skeleton JPGs
+use a 640 px longest side; measured coordinates stay in source pixels. Alternative:
+`openpose.image_max_side: null` requests uncapped source-size images.
 
-ASD retains its JSON, tracks/scores pickles, scenes CSV and two Parquet tables.
-**Decision:** add opt-in `activespeaker.write_video` (enabled locally) to retain the
-native annotated AVI with audio in `speaker/raw/video_out.avi`, without recompression.
-Assumption: the requested preview is TalkNet's all-face overlay, not a visualization
-of normalized selected-face labels. The native score rule differs from the table's
-configurable stabilization; docs make that distinction explicit. Alternative: a new
-renderer over normalized labels is deferred, not silently substituted.
+**ASD decision:** preserve native `speaker/raw/video_out.avi` byte-identically with
+audio. Assumption: the operator wants TalkNet's all-face boxes/scores; native smoothing
+and the zero-score colour boundary are not normalized selected-face hysteresis or the
+configured speaker threshold. Alternative normalized rendering stays deferred.
+The new toggle defaults false; enabling invalidates ASD reuse, disabling deletes
+nothing. Missing/empty enabled AVI forces model execution even with matching raw JSON.
+Safe-named staged audio protects upstream's unquoted shell mux; unsafe temp paths fail
+before that invocation. The worker checks video/audio streams and atomically publishes
+the AVI before copying new pickles/scenes, preserving prior raw bytes on export failure.
+`keep_temp_files` does not control TalkNet's worker temporary directory.
 
-The worker stages safe-named audio for upstream's unquoted shell mux, checks audio
-and video streams, then publishes AVI bytes atomically before temporary cleanup.
-Missing/empty enabled video bypasses raw-JSON reuse so resume repairs the export;
-disabling the toggle deletes nothing. `keep_temp_files` remains unrelated.
-The local config stays gitignored; recovery uses `.git/config.local.before-full.yaml`
-and Git checkpoint `checkpoint/full-local-outputs-bf7050c`. The ASD feature checkpoint
-is `checkpoint/asd-video-3c463a6`; its config backup is `.git/config.local.before-asd-video.yaml`.
-No paid requests, downloads or operator-data edits are part of this feature.
-Enabling images invalidates OpenPose reuse; generating them requires a later run.
+## Output guides and preservation decisions
 
-Verification: the local-profile assertion failed before editing on
-`openpose.write_images=false`, then passed with every stage enabled and complete
-spaCy routing. Configuration/render tests: **121 passed**; environment preflight:
-**exit 0, no warnings** (not an inference-success claim). `status --plan`: **exit 0**;
-OpenPose and both spaCy variants require recomputation, normalized pose/ELAN follow
-changed dependencies, ASD and both fusions remain reusable. The ignored local YAML
-was checked directly; that configuration-only assessment covered the tracker, not YAML.
-ASD feature verification: config/request and publication tests were observed RED
-before implementation; missing-video resume and empty-video validation also failed
-before their fixes. Focused ASD/config tests: **156 passed**. Real TalkNet runs in a
-repository-local mirror (existing checkpoints, no downloads) produced a 105-frame,
-4.2 s face-overlay AVI and a 100-frame, 4 s silent/no-face AVI. Both retain audio and
-decode with ffmpeg (exit 0); the face-overlay frame was inspected. Original inputs,
-processed datasets and external TalkNet scripts are unchanged. The local profile loads
-with `write_video=true`; `status --plan` reports ASD and its dependants need reruns.
-Current-candidate suite and review outcomes are recorded with the implementation commit.
+**Decision:** English `explanation.md` in the batch root and every existing clip folder,
+including nested caches and supplementary folders. Assumption: explain the actual output
+tree, not only registered slots. Exact generator-marked guides refresh idempotently;
+handwritten, non-UTF8 and symlinked guides are preserved. Guides never count as artifacts
+or change model fingerprints. Run/resume backfills reuse; status/plan does not write them.
 
-## Known limitations
+**Skeleton decision:** independent opt-in native MP4, with source audio when present.
+Native CFR timing is a preview; authoritative PTS stays in the frame index. Allow at most
+three trailing frames (seven observed raw/preview counts: 126/125, 124/121, 240/240,
+205/205, 249/249, 299/299, 100/100). Stage raw/tables/images/video before mux/validation;
+canonical paths and refusing video overrides protect upstream's shell. Publication after
+validation is not a cross-artifact filesystem transaction. Disabling deletes nothing.
 
-- Person detection tables cannot prove sampled-frame coverage; sighting gaps are not
-  absence durations. Tracks and diarizer speaker labels are not identities.
-- Story candidates have no validated ground truth; temperature zero is not service
-  determinism. Cache/retained bytes support auditing, not accuracy claims.
-- Some historical review advisories lack enough finding detail to certify closure
-  (fusion/readability, pose row assembly, persons robustness and figure errors).
-  Keep them as unconfirmed limitations, not invented fixes or promised features.
-- Derived source fingerprints can lose readable-module coverage if another module
-  cannot be read. Mixed annotation keys fail loudly rather than being coerced.
-- Literal percent-escape filenames have a historical ELAN media-validation caveat;
-  do not claim arbitrary filename portability without checking it.
-- Historical review lineage dispositions are not product tasks. Inspect native
-  authority before review; never reconstruct it from this file or deleted diaries.
-
-## Documentation cleanup
-
-**Decision:** English documentation for users and developers; delete superseded
-plans rather than create an archive directory. Git is the recovery path. Assumption:
-current contracts and open work matter more than navigating completed task history.
-The alternative (a checked-in archive) was rejected because it would retain clutter
-and competing statements of current behavior.
-
-Eight guides retain their topic paths for stable navigation. Architecture owns design
-decisions; datasets owns the output inventory; modalities and ELAN own interpretation.
-Machine-specific counts, historical section references and run diaries were removed.
-Four historical ODD documents and the unused stale stage-graph PNG were removed;
-the three synthetic schema illustrations remain.
-README now cites STORYTEL's official project context; speaker timing illustrates datasets,
-not the landing page. Assumption: explain the project first; no replacement diagram needed.
-
-Documentation guards now compare the actual DAG, Parquet registry, CLI/navigation
-and compact tracker. Old assertions about obsolete queue IDs, remembered test counts
-and this machine's dataset receipts were replaced, not used as product contracts.
-Runtime algorithms and operator data remain outside the edit scope. A proposed stage
-docstring cleanup was reverted: source-byte fingerprints include prose and could
-invalidate story-stage reuse. Its historical source comment stays unchanged; all
-`src/`, workers and environment files match the checkpoint.
+**Corpus decision:** add missing visuals only, retain three existing MP4s. Initial
+publication halted on two rerun JSON mismatches; isolated rechecks matched all seven.
+Assumption: new previews must have matching raw measurements before installation.
+Seven clips now have skeleton MP4/native ASD AVI; 1343 JPGs and 261 guides were added.
+No inputs, native measurement raw bytes or Parquet tables changed. Fourteen prior ASD
+raw/sidecar versions live in `speaker/raw/history/`; only sidecars/bookkeeping/logs changed.
+The local profile uses the existing repository-local TalkNet mirror and its checkpoints,
+not operator scripts or missing `/tmp` weights. Assumption: reuse observed matching native
+results rather than execute external tools again; all seven ASD logs confirm no model run.
 
 ## Verification and recovery
 
-- Initial guard run against old docs: **15 failed, 80 passed, 3 skipped**. Two
-  test-parser false positives (filenames as config keys; aliases with digits) were
-  corrected before the guide rewrite. This is documentation-structure evidence,
-  not a claim of a runtime bug fixed.
-- Final focused docs/contracts/assets: **130 passed, 12 skipped**. Four skips are guides
-  without shell examples; eight require optional matplotlib, which is unavailable.
-- Pre-slice full unit suite: **2006 passed, 12 skipped** (84.61 s).
-- `git diff --check` passed; the example config loads. Executable AST comparison
-  confirmed the two edited existing test docstrings do not change their logic.
-- Independent verifier: **no outstanding findings**, **275 passed, 12 skipped**
-  in an isolated scratch tree (including six independent behavioral probes).
-  It caught the source-byte fingerprint effect above and an inherited ELAN prose
-  error: no transcript inputs normally skip, rather than fail, the stage. Source
-  restored and guide corrected. No live inference/corpus/desktop/hosted-CI claim.
-- Pre-slice e2e: **42 passed** (313.44 s). Final combined unit/e2e rerun at
-  `d58d1bc`: **2048 passed, 12 skipped**, exit 0 (363.11 s).
-- The whole-scope START exceeded native context before authority creation. The
-  operator requested small chunks, so local work-unit commits replaced that scope.
-  The operator later authorized view cleanup, branch publication and master integration.
-- CLI slice `de1e079`: native low-tier approval was acknowledged/consumed under
-  `review-26592e44cb7261bf`; this is not a claim that model lenses ran for that tier.
-- Guide/history boundaries `9091caf`–`b8a347a` were assessed individually:
-  docs passive; config/assets medium, under budget. Required checks passed.
-- Policy/tracker `08dcf87` and guards `535bb23`/`222c086`: medium/under budget;
-  self-checks passed. No model review was due for these exact scopes.
-- Workflow comment `d58d1bc`: high; three native lenses approved under
-  `review-500d9040dc452f4e`, acknowledged/consumed. Fresh ASSESS confirmed
-  `closed` (derived), `consumed=true`, `reviewDue=false` (already reviewed).
-- With operator authorization, all five session-owned review views were removed;
-  two staged snapshots were checkpointed first. Native authority stayed valid/unchanged.
-  Assumption: completed task views are disposable, not operator data; no Git upgrade.
-  Master integration uses fast-forward after a fresh fetch and checkpoint; no force-push.
-- Checkpoint: `checkpoint/docs-cleanup-e7dc90e`, base `e7dc90e`.
-  Published branch `docs/clean-documentation` is now fast-forwarded into `master`.
-- Rollback: revert the documentation/guard work unit or restore its files from the
-  checkpoint. No input media, raw output or processed dataset needs regeneration.
-- Review policy remains operator-owned; read `gentle-ai review mode status` and
-  native authority. A reviewed document does not prove a live tool run.
+- Stable unit/e2e: **2126 passed, 12 skipped**; focused current surfaces: **136 passed**.
+  Independent review found and rechecked failed-mux data loss, lexical symlink shell
+  injection, video-only provenance, truncation and false ownership of human notes.
+  Named regressions and sensitivity mutations observed RED then GREEN; not mock-only
+  codec evidence. AST/compile and `git diff --check` pass.
+- Real seven-clip OpenPose/TalkNet previews decode with video/audio. A genuinely audio-less
+  native source also passed with video only; its first concurrent run failed GPU OOM,
+  then passed in isolation. Offline build failed: missing hatchling; ruff unavailable.
+- Corpus validation initially failed seven stale ASD request sidecars. Genuine matching
+  results/sidecars were installed with version archives, then ASD normalization reused raw
+  in seven logs (no model run). Final validate: **7/7 OK**, exit 0. All **205 Parquet**
+  tables remain semantically and byte-identical; input/native raw hashes unchanged.
+  This does not establish accuracy, desktop ELAN or regenerate changed spaCy settings.
+- Review workload is split by work unit (ASD preservation, skeleton preview, output guides),
+  not file type. The guide unit is large because readable contract prose and behavior tests
+  are retained, not compressed. Native RDD remains ON; only observed current authority
+  establishes closure. This document and historical `7707fb3` prove no new closure.
+- Recovery: `checkpoint/resume-explanations-7707fb3`, plus
+  `.git/resume-explanations-checkpoint/` contains the initial diff, local config backups,
+  hashes, native checks and full corpus backup before metadata renewal. No downloads,
+  paid API requests, original input edits or external TalkNet script edits were made.
+
+## Known limitations and documentation policy
+
+- Person tracks/diarizer labels are not identities. Sighting gaps are not absence
+  durations; person tables cannot prove sampled-frame coverage.
+- Story candidates lack validated ground truth; temperature zero is not service
+  determinism. Retained bytes/cache support auditing, not accuracy claims.
+- Historical review advisories (fusion, pose assembly, persons and figure errors)
+  without finding detail remain unconfirmed, not invented fixes.
+- Derived source fingerprints can lose readable-module coverage when another module
+  is unreadable. Mixed annotation keys fail loudly rather than being coerced.
+- Literal percent-escape filenames retain a historical ELAN media-validation caveat.
+- English guides explain current contracts; superseded plans/diaries stay in Git,
+  not a checked-in archive. Assumption: live contracts/open work matter most.
+  Keep guides' topic paths stable; architecture owns design, datasets the inventory,
+  modalities/ELAN interpretation. Historical receipts never prove a live tool run.

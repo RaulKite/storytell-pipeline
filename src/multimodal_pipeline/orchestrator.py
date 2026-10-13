@@ -17,6 +17,7 @@ from .artifacts import ArtifactRegistry, VideoPaths
 from .config import PipelineConfig, stable_hash
 from .discovery import VideoSource
 from .log import get_logger
+from .output_explanations import write_batch_explanation, write_explanations
 from .state import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -253,6 +254,10 @@ class VideoRunner:
             to_stage: str | None = None, force_stages: Sequence[str] = ()) -> VideoResult:
         self.paths.ensure_dirs()
         self.registry.refresh()
+        # Before the stage loop, so a run that reuses every stage still documents the
+        # dataset: reuse returns before any stage body runs, and a guide written only from
+        # a stage would be missing from every dataset that is already up to date.
+        self._write_guides("before the stage loop")
         logger = self.stage_logger_factory or _default_logger_factory(self.paths)
         context = StageContext(
             config=self.config,
@@ -274,27 +279,58 @@ class VideoRunner:
             status=STATUS_COMPLETED,
         )
         started = time.time()
-        for stage in build_stages():
-            stage_log = logger(stage.name)
-            context.log = _StageLogAdapter(stage_log)
-            self._run_stage(stage, context, stage_log, selected, forced)
-            self.registry.refresh()
-            record = self.state.stage(stage.name)
-            result.stage_outcomes[stage.name] = record.status
-            result.durations[stage.name] = record.duration_seconds or 0.0
-            if record.error:
-                result.errors[stage.name] = record.error
-            stage_log.close()
-            if record.status == STATUS_FAILED:
-                # Record the poison and keep going: independent branches of the DAG
-                # (OpenPose from metadata, audio from the source) still run.
-                self._failed.add(stage.name)
+        try:
+            for stage in build_stages():
+                stage_log = logger(stage.name)
+                context.log = _StageLogAdapter(stage_log)
+                self._run_stage(stage, context, stage_log, selected, forced)
+                self.registry.refresh()
+                record = self.state.stage(stage.name)
+                result.stage_outcomes[stage.name] = record.status
+                result.durations[stage.name] = record.duration_seconds or 0.0
+                if record.error:
+                    result.errors[stage.name] = record.error
+                stage_log.close()
+                if record.status == STATUS_FAILED:
+                    # Record the poison and keep going: independent branches of the DAG
+                    # (OpenPose from metadata, audio from the source) still run.
+                    self._failed.add(stage.name)
+        finally:
+            # And again afterwards. ``openpose`` empties ``pose/raw_images`` before it
+            # renders, and the guide for that directory lives in that directory: written
+            # only at the start, every rendering run would finish with documentation
+            # missing exactly where it deleted it. ``finally``, because a stage that raises
+            # on the way out still left real artifacts behind to be described.
+            self._write_guides("after the stage loop")
         result.total_seconds = round(time.time() - started, 2)
         result.status = self.state.overall_status
         # The loop's log handlers are closed; summaries are written to the video log.
         context.log = _NullLogger()
         self._refresh_summary(context)
         return result
+
+    def _write_guides(self, when: str) -> None:
+        """Refresh the generated ``explanation.md`` guides of this dataset.
+
+        Documentation is never a run failure: a dataset whose guide could not be written
+        is still a finished dataset, so everything here is caught and logged. ``run``
+        calls it twice, for the two ways a guide can be missing — see each call site.
+        """
+        try:
+            reports = [write_explanations(self.paths)]
+            if self.paths.dataset_dir.parent == self.config.output.directory:
+                # The batch directory is an output directory too, and it says what a
+                # per-clip guide cannot. Only when this dataset really sits inside it: a
+                # ``dataset_root`` override (a scratch or test tree) would otherwise be
+                # handed a guide describing it as the whole corpus.
+                reports.append(write_batch_explanation(self.config.output.directory))
+        except Exception as exc:  # noqa: BLE001 - a missing guide must not fail a video
+            log.warning("%s: could not write output guides %s: %s", self.source.video_id, when, exc)
+            return
+        skipped = [item for report in reports for item in report["skipped"]]
+        if skipped:
+            log.warning("%s: output guides left unwritten %s: %s",
+                        self.source.video_id, when, ", ".join(skipped))
 
     def _refresh_summary(self, context: StageContext) -> None:
         """Rewrite manifest/provenance so they describe the video as it finished.
