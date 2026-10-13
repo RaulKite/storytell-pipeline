@@ -192,6 +192,58 @@ def test_unsafe_temporary_path_is_rejected_before_native_shell(worker, tmp_path)
                           tmp_path / 'audio.wav', 'cpu', write_video=True)
 
 
+@pytest.mark.parametrize('native_output', ['missing', 'empty', 'silent'])
+def test_failed_video_export_preserves_previous_raw(worker, avi, tmp_path, monkeypatch, native_output):
+    import pickle
+    import subprocess
+
+    # Isolate model/preprocessing boundaries, not publication or normalization.
+    monkeypatch.setattr(worker, 'require_tool', lambda name: name)
+    monkeypatch.setattr(worker, 'source_frame_rate', lambda *a: 25.0)
+    monkeypatch.setattr(worker, 'source_timestamps', lambda *a: [0.0])
+    monkeypatch.setattr(worker, 'resolve_device', lambda *a: ('cpu', None))
+    monkeypatch.setattr(worker, 'place_weights', lambda *a: [])
+    monkeypatch.setattr(worker, 'convert_video', lambda *a: None)
+    monkeypatch.setattr(worker, 'extract_frames', lambda *a: 1)
+    monkeypatch.setattr(worker, 'parse_scene_ids', lambda *a: [1])
+
+    def scenes(tool, converted, path):
+        path.write_text('new scenes')
+
+    def native(root, temp, scenes, audio, device, **kwargs):
+        paths = [temp / 'pywork' / name for name in ('tracks.pckl', 'scores.pckl')]
+        for path in paths:
+            path.write_bytes(pickle.dumps([]))
+        video = temp / 'pyavi/video_out.avi'
+        if native_output == 'empty':
+            video.touch()
+        elif native_output == 'silent':
+            subprocess.run(['ffmpeg', '-v', 'error', '-i', str(avi), '-an', '-c:v', 'copy',
+                            str(video)], check=True)
+        return tuple(paths)
+
+    monkeypatch.setattr(worker, 'detect_scenes', scenes)
+    monkeypatch.setattr(worker, 'run_talknet', native)
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    for name in ('tracks.pckl', 'scores.pckl'):
+        (raw / name).write_bytes(pickle.dumps([], protocol=2))
+    (raw / 'scenes.csv').write_text('previous scenes')
+    (raw / 'active_speaker.json').write_text('{"frames": []}')
+    (raw / 'video_out.avi').write_bytes(b'previous retained video')
+    before = {p.name: p.read_bytes() for p in raw.iterdir()}
+    args = worker.parse_args([
+        '--video', str(avi), '--audio', str(tmp_path / 'audio.wav'),
+        '--talknet-root', str(tmp_path), '--raw-dir', str(raw),
+        '--output-json', str(raw / 'active_speaker.json'),
+        '--output-video', str(raw / 'video_out.avi'),
+        '--result-path', str(tmp_path / 'result.json'),
+    ])
+    with pytest.raises(worker.WorkerFailure, match='annotated video'):
+        worker.process(args)
+    assert {p.name: p.read_bytes() for p in raw.iterdir()} == before
+
+
 def test_silent_video_is_not_reported_as_annotated_with_audio(worker, avi, tmp_path):
     import subprocess
 

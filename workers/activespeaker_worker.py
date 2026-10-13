@@ -720,11 +720,13 @@ def process(args: argparse.Namespace) -> dict[str, Any]:
         smooth_scores(by_frame, scene_ids, args.score_window)
         chosen = select_stable(by_frame, scene_ids, args.switch_margin, args.switch_frames)
 
+        # A failed native mux must not mix new pickles/scenes with the previous
+        # JSON/video dataset. Validate and publish the AVI before replacing raw data.
+        if args.output_video is not None:
+            retain_video(temp / "pyavi/video_out.avi", args.output_video, ffprobe)
         args.raw_dir.mkdir(parents=True, exist_ok=True)
         for source in (tracks_path, scores_path, scenes_csv):
             shutil.copyfile(source, args.raw_dir / source.name)
-        if args.output_video is not None:
-            retain_video(temp / "pyavi/video_out.avi", args.output_video, ffprobe)
 
     params = {
         "speaker_threshold": args.speaker_threshold,
