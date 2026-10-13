@@ -35,10 +35,14 @@ record of ``render_pose: "-1"`` is a statement about the engine, not a missing r
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+import os
+import shutil
+from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
-from ..artifacts import read_json
+from ..artifacts import VideoPaths, read_json
 from ..exceptions import StageError, ValidationError
 from ..normalization import openpose_frame_number, openpose_frame_rows
 from ..provenance import openpose_report
@@ -111,6 +115,7 @@ class OpenPoseStage(Stage):
             # ``image_max_side`` is hashed even while rendering is off: enabling the
             # flag must not silently resurrect a resolution recorded earlier.
             "write_images": cfg.write_images,
+            "write_video": cfg.write_video,
             "image_max_side": cfg.image_max_side,
             "extra_args": cfg.extra_args,
             # Model file identity: swapping a caffemodel must re-run pose.
@@ -197,7 +202,7 @@ class OpenPoseStage(Stage):
 
         Nothing about frame size is decided here; ``output_resolution()`` owns that axis.
         """
-        return RENDER_POSE_INHERIT if (cfg.write_images and cfg.body.enabled) else RENDER_POSE_OFF
+        return RENDER_POSE_INHERIT if ((cfg.write_images or cfg.write_video) and cfg.body.enabled) else RENDER_POSE_OFF
 
     def render_args(self, ctx: StageContext) -> list[str]:
         """The flag group that asks OpenPose for its own rendered frames.
@@ -208,18 +213,23 @@ class OpenPoseStage(Stage):
         position; only the remaining switches are added here.
         """
         cfg = ctx.config.openpose
-        if not cfg.write_images:
+        if not (cfg.write_images or cfg.write_video):
             return []
         # Rendering is per module in this build, so each switch follows the config
         # that decides whether that module's keypoints are even produced. When body
         # publishing is off its skeleton is not drawn either, because an image for a
         # table that was never published is a lie of the same size as the table.
         argv = [
-            "--write_images", str(ctx.artifact("pose_images_raw")),
-            "--write_images_format", IMAGE_FORMAT,
             "--face_render", "1" if cfg.face_enabled else "0",
             "--hand_render", "1" if cfg.hands_enabled else "0",
         ]
+        if cfg.write_images:
+            argv += ["--write_images", str(ctx.artifact("pose_images_raw")),
+                     "--write_images_format", IMAGE_FORMAT]
+        if cfg.write_video:
+            # Native MP4 uses shell-based ffmpeg internally. Audio is muxed by us
+            # through an argument array, not --write_video_with_audio upstream.
+            argv += ["--write_video", str(ctx.artifact("pose_skeleton_video"))]
         # The size axis is appended here; the engine axis (--render_pose) is added by
         # build_command, so the two never arrive mixed up in one flag group.
         resolution = self.output_resolution(ctx)
@@ -236,7 +246,7 @@ class OpenPoseStage(Stage):
         a second probe: the stage already depends on that file and its hash.
         """
         cfg = ctx.config.openpose
-        if not cfg.write_images or cfg.image_max_side is None:
+        if not (cfg.write_images or cfg.write_video) or cfg.image_max_side is None:
             return None
         path = ctx.artifact("metadata")
         try:
@@ -247,6 +257,8 @@ class OpenPoseStage(Stage):
         if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
             return None
         w, h = scaled_output_resolution(width, height, cfg.image_max_side)
+        if cfg.write_video:
+            w, h = max(2, w - w % 2), max(2, h - h % 2)
         return f"{w}x{h}"
 
     @staticmethod
@@ -275,7 +287,7 @@ class OpenPoseStage(Stage):
             return 0
         removed = 0
         for path in sorted(images.rglob("*"), reverse=True):
-            if not path.is_file():
+            if not path.is_file() or path.name == "explanation.md":
                 continue
             try:
                 path.unlink()
@@ -316,16 +328,16 @@ class OpenPoseStage(Stage):
         had already paid for.
         """
         cfg = ctx.config.openpose
-        if not cfg.write_images or self.draws_any_module(cfg):
+        if not (cfg.write_images or cfg.write_video) or self.draws_any_module(cfg):
             return
         message = (
-            "openpose.write_images=true but openpose.body.enabled, openpose.face.enabled and "
+            "OpenPose rendering requested but openpose.body.enabled, openpose.face.enabled and "
             "openpose.hands.enabled are all false, so nothing would be drawn: in this build "
             "--write_images still writes one image per processed frame with --render_pose 0 "
             "--face_render 0 --hand_render 0, and --output_resolution does not bound those "
             "images, so the run would produce full-resolution frames containing no skeleton. "
             "Enable a module (body.enabled, face.enabled or hands.enabled) or set "
-            "openpose.write_images=false."
+            "openpose.write_images=false and openpose.write_video=false."
         )
         ctx.log(message, level=40)
         raise StageError(message, details={
@@ -343,7 +355,61 @@ class OpenPoseStage(Stage):
         self.resolve_executable(ctx)
         self.resolve_model_folder(ctx)
 
+    def outputs_present(self, ctx: StageContext) -> bool:
+        if ctx.config.openpose.write_video:
+            video = ctx.artifact("pose_skeleton_video")
+            if not video.is_file() or video.stat().st_size == 0:
+                return False
+        return super().outputs_present(ctx)
+
     def execute(self, ctx: StageContext) -> dict[str, Any]:
+        if not ctx.config.openpose.write_video:
+            return self._execute(ctx)
+        self.refuse_undrawn_render(ctx)
+        if any(arg.split("=", 1)[0] in {"--write_video", "--write_video_with_audio"}
+               for arg in ctx.config.openpose.extra_args):
+            raise StageError("openpose.extra_args cannot override native video flags when write_video=true")
+        destination = ctx.artifact("pose_skeleton_video")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Upstream single-quotes the native MP4 path in a shell command.
+        if "'" in str(destination.parent.resolve()):
+            raise StageError("OpenPose native video cannot safely use a path containing apostrophes")
+        # Resolve before creating the temporary path: a shell-active symlink alias
+        # must never survive into upstream's single-quoted command string.
+        with TemporaryDirectory(prefix=".skeleton-", dir=destination.parent.resolve()) as temp:
+            staged = replace(ctx, paths=VideoPaths(Path(temp)))
+            staged.paths.ensure_dirs()
+            for name in ("metadata", "frame_index"):
+                shutil.copyfile(ctx.input(name), staged.artifact(name))
+            native = Path(temp) / "native.mp4"
+            detail = self._execute(staged, video_output=native, log_path=ctx.paths.log(self.name))
+            from ..skeleton_video import publish_skeleton_video
+            publish_skeleton_video(native, ctx.source.path, staged.artifact("pose_skeleton_video"),
+                                   ffmpeg=ctx.config.ffmpeg.executable,
+                                   ffprobe=ctx.config.ffmpeg.ffprobe,
+                                   timeout=ctx.config.openpose.timeout_seconds,
+                                   log_path=ctx.paths.log(self.name))
+            # Native/render/mux/validation failures leave prior raw and tables untouched.
+            self.validate(staged)
+            if ctx.config.openpose.write_images:
+                self.clear_render_dir(ctx)
+            names = ["pose_raw", "pose_body", "pose_hands", "pose_face", "pose_skeleton_video"]
+            if ctx.config.openpose.write_images:
+                names.append("pose_images_raw")
+            for name in names:
+                source, target = staged.artifact(name), ctx.artifact(name)
+                files = list(source.rglob("*")) if source.is_dir() else [source]
+                for file in files:
+                    if not file.is_file():
+                        continue
+                    output = target / file.relative_to(source) if source.is_dir() else target
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(file, output)
+            detail["extra"]["skeleton_video"] = "pose/skeletons.mp4"
+            return detail
+
+    def _execute(self, ctx: StageContext, *, video_output: Path | None = None,
+                 log_path: Path | None = None) -> dict[str, Any]:
         cfg = ctx.config.openpose
         # Before the directory is emptied and before the binary: a render with nothing to draw
         # must not even cost the operator their previous frames.
@@ -351,6 +417,8 @@ class OpenPoseStage(Stage):
         raw_dir = ctx.artifact("pose_raw")
         raw_dir.mkdir(parents=True, exist_ok=True)
         argv = self.build_command(ctx, raw_dir)
+        if video_output is not None:
+            argv[argv.index("--write_video") + 1] = str(video_output)
         ctx.log(f"running OpenPose (model={cfg.body.model}, hands={cfg.hands_enabled}, "
                 f"face={cfg.face_enabled}, gpu={cfg.gpu})")
         if not cfg.body.enabled:
@@ -365,7 +433,7 @@ class OpenPoseStage(Stage):
                         f"{ctx.artifact('pose_images_raw')} by an earlier run, so the rendered "
                         "count below describes this run only", level=30)
             self.log_render_plan(ctx)
-        result = run_command(argv, log_path=ctx.paths.log(self.name), timeout=cfg.timeout_seconds,
+        result = run_command(argv, log_path=log_path or ctx.paths.log(self.name), timeout=cfg.timeout_seconds,
                              cwd=str(raw_dir.parent.parent))
         rendered = self.count_rendered_images(ctx)
         if cfg.write_images and rendered == 0:
@@ -441,8 +509,9 @@ class OpenPoseStage(Stage):
             "directory": str(ctx.artifact("pose_images_raw").relative_to(ctx.paths.dataset_dir)),
             "format": IMAGE_FORMAT if cfg.write_images else None,
             "render_pose": self.render_pose_value(cfg),
-            "face_render": "1" if (cfg.write_images and cfg.face_enabled) else "0",
-            "hand_render": "1" if (cfg.write_images and cfg.hands_enabled) else "0",
+            "face_render": "1" if ((cfg.write_images or cfg.write_video) and cfg.face_enabled) else "0",
+            "hand_render": "1" if ((cfg.write_images or cfg.write_video) and cfg.hands_enabled) else "0",
+            "video_requested": bool(cfg.write_video),
             "output_resolution": self.output_resolution(ctx),
             "image_max_side": cfg.image_max_side,
             "rendered_images": rendered,
@@ -551,6 +620,14 @@ class OpenPoseStage(Stage):
         # only render_requested says whether the run being validated asked for them.
         report["render_requested"] = bool(self._config(ctx).write_images)
         report["rendered_images"] = self.validate_renders(ctx, raw_frames=len(raw_files))
+        if ctx.config.openpose.write_video:
+            from ..skeleton_video import check_skeleton_video
+            metadata = read_json(ctx.artifact("metadata"))
+            check_skeleton_video(ctx.artifact("pose_skeleton_video"),
+                                 ffprobe=ctx.config.ffmpeg.ffprobe,
+                                 require_audio="audio" in metadata.get("streams_present", []),
+                                 expected_frames=len(raw_files))
+            report["skeleton_video"] = "pose/skeletons.mp4"
         for name, schema, time_col in (
             ("pose_body", BODY_SCHEMA, "timestamp"),
             ("pose_hands", HANDS_SCHEMA, "timestamp"),

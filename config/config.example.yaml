@@ -225,6 +225,9 @@ openpose:
   # fingerprint, so enabling this invalidates every pose dataset on disk and re-runs
   # OpenPose -- the slowest stage here -- over all of them.
   # write_images: false
+  # Native MP4 preview in pose/skeletons.mp4, with source audio when available.
+  # Independent of images; enabling it reruns OpenPose. Off preserves old videos.
+  # write_video: false
   # Longest rendered side in pixels. OpenPose's own default (--output_resolution
   # -1x-1) renders at FULL input resolution: at 25 fps a 4-minute clip is 6000
   # images, and that is the difference between hundreds of MB and several GB per

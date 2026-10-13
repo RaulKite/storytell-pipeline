@@ -54,6 +54,7 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     # tool output, not a derived table -- and it stays out of ensure_dirs' "always a
     # promise" set: an empty directory is not an artifact.
     "pose_images_raw": "pose/raw_images",
+    "pose_skeleton_video": "pose/skeletons.mp4",
     "pose_body": "pose/body.parquet",
     # Derived from pose_body and written next to it, never into it: the pixel table is
     # the measured quantity and this is a re-expression of it (§20.4).

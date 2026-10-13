@@ -531,6 +531,8 @@ class OpenPoseConfig(_Model):
     #: them. Enabling it has to be a deliberate decision, never an upgrade side
     #: effect, which is why the default reproduces the pre-feature command exactly.
     write_images: bool = False
+    #: Native skeleton MP4; independent of still-image retention, off by default.
+    write_video: bool = False
     #: Longest rendered side in pixels. OpenPose's own ``--output_resolution``
     #: default is ``-1x-1``, i.e. full input resolution, which costs hundreds of MB
     #: to GBs per video; ``None`` keeps that default and the stage logs the warning

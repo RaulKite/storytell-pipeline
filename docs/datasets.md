@@ -47,6 +47,17 @@ with audio as `speaker/raw/video_out.avi` (`activespeaker_video_raw` in the mani
 It is opt-in and requires ASD recomputation. Turning it off preserves an existing
 video; manifest presence reports files on disk, not the current toggle.
 
+Set `openpose.write_video: true` to produce `pose/skeletons.mp4`
+(`pose_skeleton_video` in the manifest), independently of `write_images`. It retains
+OpenPose's native rendering and muxes source audio when available. Enabling it reruns
+OpenPose; disabling it deletes nothing. Publication is atomic for the video, not a
+transaction across all pose outputs. Native preview timing can lose trailing frames;
+use `source/frame_index.parquet` and pose tables for measured source-frame timing.
+Validation allows at most three missing trailing preview frames against current raw
+JSON counts. With video enabled, native output, normalization, mux and validation are
+staged before previous pose outputs are replaced. `extra_args` cannot override native
+video flags in this mode; upstream shell-based MP4 paths must be safe.
+
 Raw outputs remain beside normalized tables. Provenance is stored in sidecars and
 the provenance directory rather than injected into original raw bytes. The config
 snapshot masks secrets, but logs/tool provenance can still contain machine paths.

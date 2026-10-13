@@ -721,7 +721,9 @@ class TestConfigAndRegistry:
 
     def test_the_export_is_a_manifest_artifact(self) -> None:
         assert "elan_annotations" in MANIFEST_ARTIFACTS
-        assert len(MANIFEST_ARTIFACTS) == 46
+        assert "activespeaker_video_raw" in MANIFEST_ARTIFACTS
+        assert "pose_skeleton_video" in MANIFEST_ARTIFACTS
+        assert len(MANIFEST_ARTIFACTS) == 48
 
     def test_the_registered_path_lives_in_its_own_directory(self) -> None:
         assert ARTIFACT_LAYOUT["elan_annotations"] == "elan/annotations.eaf"

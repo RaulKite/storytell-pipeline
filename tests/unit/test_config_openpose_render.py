@@ -92,7 +92,7 @@ class TestYamlRoundTrip:
     def test_an_unknown_openpose_key_is_still_rejected(self, tmp_path: Path) -> None:
         """The render flags did not loosen ``extra = "forbid"``."""
         data = base_payload(tmp_path)
-        data["openpose"] = {"write_images": True, "write_video": True}
+        data["openpose"] = {"write_images": True, "write_videos_typo": True}
         with pytest.raises(ValueError):
             load_config(write_config(tmp_path, data, "unknown.yaml"))
 
