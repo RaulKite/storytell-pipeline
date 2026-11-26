@@ -30,6 +30,22 @@ Execution is sequential: one video and one stage at a time. Heavy tools use
 separate `uv` environments; syncing the root project alone does **not** install them.
 Stages can be disabled, and missing optional prerequisites have recorded reasons.
 
+```mermaid
+flowchart LR
+    video["one input video"] --> meta["metadata and audio<br/>ffprobe, ffmpeg"]
+    meta --> speech["speech and language<br/>WhisperX, pyannote, translation, spaCy, Praat"]
+    meta --> vision["vision<br/>OpenPose, YOLO persons, TalkNet"]
+    speech --> fusion["audio-visual agreement"]
+    vision --> fusion
+    speech --> data["dataset directory<br/>raw output, Parquet, logs, provenance"]
+    vision --> data
+    fusion --> data
+    data --> eaf["elan/annotations.eaf summary"]
+```
+
+Three optional stages ship disabled — Nemotron diarization, TalkNet active speaker and
+YOLO person tracking — and every stage in this table is implemented at this commit.
+
 ## First run
 
 Install `uv`, `ffmpeg` and `ffprobe`, then follow the
@@ -60,6 +76,7 @@ uv run multimodal-pipeline validate -c config/config.local.yaml --json
 | Question | Guide |
 |---|---|
 | How do I install and process a video? | [Getting started](docs/getting-started.md) |
+| What runs by default, and what is optional? | [Stage status matrix](docs/getting-started.md#what-runs-by-default) |
 | How do I run, resume or select stages? | [CLI reference](docs/cli.md) |
 | What settings, credentials and failure messages matter? | [Configuration](docs/configuration.md) |
 | What files do I get, and how do I join their tables? | [Datasets and analysis](docs/datasets.md) |
