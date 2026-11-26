@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -79,11 +80,16 @@ class _Tensor:
 class FakeResult:
     def __init__(self, frame_id: int, ids: list[int],
                  xyxy: list[list[float]] | None = None,
-                 scores: list[float] | None = None) -> None:
+                 scores: list[float] | None = None,
+                 frame: "_Frame | None" = None) -> None:
         self.frame_id = frame_id
         boxes = xyxy if xyxy is not None else [[0.0, 0.0, 10.0, 20.0] for _ in ids]
         confs = scores if scores is not None else [0.5] * len(ids)
         self.boxes = FakeBoxes(ids, boxes, confs)
+        # What ultralytics hands back for the frame it actually decoded. The renderer draws on
+        # this and nothing else: a second decode pass could not prove it was looking at the
+        # frame these boxes came from.
+        self.orig_img = frame if frame is not None else _Frame()
 
 
 class FakeModel:
@@ -819,3 +825,537 @@ class TestDeviceGate:
         """ultralytics takes an int index for the GPU and the string "cpu" for the CPU."""
         monkeypatch.setitem(sys.modules, "torch", _torch_stub(cuda=True))
         assert worker.resolve_device("cuda") == (0, "cuda", None)
+
+
+# ------------------------------------------------------- rendered-preview fakes
+
+
+class _Frame:
+    """A decoded BGR frame: what cv2 hands back, reduced to the two things used on it.
+
+    The real thing is a numpy array. The worker only ever asks for ``shape`` and
+    ``tobytes()``, and this suite has no numpy at all (that is what the separate uv project
+    is for), so this stands in without pretending to be one — and the real-ffmpeg test below
+    proves the bytes it produces are the bytes a rawvideo pipe wants.
+    """
+
+    def __init__(self, height: int = 48, width: int = 64, value: int = 7) -> None:
+        self.shape = (height, width, 3)
+        self._bytes = bytes([value]) * (height * width * 3)
+
+    def tobytes(self) -> bytes:
+        return self._bytes
+
+
+@pytest.fixture
+def fake_cv2(monkeypatch):
+    """Record every drawing call instead of making pixels.
+
+    cv2 lives in ``environments/persons`` and is not installed here, and the property worth
+    testing is *what was asked to be drawn* (which box, which colour, which label, inside the
+    frame), not the rasterisation of a stroke.
+    """
+    calls: list[tuple[Any, ...]] = []
+    module = types.ModuleType("cv2")
+    module.FONT_HERSHEY_SIMPLEX = 0
+
+    def rectangle(image, pt1, pt2, colour, thickness=1, *args, **kwargs):
+        calls.append(("rectangle", tuple(pt1), tuple(pt2), tuple(colour), int(thickness)))
+
+    def put_text(image, text, org, font_face, font_scale, colour, thickness=1, *a, **k):
+        calls.append(("text", str(text), tuple(org), round(float(font_scale), 4)))
+
+    module.rectangle = rectangle
+    module.putText = put_text
+    monkeypatch.setitem(sys.modules, "cv2", module)
+    return calls
+
+
+FAKE_FFMPEG = '''
+import json
+import sys
+from pathlib import Path
+
+program = sys.argv[0]
+argv = sys.argv[1:]
+data = sys.stdin.buffer.read()
+Path(LOG).write_text(json.dumps({"program": program, "argv": argv, "bytes": len(data),
+                                 "frames": len(data) // FRAME_BYTES}))
+if EXIT:
+    sys.exit(EXIT)
+if BODY:
+    Path(argv[-1]).write_bytes(BODY)
+'''
+
+
+def write_fake_ffmpeg(tmp_path, *, exit_code: int = 0, body: bytes = b"fake-mp4",
+                      frame_bytes: int = 48 * 64 * 3, name: str = "fake-ffmpeg"):
+    """A stand-in ffmpeg that consumes the rawvideo pipe and reports what it saw.
+
+    The argv it was handed is recorded verbatim, so the assertions are on the exact
+    pipeline-owned command line (rawvideo header, libx264, the audio map) rather than on what
+    the worker meant to run — and on the destination path surviving intact.
+    """
+    script = tmp_path / name
+    log = tmp_path / f"{name}-call.json"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        f"LOG={json.dumps(str(log))}\nFRAME_BYTES={frame_bytes}\n"
+        f"EXIT={int(exit_code)}\nBODY={body!r}\n" + FAKE_FFMPEG,
+        encoding="utf-8")
+    script.chmod(0o755)
+    return script, log
+
+
+def write_fake_ffprobe(tmp_path, *, audio: bool = False, avg_frame_rate: str = "25/1",
+                       fail: bool = False, name: str = "fake-ffprobe"):
+    """A stand-in ffprobe answering with the streams a real clip would report."""
+    streams: list[dict[str, Any]] = [{"index": 0, "codec_type": "video",
+                                      "avg_frame_rate": avg_frame_rate}]
+    if audio:
+        streams.append({"index": 1, "codec_type": "audio"})
+    script = tmp_path / name
+    payload = "not json at all" if fail else json.dumps({"streams": streams})
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\nprint({payload!r})\nsys.exit({1 if fail else 0})\n",
+        encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def render_args(tmp_path, *, video=None, ffmpeg=None, ffprobe=None, dest=None,
+                audio: bool = False, ffprobe_kwargs: dict | None = None):
+    """The three render flags as the stage would pass them, plus the ffprobe stub."""
+    ffprobe = ffprobe or write_fake_ffprobe(tmp_path, audio=audio,
+                                           **(ffprobe_kwargs or {}))
+    ffmpeg = ffmpeg or write_fake_ffmpeg(tmp_path)[0]
+    dest = dest or tmp_path / "raw" / "tracks.mp4"
+    return ["--output-video", str(dest), "--ffmpeg", str(ffmpeg), "--ffprobe", str(ffprobe)]
+
+
+def read_call(log: Path) -> dict[str, Any]:
+    return json.loads(log.read_text(encoding="utf-8"))
+
+
+def _slice_index(argv: list[str], needle: list[str]) -> int:
+    """Where a contiguous run of flags appears in argv, or fail with the whole command."""
+    for start in range(len(argv) - len(needle) + 1):
+        if argv[start:start + len(needle)] == needle:
+            return start
+    raise AssertionError(f"{needle} is not a contiguous part of {argv}")
+
+
+class TestRenderedPreviewIsOptIn:
+    """Nothing is drawn, probed or added to the document unless ``--output-video`` is given.
+
+    The raw document is the preserved tool output: a key added to it whenever the stage runs
+    would change every person artifact on disk the moment this ships, and the pipeline's own
+    reuse test reads that file's bytes.
+    """
+
+    #: The top-level keys of the pre-render document, frozen. A key added while the toggle is
+    #: off fails this, which is the only thing standing between "optional feature" and
+    #: "every existing raw artifact now looks different".
+    OFF_KEYS = (
+        "device", "device_fallback_reason", "elapsed_seconds", "frames", "frames_measured",
+        "frames_with_person", "frames_without_timestamp", "gmc_failure_count",
+        "gmc_failure_reason", "max_persons_in_frame", "model", "parameters", "person_frame_counts",
+        "person_ids", "requested_device", "schema_version", "torch_version", "tracker",
+        "ultralytics_version", "video_id", "weights_path", "weights_sha256",
+        "weights_size_bytes",
+    )
+
+    def test_the_document_shape_is_frozen_when_no_video_was_asked_for(self, worker, tmp_path,
+                                                                     clip, frame_index_file):
+        FakeModel.results = [FakeResult(0, [1]), FakeResult(1, [])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file)
+        assert payload["status"] == "ok", payload.get("error")
+        assert sorted(payload["_document"]) == sorted(self.OFF_KEYS)
+        assert "render" not in payload["_document"]
+        assert "render" not in payload
+
+    def test_no_ffmpeg_is_run_and_no_video_appears_when_the_flag_is_absent(
+            self, worker, tmp_path, clip, frame_index_file):
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=["--ffmpeg", str(ffmpeg)])
+        assert payload["status"] == "ok", payload.get("error")
+        assert not log.exists(), "ffmpeg was run although no video was asked for"
+
+    def test_a_rendered_run_adds_the_render_block_and_the_result_reports_it(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1]), FakeResult(1, []), FakeResult(2, [1])]
+        args = render_args(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=args)
+        assert payload["status"] == "ok", payload.get("error")
+        expected = {"fps": 25.0, "fps_source": "frame_index", "frames_written": 3,
+                    "width": 64, "height": 48, "has_audio": False}
+        assert payload["_document"]["render"] == expected
+        assert payload["render"] == expected
+
+    def test_the_rendered_document_keeps_every_measurement_key_it_already_had(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """Rendering is additive: the tables must not lose their provenance to a preview."""
+        FakeModel.results = [FakeResult(0, [1])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "ok", payload.get("error")
+        assert set(self.OFF_KEYS) <= set(payload["_document"])
+        assert payload["_document"]["frames_measured"] == 1
+
+
+class TestDrawnOverlay:
+    def test_one_box_per_detection_with_a_label_naming_the_id_and_score(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1, 2],
+                                        xyxy=[[10.0, 20.0, 110.0, 220.0],
+                                              [300.0, 40.0, 380.0, 200.0]],
+                                        scores=[0.912, 0.42])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "ok", payload.get("error")
+        boxes = [call for call in fake_cv2 if call[0] == "rectangle"]
+        labels = [call for call in fake_cv2 if call[0] == "text"]
+        assert [call[1] for call in boxes[:1]] == [(10, 20)]
+        assert len(boxes) == 2 and len(labels) == 2
+        assert labels[0][1] == "id=1 0.91"
+        assert labels[1][1] == "id=2 0.42"
+
+    def test_the_label_is_drawn_inside_the_frame_even_for_a_box_at_the_edge(self, worker):
+        """cv2 draws text with a *baseline* origin, so y=0 writes above the frame.
+
+        A label that lands outside is invisible, and a track whose id cannot be read is
+        indistinguishable from a track that was never drawn.
+        """
+        inside = worker.label_origin(0, 0, width=64, height=48, scale=0.5)
+        outside = worker.label_origin(10_000, 10_000, width=64, height=48, scale=0.5)
+        for origin in (inside, outside):
+            assert 0 <= origin[0] <= 63, origin
+            assert 0 < origin[1] <= 46, origin
+
+    def test_the_stroke_scales_with_the_frame(self, worker):
+        """A 1px box on a 1080p frame is invisible; the same stroke on a thumbnail is the frame."""
+        small = worker.stroke_width(240, 180)
+        large = worker.stroke_width(1920, 1080)
+        assert small >= 1 and large > small
+
+    def test_a_tracks_colour_is_a_function_of_its_id_alone(self, worker):
+        """Stable across runs, videos and process restarts, and not ``hash()``.
+
+        The colour is the only thing tying a box to a number on screen, so it has to be the
+        same number in a rerun of the same clip. Python's ``hash`` of a str is salted per
+        process, which would repaint every id on every run and make two renders of one video
+        disagree.
+        """
+        first = {person: worker.track_colour(person) for person in (1, 2, 3, 40, 41)}
+        second = {person: worker.track_colour(person) for person in (41, 40, 4, 3, 2, 1)}
+        assert first == {key: second[key] for key in first}
+        assert len(set(first.values())) == len(first), "two ids share a colour"
+        for colour in first.values():
+            assert len(colour) == 3
+            assert all(0 <= channel <= 255 for channel in colour)
+            assert len(set(colour)) > 1, f"{colour} is unreadable against a plain background"
+
+    def test_the_colour_survives_a_fresh_import_of_the_worker(self, worker, tmp_path, clip,
+                                                             frame_index_file):
+        """Across-process stability, as far as one process can observe it."""
+        again = load_worker()
+        assert again.track_colour(7) == worker.track_colour(7)
+
+    def test_the_only_text_on_a_frame_is_the_track_label(self, worker, tmp_path, clip,
+                                                        frame_index_file, fake_cv2):
+        """No per-frame timestamps, no model name, no watermark.
+
+        The preview's own clock is CFR arithmetic and is *not* the authoritative timeline, so a
+        burned-in time would put a wrong number where a reader trusts the picture.
+        """
+        FakeModel.results = [FakeResult(0, [1]), FakeResult(1, [1])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "ok", payload.get("error")
+        texts = [call[1] for call in fake_cv2 if call[0] == "text"]
+        assert texts == ["id=1 0.50", "id=1 0.50"]
+
+
+class TestFrameAccounting:
+    def test_every_decoded_frame_is_encoded_including_the_frames_with_nobody(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """Otherwise the preview is shorter than the video and its clock is wrong.
+
+        A person-free frame produces no rows at all, so the tables cannot show whether those
+        frames were ever fed to the encoder; the byte count the fake ffmpeg read is the check.
+        """
+        FakeModel.results = [FakeResult(0, [1]), FakeResult(1, []), FakeResult(2, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg))
+        assert payload["status"] == "ok", payload.get("error")
+        assert read_call(log)["frames"] == 3
+        assert payload["_document"]["render"]["frames_written"] == 3
+
+    def test_a_frame_of_a_different_size_is_refused(self, worker, tmp_path, clip,
+                                                   frame_index_file, fake_cv2):
+        """rawvideo has one fixed frame size for the whole pipe.
+
+        Feeding it a second size would desynchronise every later frame into coloured noise and
+        still exit 0, which is the worst possible failure of a preview: it looks like a video.
+        """
+        FakeModel.results = [FakeResult(0, [1]),
+                             FakeResult(1, [1], frame=_Frame(32, 44))]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "error"
+        assert "shape" in payload["error"]
+        assert payload["_document"] is None
+
+    def test_a_short_encode_is_refused_against_the_frames_measured(self, worker, tmp_path):
+        """The number in the document has to be the number the encoder took.
+
+        Checked against ``frames_measured`` rather than trusted from the pipe, because ffmpeg
+        exits 0 after a truncated stdin as often as it exits non-zero.
+        """
+        ffmpeg, _log = write_fake_ffmpeg(tmp_path)
+        writer = worker.TrackVideoWriter(ffmpeg=str(ffmpeg),
+                                        destination=tmp_path / "out.mp4", fps=25.0,
+                                        audio_source=None)
+        writer.push(_Frame())
+        writer.push(_Frame())
+        with pytest.raises(worker.WorkerFailure, match="wrote 2 of 5"):
+            writer.finish(expected_frames=5)
+
+
+class TestFrameRate:
+    def test_the_clock_comes_from_the_frame_index_that_is_already_loaded(self, worker):
+        """The corpus is 30000/1001; a 25 fps assumption drifts, and the index is on disk."""
+        assert worker.derive_fps({0: 0.0, 1: 0.04, 2: 0.08}) == pytest.approx(25.0)
+        ntsc = {0: 0.0, 1: 1001 / 30000, 2: 2002 / 30000}
+        assert worker.derive_fps(ntsc) == pytest.approx(30000 / 1001, abs=1e-3)
+
+    @pytest.mark.parametrize("index", [{0: 0.0}, {}, {0: 1.0, 1: 1.0}, {0: 0.0, 1: -5.0}])
+    def test_a_clock_that_cannot_be_derived_says_so_instead_of_guessing(self, worker, index):
+        assert worker.derive_fps(index) is None
+
+    def test_the_sources_average_frame_rate_is_the_fallback(self, worker, tmp_path, clip,
+                                                           frame_index_file, fake_cv2):
+        """One frame in the index means no span, and a preview is still worth having."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        one = tmp_path / "single.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array([0], type=pa.int64()),
+            "pts_seconds": pa.array([0.0], type=pa.float64()),
+        }), one)
+        FakeModel.results = [FakeResult(0, [1])]
+        probe = write_fake_ffprobe(tmp_path, avg_frame_rate="30000/1001")
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=one,
+                             extra=render_args(tmp_path, ffprobe=probe))
+        assert payload["status"] == "ok", payload.get("error")
+        render = payload["_document"]["render"]
+        assert render["fps_source"] == "ffprobe_average_frame_rate"
+        assert render["fps"] == pytest.approx(30000 / 1001, abs=1e-3)
+
+    def test_no_frame_rate_at_all_is_refused_rather_than_encoded_at_a_guess(
+            self, worker, tmp_path, clip, fake_cv2):
+        """A guessed rate silently retimes the whole preview against every table."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        one = tmp_path / "single.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array([0], type=pa.int64()),
+            "pts_seconds": pa.array([0.0], type=pa.float64()),
+        }), one)
+        FakeModel.results = [FakeResult(0, [1])]
+        probe = write_fake_ffprobe(tmp_path, avg_frame_rate="0/0")
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=one,
+                             extra=render_args(tmp_path, ffprobe=probe))
+        assert payload["status"] == "error"
+        assert "fps" in payload["error"].lower()
+
+
+class TestEncoderCommand:
+    def test_the_pipe_header_and_encoder_are_the_ones_the_bytes_match(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1]), FakeResult(1, []), FakeResult(2, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg))
+        assert payload["status"] == "ok", payload.get("error")
+        argv = read_call(log)["argv"]
+        assert read_call(log)["program"] == str(ffmpeg)
+        _slice_index(argv, ["-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "64x48",
+                            "-r", "25.000000", "-i", "-"])
+        _slice_index(argv, ["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        assert argv[-3:] == ["-movflags", "+faststart", argv[-1]]
+        assert "-an" in argv and "-map" not in argv
+
+    def test_the_source_audio_is_muxed_when_the_source_has_a_stream(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg, audio=True))
+        assert payload["status"] == "ok", payload.get("error")
+        argv = read_call(log)["argv"]
+        assert payload["_document"]["render"]["has_audio"] is True
+        _slice_index(argv, ["-i", str(clip), "-map", "0:v:0", "-map", "1:a:0",
+                            "-c:a", "aac", "-shortest"])
+        assert "-an" not in argv
+
+    def test_the_destination_path_travels_as_one_argument_not_as_a_shell_string(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """The path is the operator's, and the OpenPose stage already pays for a shell."""
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        awkward = tmp_path / "raw" / "who's track; rm -rf / .mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg, dest=awkward))
+        assert payload["status"] == "ok", payload.get("error")
+        argv = read_call(log)["argv"]
+        assert argv[-1] == str(awkward.parent / f".{awkward.stem}.partial.mp4")
+        assert (tmp_path / "raw" / "who's track; rm -rf / .mp4").is_file()
+
+    def test_a_frame_that_cannot_be_read_is_refused(self, worker, tmp_path, clip,
+                                                   frame_index_file, fake_cv2):
+        """``orig_img`` is the only honest source of pixels; None means the run cannot be drawn."""
+        FakeModel.results = [FakeResult(0, [1])]
+        FakeModel.results[0].orig_img = None
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "error"
+        assert "orig_img" in payload["error"]
+
+    def test_an_ffmpeg_that_exits_non_zero_fails_the_run_before_any_document(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """No raw JSON, no tables, and the stage's staged tree is never published.
+
+        The preserved raw document from a previous configuration is still on the real path at
+        this point, so a failed render has to look like a failed run rather than a successful
+        one that lost its video.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, _log = write_fake_ffmpeg(tmp_path, exit_code=4, body=b"")
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg, dest=dest))
+        assert payload["status"] == "error"
+        assert "ffmpeg" in payload["error"]
+        assert payload["_document"] is None
+        assert not dest.exists()
+        assert not (dest.parent / f".{dest.stem}.partial.mp4").exists()
+
+    def test_an_empty_output_is_refused(self, worker, tmp_path, clip, frame_index_file,
+                                       fake_cv2):
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, _log = write_fake_ffmpeg(tmp_path, body=b"")
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg))
+        assert payload["status"] == "error"
+        assert "empty" in payload["error"]
+
+    def test_a_probe_that_fails_is_refused_rather_than_rendering_a_silent_preview(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """Losing audio silently is the exact complaint about the OpenPose path's preview."""
+        FakeModel.results = [FakeResult(0, [1])]
+        probe = write_fake_ffprobe(tmp_path, fail=True)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffprobe=probe))
+        assert payload["status"] == "error"
+        assert "ffprobe" in payload["error"]
+
+    def test_the_preview_is_published_in_one_step(self, worker, tmp_path, clip,
+                                                 frame_index_file, fake_cv2):
+        """A half-written mp4 in the staged tree would be published as if it were the render."""
+        FakeModel.results = [FakeResult(0, [1])]
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, dest=dest))
+        assert payload["status"] == "ok", payload.get("error")
+        assert dest.read_bytes() == b"fake-mp4"
+        assert not list(dest.parent.glob("*.partial.mp4"))
+
+
+class TestRenderOutputCannotAliasAnInput:
+    """ffmpeg overwrites what it is told to write, and it writes it during the tracking pass.
+
+    The JSON guard already refuses an output that names the source video; a second output path
+    added later needs the same guard or the preview render destroys the operator's clip while
+    the run still looks healthy.
+    """
+
+    def test_an_output_video_naming_the_source_is_refused_before_tracking(self, worker,
+                                                                        tmp_path, clip,
+                                                                        frame_index_file):
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=["--output-video", str(clip), "--ffmpeg", str(ffmpeg),
+                                    "--ffprobe", str(write_fake_ffprobe(tmp_path))])
+        assert payload["status"] == "error"
+        assert "--output-video" in payload["error"]
+        assert clip.read_bytes() == b"\x00"
+        assert not log.exists()
+        assert FakeModel.last_kwargs is None
+
+    def test_an_output_video_naming_the_raw_document_is_refused(self, worker, tmp_path, clip,
+                                                               frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1])]
+        out = tmp_path / "raw" / "yolo_track.json"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, dest=out))
+        assert payload["status"] == "error"
+        assert "--output-video" in payload["error"]
+
+
+requires_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe unavailable")
+
+
+@requires_ffmpeg
+class TestAgainstRealFfmpeg:
+    """The fakes above prove the argv; only the real encoder proves the bytes fit it.
+
+    A rawvideo pipe is unforgiving about stride, dtype and channel order, and every one of
+    those mistakes produces a file that plays and looks like noise. So one run goes through
+    the real binary with a real clip, and the result is re-probed.
+    """
+
+    def _clip(self, tmp_path, *, with_audio: bool):
+        from tests.conftest import make_test_video
+
+        return make_test_video(tmp_path / f"clip-{with_audio}.mp4", seconds=0.2, fps=25,
+                              size="64x48", with_audio=with_audio)
+
+    @pytest.mark.parametrize("with_audio", [True, False])
+    def test_the_preview_encodes_and_carries_the_sources_audio(self, worker, tmp_path, fake_cv2,
+                                                              with_audio):
+        import shutil
+
+        from multimodal_pipeline.stages.metadata import ffprobe_streams
+
+        clip = self._clip(tmp_path, with_audio=with_audio)
+        index = tmp_path / "frame_index.parquet"
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        pq.write_table(pa.table({
+            "frame_number": pa.array([0, 1, 2, 3, 4], type=pa.int64()),
+            "pts_seconds": pa.array([i * 0.04 for i in range(5)], type=pa.float64()),
+        }), index)
+        FakeModel.results = [FakeResult(i, [1] if i % 2 == 0 else []) for i in range(5)]
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index, extra=[
+            "--output-video", str(dest), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+        assert payload["status"] == "ok", payload.get("error")
+        render = payload["_document"]["render"]
+        assert render["frames_written"] == 5
+        assert render["has_audio"] is with_audio
+        assert dest.is_file() and dest.stat().st_size > 0
+        kinds = {stream["codec_type"] for stream in ffprobe_streams(dest)["streams"]}
+        assert kinds == ({"video", "audio"} if with_audio else {"video"})
+        video = next(s for s in ffprobe_streams(dest)["streams"] if s["codec_type"] == "video")
+        assert int(video["nb_frames"]) == 5, "the preview is not the frames measured"

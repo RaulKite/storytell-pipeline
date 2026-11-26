@@ -75,6 +75,11 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "persons_raw": "persons/raw/yolo_track.json",
     "person_frames": "persons/frames.parquet",
     "person_tracks": "persons/tracks.parquet",
+    # Optional output: the same tracks drawn on the frames, only present when
+    # persons.write_video is on. A preview, not a measurement, so it sits beside the tables it
+    # came from rather than in a raw/ directory: nothing here is tool output, and nothing here
+    # is authoritative for timing (`source/frame_index.parquet` is).
+    "person_track_video": "persons/tracks.mp4",
     "pipeline_log": "logs/pipeline.log",
     "provenance_config": "provenance/config.json",
     "provenance_tools": "provenance/tools.json",

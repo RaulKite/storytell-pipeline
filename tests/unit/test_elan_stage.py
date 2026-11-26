@@ -722,7 +722,8 @@ class TestConfigAndRegistry:
         assert "elan_annotations" in MANIFEST_ARTIFACTS
         assert "activespeaker_video_raw" in MANIFEST_ARTIFACTS
         assert "pose_skeleton_video" in MANIFEST_ARTIFACTS
-        assert len(MANIFEST_ARTIFACTS) == 42
+        assert "person_track_video" in MANIFEST_ARTIFACTS
+        assert len(MANIFEST_ARTIFACTS) == 43
 
     def test_the_registered_path_lives_in_its_own_directory(self) -> None:
         assert ARTIFACT_LAYOUT["elan_annotations"] == "elan/annotations.eaf"

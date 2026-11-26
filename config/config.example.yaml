@@ -374,6 +374,15 @@ persons:
   classes: [0]
   # person_classes_only: true
   imgsz: 640                # network input side in px; costs speed ~quadratically
+  # Draw the boxes and track ids on the frames and keep the result as persons/tracks.mp4
+  # (`person_track_video` in the manifest). Opt-in, and it costs a YOLO rerun: the render
+  # happens inside the tracking pass (a second decode pass could not prove it was drawing on
+  # the frames the boxes came from), and the key is in the stage request, so switching it on
+  # invalidates every person dataset on disk. The output is a CFR PREVIEW: the authoritative
+  # timestamps stay in source/frame_index.parquet, and the `id=` overlay is a ByteTracker track
+  # id, NOT an identity -- ids fragment within a shot and mean different people in different
+  # videos. Source audio is muxed when the source has any. Turning it off deletes nothing.
+  # write_video: false
   # timeout_seconds: null   # no default: a 4-hour recording is 720k frames and a guessed
                             # ceiling would fail a legitimate long run
   # extra_args: []

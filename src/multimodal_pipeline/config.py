@@ -771,6 +771,23 @@ class PersonsConfig(_Model):
     #: Image side fed to the network, in pixels. Ultralytics' own default. Raising it costs
     #: speed roughly quadratically and is the knob to turn when small people are missed.
     imgsz: int = 640
+    #: Draw the tracks on the video and publish ``persons/tracks.mp4``.
+    #: Opt-in, for the same reason ``openpose.write_video`` and
+    #: ``activespeaker.write_video`` are: the key is mixed into the stage request, so turning
+    #: it on invalidates every person dataset already on disk and re-runs YOLO over all of
+    #: them. It cannot be derived afterwards — the boxes are drawn in the same pass that
+    #: decodes the frames, because a second decode pass could not prove it was looking at the
+    #: frames the boxes belong to.
+    #:
+    #: What the file is: a constant-frame-rate *preview*. The authoritative timing stays in
+    #: ``source/frame_index.parquet``; the preview's own PTS are CFR arithmetic. What the
+    #: overlay labels are: ByteTracker track ids, not identities — they fragment within a
+    #: shot, and the same number means a different person in the next video.
+    #:
+    #: Turning it off deletes nothing, and an existing ``tracks.mp4`` is left alone. The video
+    #: is published atomically with the raw document and both tables of the run that produced
+    #: it; that is a staging step, not a filesystem transaction across the dataset.
+    write_video: bool = False
     #: Kill a wedged worker after N seconds. No default: a 4-hour recording at 50 fps is
     #: 720k frames and a stage with a guessed timeout would fail a legitimate long run.
     timeout_seconds: float | None = None

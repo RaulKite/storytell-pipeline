@@ -54,12 +54,16 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import shutil
+from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pyarrow as pa
 
-from ..exceptions import ValidationError
+from ..exceptions import StageError, ValidationError
 from ..schemas import (
     PERSON_FRAMES_SCHEMA,
     PERSON_TRACKS_SCHEMA,
@@ -68,8 +72,9 @@ from ..schemas import (
     table_columns,
     write_table,
 )
+from ..artifacts import ARTIFACT_LAYOUT, VideoPaths
 from ..validation import check_intervals
-from .base import StageContext, WorkerStage, raw_request_matches
+from .base import StageContext, WorkerStage, raw_request_matches, raw_sidecar_path
 
 #: The closed set of reasons a person row does or does not carry a tracker confidence.
 #: Same purpose as ``activespeaker.FRAME_REASONS``: the vocabularies a reader switches on
@@ -100,6 +105,19 @@ class PersonsStage(WorkerStage):
     outputs = ("persons_raw", "person_frames", "person_tracks")
     config_keys = ("persons",)
 
+    #: Flags the stage sets itself. ``extra_args`` may not carry them with the render on *or*
+    #: off: an ``--output-video`` from config would point the encoder at a file this stage never
+    #: publishes (or at the one it validates), and an ``--ffmpeg`` would make ``validate`` check
+    #: a file a different binary wrote. A refusal that only applied while the toggle is on could
+    #: be overridden by the same config it is refusing.
+    PIPELINE_OWNED_FLAGS = ("--output-video", "--ffmpeg", "--ffprobe")
+
+    #: What a rendered run moves into place, in order, after it has validated. The raw
+    #: document's sidecar and the worker's result JSON travel with the raw document and are
+    #: published alongside it.
+    PUBLISHED_OUTPUTS = ("person_frames", "person_tracks", "person_track_video",
+                         "persons_raw")
+
     # ------------------------------------------------------------------ request
 
     def request(self, ctx: StageContext) -> dict[str, Any]:
@@ -121,6 +139,12 @@ class PersonsStage(WorkerStage):
             "conf": cfg.conf,
             "classes": list(cfg.classes),
             "imgsz": cfg.imgsz,
+            # The preview cannot be derived after the fact — the boxes are drawn during the
+            # tracking pass, over the frames that produced them — so asking for one is a
+            # different request, not a different view of the same run. Both directions
+            # invalidate: a document that carries a ``render`` block is not what a no-render
+            # configuration produced.
+            "write_video": cfg.write_video,
             "extra_args": cfg.extra_args,
             "uv_project": str(ctx.config.resolve(cfg.uv_project)),
             "worker": str(ctx.config.resolve(cfg.worker)),
@@ -286,11 +310,26 @@ class PersonsStage(WorkerStage):
 
     def prepare(self, ctx: StageContext) -> None:
         super().prepare(ctx)
+        self.refuse_owned_flags_in_extra_args(ctx)
         # `frame_index` is a hard input, not a nice-to-have: ultralytics reports frame
         # *indices*, and the only authority on what an index is in seconds is the ffprobe
         # packet index metadata wrote. Without it this stage could publish an FPS-derived
         # timestamp for a VFR clip, which is the error every other visual stage avoids.
         ctx.input("frame_index")
+
+    def refuse_owned_flags_in_extra_args(self, ctx: StageContext) -> None:
+        """Refuse the render flags in ``persons.extra_args``, naming each one."""
+        offenders = sorted({arg.split("=", 1)[0] for arg in ctx.config.persons.extra_args
+                            if arg.split("=", 1)[0] in set(self.PIPELINE_OWNED_FLAGS)})
+        if not offenders:
+            return
+        raise StageError(
+            "persons.extra_args cannot override " + ", ".join(offenders)
+            + ": the stage owns the preview destination, the ffmpeg that encodes it and the "
+              "ffprobe that validates it. A destination from extra_args would be a file this "
+              "stage never publishes (or the very file it validates), and a different ffmpeg "
+              "would leave validate() certifying a render it did not build. Remove the flag; "
+              "persons.write_video is the switch.")
 
     def worker_argv(self, ctx: StageContext, raw_path: Path, request_digest: str) -> list[str]:
         cfg = ctx.config.persons
@@ -314,6 +353,14 @@ class PersonsStage(WorkerStage):
             args += ["--classes", ",".join(str(value) for value in cfg.classes)]
         if cfg.weights_dir is not None:
             args += ["--weights-dir", str(ctx.config.resolve(cfg.weights_dir))]
+        if cfg.write_video:
+            # Always the staged path, because `ctx` here is the staged context: the worker is
+            # never handed the canonical file, which ffmpeg truncates before it has produced
+            # anything. The configured tools are passed rather than assumed, so the binary that
+            # encoded the preview is the one validate() then asks about.
+            args += ["--output-video", str(ctx.artifact("person_track_video")),
+                     "--ffmpeg", ctx.config.ffmpeg.executable,
+                     "--ffprobe", ctx.config.ffmpeg.ffprobe]
         return args + list(cfg.extra_args)
 
     # ------------------------------------------------------------ normalisation
@@ -499,10 +546,11 @@ class PersonsStage(WorkerStage):
         problems.extend(frame_problems)
         track_problems = self._check_tracks(ctx, document, frame_stats)
         problems.extend(track_problems)
+        track_video = self._check_track_video(ctx, document, problems)
         if problems:
             raise ValidationError(self.name, problems)
 
-        return {
+        result: dict[str, Any] = {
             "frames_measured": document.get("frames_measured"),
             "frames_with_person": document.get("frames_with_person"),
             "frame_rows": frame_stats["rows"],
@@ -511,6 +559,54 @@ class PersonsStage(WorkerStage):
             "device": document.get("device"),
             "weights_sha256": document.get("weights_sha256"),
         }
+        if track_video is not None:
+            result["track_video"] = track_video
+        return result
+
+    def _check_track_video(self, ctx: StageContext, document: dict[str, Any],
+                           problems: list[str]) -> str | None:
+        """Does the preview on disk belong to the run the tables came from?
+
+        Only consulted when ``persons.write_video`` is on, because a raw document without a
+        ``render`` block is the normal state of every dataset written before this feature
+        existed: complaining about those would make shipping the toggle cost a GPU pass per
+        video for a field that only means something to the runs that asked for it.
+
+        The document and the file have to tell the same story in both directions. A document
+        with no ``render`` block beside a video means that video came from somewhere else, and
+        passing it would make the preview evidence for a tracking run that never made one. The
+        frame count is checked with **no tolerance**: unlike the OpenPose preview, whose
+        renderer is upstream's black box and measurably loses one to three trailing frames, this
+        encoder is ours and is driven by the count the worker already compared against the
+        frames it measured. A short preview here means the pipe and the tables disagree about
+        which frame is which, and every later overlay would sit on the wrong picture while the
+        file still played.
+        """
+        if not ctx.config.persons.write_video:
+            return None
+        # Imported here rather than at module scope: this module is imported by the stage
+        # package that ``person_video`` itself reaches through ``stages.metadata``.
+        from ..person_video import check_track_video
+
+        render = document.get("render")
+        if not isinstance(render, dict):
+            problems.append(
+                "raw document carries no render block although persons.write_video=true, so "
+                f"the preview at {ARTIFACT_LAYOUT['person_track_video']} was not produced by "
+                "the tracking run these tables describe")
+            return None
+        try:
+            check_track_video(
+                ctx.artifact("person_track_video"),
+                ffprobe=ctx.config.ffmpeg.ffprobe,
+                expected_frames=document.get("frames_measured"),
+                require_audio=bool(render.get("has_audio")))
+        except StageError as exc:
+            # The checker names the reason and the file; keep both, but let the aggregate
+            # ValidationError report every problem this dataset has, not just the first.
+            problems.append(str(exc))
+            return None
+        return ARTIFACT_LAYOUT["person_track_video"]
 
     def _check_recorded_identity(self, ctx: StageContext,
                                 document: dict[str, Any]) -> list[str]:
@@ -761,6 +857,14 @@ class PersonsStage(WorkerStage):
             path = ctx.paths.get(name)
             if path is None or not path.exists():
                 return False
+        if ctx.config.persons.write_video:
+            # A requested preview that is gone is not a reusable result: the only way to get it
+            # back is the tracking pass that draws it, so the stage has to run again. An empty
+            # file counts as gone too -- ffmpeg creates its destination before it has encoded a
+            # single frame, and reusing that would certify a zero-byte preview forever.
+            video = ctx.artifact("person_track_video")
+            if not video.is_file() or video.stat().st_size == 0:
+                return False
         return not self._foreign_frames(ctx)
 
     # ------------------------------------------------------- weights identity
@@ -833,13 +937,71 @@ class PersonsStage(WorkerStage):
         return found
 
     def execute(self, ctx: StageContext) -> dict[str, Any]:
-        extras = super().execute(ctx)
+        self.refuse_owned_flags_in_extra_args(ctx)
+        if ctx.config.persons.write_video:
+            extras = self._execute_rendered(ctx)
+        else:
+            extras = WorkerStage.execute(self, ctx)
         # What the tables now on disk claim produced them, captured for `run` to report.
         # Read after the write rather than from the raw document so it is the file a consumer
         # will actually open, not the value the worker intended to write.
         ctx.scratch["persons_recorded_identity"] = (
             self.recorded_identity(ctx.artifact("person_frames")))
         return extras
+
+    def _execute_rendered(self, ctx: StageContext) -> dict[str, Any]:
+        """Run the tracking pass once, in a staged tree, and move everything into place.
+
+        The preview cannot be recovered afterwards — the boxes are drawn over the frames
+        ultralytics decoded, so the only pass that can produce it is the pass that measured
+        them. That is also why this cannot reuse a preserved raw document even when its request
+        hash matches: the stage is here precisely because something about the request changed.
+
+        Everything is written under a temporary directory and validated there, because ffmpeg
+        truncates its destination before it has encoded anything. A worker pointed at the
+        canonical ``persons/tracks.mp4`` would destroy the previous render just by starting, and
+        a render that then failed would leave the operator with neither their old preview nor a
+        new one — the same defect native ASD export had before its export was ordered first.
+        """
+        destination = ctx.artifact("person_track_video")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".person-tracks-",
+                               dir=destination.parent.resolve()) as temp:
+            staged = replace(ctx, paths=VideoPaths(Path(temp)))
+            staged.paths.ensure_dirs()
+            for name in ("metadata", "frame_index"):
+                # The worker reads the timing index and the normalizer reads the duration, both
+                # through the staged artifact paths, so the staged tree has to carry the real
+                # inputs rather than empty placeholders.
+                shutil.copyfile(ctx.input(name), staged.artifact(name))
+            detail = WorkerStage.execute(self, staged)
+            # Validate while still staged: a preview that disagrees with the tables, or a raw
+            # document with no render block, never reaches the dataset.
+            self.validate(staged)
+            self._publish_rendered(staged, ctx)
+            detail.setdefault("extra", {})["track_video"] = ARTIFACT_LAYOUT["person_track_video"]
+            return detail
+
+    def _publish_rendered(self, staged: StageContext, ctx: StageContext) -> None:
+        """Move the validated render into the dataset, one file at a time.
+
+        The raw document's provenance sidecar and the worker's result JSON travel with the raw
+        document, so they move too: publishing a new raw over an old sidecar would leave a
+        `request_hash` on disk that describes a different run than the document beside it.
+        """
+        staged_raw = staged.artifact("persons_raw")
+        pairs = [(staged.artifact(name), ctx.artifact(name)) for name in self.PUBLISHED_OUTPUTS]
+        for source in (raw_sidecar_path(staged_raw),
+                       staged_raw.parent / "persons_worker_result.json"):
+            pairs.append((source, ctx.artifact("persons_raw").parent / source.name))
+        for source, target in pairs:
+            if not source.is_file():
+                raise StageError(
+                    f"persons render validated but produced no {source.name} to publish; the "
+                    f"dataset at {target.parent} was left untouched rather than published "
+                    "incompletely")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, target)
 
     def run(self, ctx: StageContext):
         """Name, once per video, the checkpoint the person counts came from.

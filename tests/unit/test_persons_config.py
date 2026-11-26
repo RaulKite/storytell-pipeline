@@ -442,6 +442,68 @@ class TestLayoutRegistration:
         assert set(STAGE_LOG_NAMES) == set(STAGE_ORDER)
 
 
+class TestOptionalTrackPreview:
+    """The opt-in rendered preview: its config key, its slot, and what it must NOT become.
+
+    The shape tests here exist because a derived video artifact has two easy ways to be wrong
+    in a resumable pipeline: registered as a *declared* stage output (which makes every
+    dataset with the toggle off look incomplete for a file it never promised), or defaulted on
+    (which costs every existing dataset a YOLO rerun the moment the feature ships).
+    """
+
+    def test_the_preview_is_off_by_default(self):
+        """On by default would re-run YOLO on every completed dataset at upgrade time.
+
+        The toggle is mixed into the stage request, so the default is the only thing standing
+        between shipping this feature and invalidating every person table on disk.
+        """
+        assert PersonsConfig().write_video is False
+
+    def test_the_toggle_is_accepted_and_read_back(self):
+        assert PersonsConfig(write_video=True).write_video is True
+
+    def test_it_is_a_real_field_and_not_a_stray_key(self):
+        """``extra="forbid"`` means a typo in the YAML is refused; a real field is not."""
+        assert "write_video" in PersonsConfig.model_fields
+
+    def test_the_toggle_moves_the_behaviour_hash(self):
+        from multimodal_pipeline.config import stable_hash
+
+        off = {"persons": PersonsConfig(write_video=False).model_dump(mode="json")}
+        on = {"persons": PersonsConfig(write_video=True).model_dump(mode="json")}
+        assert stable_hash(off) != stable_hash(on)
+
+    def test_the_video_slot_is_registered_beside_the_tables(self):
+        assert ARTIFACT_LAYOUT["person_track_video"] == "persons/tracks.mp4"
+
+    def test_the_video_is_a_manifest_artifact(self):
+        assert "person_track_video" in MANIFEST_ARTIFACTS
+
+    def test_the_optional_video_is_not_a_declared_stage_output(self):
+        """``outputs`` is the promise a dataset must satisfy with the toggle off.
+
+        ``outputs_present`` checks the video separately, exactly as ``openpose`` and
+        ``activespeaker`` do for their optional previews.
+        """
+        assert "person_track_video" not in PersonsStage().outputs
+
+    def test_the_video_lives_in_the_persons_directory_and_shares_no_path(self):
+        assert Path(ARTIFACT_LAYOUT["person_track_video"]).parts[0] == "persons"
+        assert len(set(ARTIFACT_LAYOUT.values())) == len(ARTIFACT_LAYOUT)
+
+    def test_the_toggle_is_documented_where_an_operator_would_read_it(self):
+        """A commented entry, so the shipped default stays the documented default."""
+        text = (ROOT / "config" / "config.example.yaml").read_text(encoding="utf-8")
+        block = text.split("persons:\n", 1)[1].split("\nspeaker_fusion:", 1)[0]
+        assert "# write_video:" in block, "the persons block lost its commented write_video entry"
+
+    def test_the_preview_is_explained_beside_the_other_previews(self):
+        text = (ROOT / "docs" / "datasets.md").read_text(encoding="utf-8")
+        assert "persons/tracks.mp4" in text
+        # The two claims a reader is most likely to get wrong, stated next to the path.
+        assert "ByteTracker" in text and "not an identity" in text.lower()
+
+
 class TestDagRegistration:
     def test_the_stage_is_in_the_order_and_the_class_map(self):
         from multimodal_pipeline.orchestrator import STAGE_CLASSES

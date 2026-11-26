@@ -47,23 +47,22 @@ audio as `speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest)
 opt-in, requires ASD recomputation, and preserves an existing video when turned off;
 manifest presence reports files on disk, not the current toggle.
 
-Set `openpose.write_video: true` to produce `pose/skeletons.mp4`
-(`pose_skeleton_video` in the manifest), independently of `write_images`. It retains
-OpenPose's native rendering, muxes source audio when available, reruns OpenPose when
-enabled and deletes nothing when disabled. Publication is atomic for the video, not a
-transaction across all pose outputs: native output, normalization, mux and validation are
-staged before previous pose outputs are replaced, and `extra_args` cannot override native
-video flags. Native preview timing can lose trailing frames (validation allows at most
-three against current raw JSON counts), so use `source/frame_index.parquet` and the pose
-tables for measured source-frame timing.
+Set `openpose.write_video: true` to produce `pose/skeletons.mp4` (`pose_skeleton_video` in the
+manifest). It retains OpenPose's native rendering, muxes source audio when available, reruns
+OpenPose when enabled and deletes nothing when disabled. Publication is atomic for the video, not
+a transaction across all pose outputs: native output, normalization, mux and validation are
+staged before previous pose outputs are replaced, and `extra_args` cannot override native video
+flags. Native preview timing can lose trailing frames (validation allows at most three against
+current raw JSON counts), so use `source/frame_index.parquet` and the pose tables for measured
+source-frame timing. Set `persons.write_video: true` for `persons/tracks.mp4`, a CFR preview
+drawn in the YOLO pass (reruns YOLO); each `id=` is a ByteTracker track id, not an identity.
 
-Each dataset folder receives an English `explanation.md` on run/resume, including reused
-outputs: contract guides, not evidence that a module produced data, excluded from artifact
-counts and model fingerprints. Unmarked hand-written guides are preserved.
-
-Raw outputs remain beside normalized tables, with provenance in sidecars and the
-provenance directory rather than injected into raw bytes. The config snapshot masks
-secrets, but logs and tool provenance can still contain machine paths.
+Each dataset folder receives an English `explanation.md` on run/resume, including reused outputs:
+contract guides, not evidence that a module produced data, excluded from artifact counts and
+model fingerprints. Unmarked hand-written guides are preserved. Raw outputs remain beside
+normalized tables, with provenance in sidecars and the provenance directory rather than injected
+into raw bytes. The config snapshot masks secrets, but logs and tool provenance can still contain
+machine paths.
 
 ## Table reference
 

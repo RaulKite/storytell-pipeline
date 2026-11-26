@@ -51,7 +51,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import subprocess
 import tempfile
 import time
 import traceback
@@ -230,6 +232,364 @@ def resolve_device(requested: str) -> tuple[Any, str, str | None]:
     return "cpu", "cpu", "torch.cuda.is_available() was False"
 
 
+# --------------------------------------------------------------- preview render
+
+
+def derive_fps(index: Mapping[int, float]) -> float | None:
+    """Frames per second implied by the frame index this run already loaded, or None.
+
+    ``(frame_count - 1) / (last_pts - first_pts)`` over the loaded index, which is ffprobe's
+    own packet timing: on this corpus's 30000/1001 news clips a 25 fps assumption retimes the
+    preview against ``frames.parquet`` by ~0.1% of its length, and nothing in the picture
+    shows it. None (never a guess) when the index has one frame, no positive span, or a value
+    that is not finite: the caller has a second source and then refuses.
+    """
+    if len(index) < 2:
+        return None
+    numbers = sorted(index)
+    span = float(index[numbers[-1]]) - float(index[numbers[0]])
+    if not math.isfinite(span) or span <= 0:
+        return None
+    fps = (len(index) - 1) / span
+    return fps if math.isfinite(fps) and fps > 0 else None
+
+
+def _parse_rate(raw: Any) -> float | None:
+    """ffprobe's ``avg_frame_rate`` (``"30000/1001"``, ``"0/0"``, ``"25"``) as a float."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            value = float(numerator) / float(denominator)
+        else:
+            value = float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def probe_media(ffprobe: str, video: Path) -> dict[str, Any]:
+    """``{has_audio, avg_frame_rate}`` for the source, from one argv-list ffprobe.
+
+    A failed probe is a refusal, not a silent ``has_audio=False``: quietly publishing a silent
+    preview of a clip that has audio is the complaint already recorded against the OpenPose
+    preview path, and the operator would find out from the file, not from the log.
+    """
+    argv = [ffprobe, "-v", "error", "-print_format", "json", "-show_streams", str(video)]
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=300.0,
+                                  check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise WorkerFailure(f"ffprobe {ffprobe!r} could not be run for {video.name}: {exc}") from exc
+    if completed.returncode != 0:
+        raise WorkerFailure(
+            f"ffprobe could not read {video.name} (exit {completed.returncode}): "
+            f"{(completed.stderr or '').strip()[:300]}")
+    try:
+        streams = json.loads(completed.stdout or "{}").get("streams", [])
+    except ValueError as exc:
+        raise WorkerFailure(f"ffprobe produced unparseable JSON for {video.name}: {exc}") from exc
+    video_streams = [stream for stream in streams if stream.get("codec_type") == "video"]
+    return {
+        "has_audio": any(stream.get("codec_type") == "audio" for stream in streams),
+        "avg_frame_rate": (_parse_rate(video_streams[0].get("avg_frame_rate"))
+                           if video_streams else None),
+    }
+
+
+#: Colours stay in this band: below it a box disappears into a dark scene, above it a label
+#: washes out. Two channels differ by construction, so a box never matches its own background.
+TRACK_COLOUR_MIN = 48
+TRACK_COLOUR_SPAN = 208
+
+
+def track_colour(person_id: int) -> tuple[int, int, int]:
+    """A stable BGR colour for one track id.
+
+    Derived from the id alone through blake2b, so the same id is the same colour in every run,
+    every video and every process. ``hash()`` is the obvious implementation and is wrong: it
+    is salted per process for strings, which repaints every id on every rerun and makes two
+    renders of one clip disagree about who is who. Deliberately not insertion order either --
+    ultralytics' box order is not stable across a rerun.
+    """
+    digest = hashlib.blake2b(str(int(person_id)).encode("ascii"), digest_size=3).digest()
+    return tuple(TRACK_COLOUR_MIN + (value * 5) % TRACK_COLOUR_SPAN for value in digest)
+
+
+def stroke_width(width: int, height: int) -> int:
+    """Box line width for one frame size: 1 px per 240 px of the short side, at least 1.
+
+    A hairline is invisible on a 1080p preview and swallows a thumbnail; the id is the whole
+    point of the render, so the stroke has to survive whatever the encoder did to it.
+    """
+    return max(1, int(round(min(width, height) / 240)))
+
+
+def label_origin(x: float, y: float, *, width: int, height: int,
+                 scale: float) -> tuple[int, int]:
+    """Where to draw one label so that it is *inside* the frame.
+
+    ``cv2.putText`` takes a baseline, so an origin at ``y1`` draws the glyphs above the top
+    edge of the box and off the frame whenever the box touches it -- and a track whose id
+    cannot be read is indistinguishable from a track that was never drawn.
+    """
+    text_height = max(8, int(round(22 * scale)))
+    return (max(0, min(int(x), width - 1)),
+            max(text_height, min(int(y) + text_height, height - 2)))
+
+
+def label_text(person_id: int, score: float) -> str:
+    """The only text put on a frame: the track id and its confidence.
+
+    No timestamp, no model name, no watermark. The preview's clock is CFR arithmetic and is
+    explicitly *not* the authoritative timeline, so burning a time into the picture would put
+    a wrong number exactly where a reader trusts the image most.
+    """
+    return f"id={int(person_id)} {float(score):.2f}"
+
+
+def _clamped_box(box: Sequence[float], *, width: int, height: int) -> tuple[int, int, int, int]:
+    """A detection box as integer pixels inside the frame, in the order cv2 wants."""
+    x1 = max(0, min(int(round(float(box[0]))), width - 1))
+    y1 = max(0, min(int(round(float(box[1]))), height - 1))
+    x2 = max(x1, min(int(round(float(box[2]))), width - 1))
+    y2 = max(y1, min(int(round(float(box[3]))), height - 1))
+    return x1, y1, x2, y2
+
+
+def draw_tracks(frame: Any, detections: Sequence[tuple[int, Sequence[float], float]]) -> Any:
+    """Draw one frame's boxes and labels on the pixels ultralytics decoded.
+
+    cv2 is imported here rather than at module scope: the pipeline's own test suite imports
+    this file with no cv2 installed, and the module must stay importable outside the persons
+    uv project.
+    """
+    import cv2
+
+    height, width = int(frame.shape[0]), int(frame.shape[1])
+    thickness = stroke_width(width, height)
+    scale = max(0.35, min(width, height) / 240.0)
+    for person_id, box, score in detections:
+        x1, y1, x2, y2 = _clamped_box(box, width=width, height=height)
+        colour = track_colour(person_id)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
+        cv2.putText(frame, label_text(person_id, score),
+                    label_origin(x1, y1, width=width, height=height, scale=scale),
+                    cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness)
+    return frame
+
+
+class TrackVideoWriter:
+    """Pipe drawn BGR frames into ffmpeg as rawvideo and publish one CFR preview.
+
+    One subprocess, one argv list, ``stdin`` as the frame pipe. Never a shell: the destination
+    is a path the operator's config chose, and the OpenPose stage already pays for upstream's
+    single-quoted shell command.
+
+    The encoder starts lazily on the first frame because the frame *is* the geometry: the
+    rawvideo header takes a fixed ``WxH`` and the only honest source of it is the pixels
+    ultralytics decoded, not ``metadata.json``.
+    """
+
+    def __init__(self, *, ffmpeg: str, destination: Path, fps: float,
+                 audio_source: Path | None = None, fps_source: str | None = None) -> None:
+        self.ffmpeg = ffmpeg
+        self.destination = Path(destination)
+        self.fps = float(fps)
+        self.fps_source = fps_source
+        self.audio_source = Path(audio_source) if audio_source is not None else None
+        self.frames_written = 0
+        self.width = 0
+        self.height = 0
+        self._process: subprocess.Popen | None = None
+        # ffmpeg chooses the container from the output filename, so the staged name has to keep
+        # an mp4 suffix: writing to ``tracks.mp4.partial`` fails at muxer initialisation with
+        # "Unable to choose an output format" (measured against the real binary, and invisible
+        # to a fake that only reads argv).
+        self._partial = destination.parent / f".{destination.stem}.partial.mp4"
+        self._log: Path | None = None
+
+    # ------------------------------------------------------------------ internals
+
+    def _argv(self, width: int, height: int) -> list[str]:
+        argv = [self.ffmpeg, "-v", "error", "-nostdin", "-y",
+                "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+                "-r", f"{self.fps:.6f}", "-i", "-"]
+        if self.audio_source is not None:
+            # Second input is the source; its audio goes in as AAC (codec copy into MP4 is
+            # what upstream's own command gets wrong), and -shortest ends at the video, which
+            # is the stream this render actually controls.
+            argv += ["-i", str(self.audio_source), "-map", "0:v:0", "-map", "1:a:0",
+                     "-c:a", "aac", "-shortest"]
+        else:
+            argv += ["-an"]
+        argv += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                 str(self._partial)]
+        return argv
+
+    def _stderr_text(self) -> str:
+        if self._log is None:
+            return ""
+        try:
+            return self._log.read_text(encoding="utf-8", errors="replace").strip()[-800:]
+        except OSError:
+            return ""
+
+    def _cleanup_log(self) -> None:
+        if self._log is not None:
+            try:
+                self._log.unlink()
+            except OSError:
+                pass
+            self._log = None
+
+    def _start(self, width: int, height: int) -> None:
+        self.destination.parent.mkdir(parents=True, exist_ok=True)
+        handle, name = tempfile.mkstemp(dir=self.destination.parent,
+                                       prefix=".tracks-ffmpeg-", suffix=".log")
+        os.close(handle)
+        self._log = Path(name)
+        argv = self._argv(width, height)
+        try:
+            with self._log.open("wb") as errors:
+                self._process = subprocess.Popen(argv, stdin=subprocess.PIPE,
+                                                 stdout=subprocess.DEVNULL,
+                                                 stderr=errors, shell=False)
+        except OSError as exc:
+            self._cleanup_log()
+            raise WorkerFailure(f"ffmpeg {self.ffmpeg!r} could not be started to render "
+                                f"the person track preview: {exc}") from exc
+
+    # -------------------------------------------------------------------- api
+
+    def push(self, frame: Any) -> None:
+        """Draw-ready frame to the encoder, in decode order.
+
+        The frame size is checked against the size the header promised, not assumed: rawvideo
+        has no framing, so one differently-sized frame desynchronises every later byte into
+        coloured noise and ffmpeg still exits 0. That is the one failure of a preview that
+        looks like a video.
+        """
+        shape = getattr(frame, "shape", None)
+        if not shape or len(shape) < 3:
+            raise WorkerFailure(f"cannot render a preview from a frame of shape {shape!r}; "
+                                "expected an HxWx3 BGR image")
+        height, width = int(shape[0]), int(shape[1])
+        if self._process is None:
+            self.width, self.height = width, height
+            self._start(width, height)
+        elif (width, height) != (self.width, self.height):
+            raise WorkerFailure(
+                f"frame {self.frames_written} has shape {height}x{width} but this render "
+                f"started at {self.height}x{self.width}: rawvideo takes one fixed frame size, "
+                "so a second size would be encoded as noise rather than as a second size")
+        payload = frame.tobytes()
+        expected = width * height * 3
+        if len(payload) != expected:
+            raise WorkerFailure(
+                f"frame {self.frames_written} produced {len(payload)} bytes for a "
+                f"{width}x{height} bgr24 frame ({expected} bytes): a stride or dtype that "
+                "does not match the header would desynchronise the whole preview")
+        assert self._process is not None and self._process.stdin is not None
+        try:
+            self._process.stdin.write(payload)
+        except (BrokenPipeError, OSError) as exc:
+            raise WorkerFailure("ffmpeg stopped reading the frame pipe: "
+                                f"{self._stderr_text() or exc}") from exc
+        self.frames_written += 1
+
+    def abort(self) -> None:
+        """Leave no half-encoded file and no orphaned encoder behind a failed run."""
+        process = self._process
+        self._process = None
+        if process is not None and process.poll() is None:
+            process.kill()
+        if process is not None:
+            try:
+                process.wait(timeout=30)
+            except Exception:  # noqa: BLE001 - teardown must not mask the run's outcome
+                pass
+        self._cleanup_log()
+        try:
+            self._partial.unlink()
+        except OSError:
+            pass
+
+    def finish(self, *, expected_frames: int) -> dict[str, Any]:
+        """Close the pipe, hold ffmpeg to the frame count, and publish in one step.
+
+        ``frames_measured`` is the expectation because it is the number the tables were built
+        from: a preview that lost frames silently retimes every overlay against
+        ``frames.parquet``, and ffmpeg exits 0 on a truncated stdin as often as it exits 1.
+        """
+        process = self._process
+        if process is None:
+            raise WorkerFailure("no frame reached the encoder, so no preview can be published")
+        try:
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+            returncode = process.wait()
+            errors = self._stderr_text()
+        finally:
+            self._process = None
+            self._cleanup_log()
+        if returncode != 0:
+            self.abort()
+            raise WorkerFailure(
+                f"ffmpeg exited {returncode} writing the person track preview "
+                f"({self.destination.name}): {errors or 'no output from ffmpeg'}")
+        if self.frames_written != expected_frames:
+            self.abort()
+            raise WorkerFailure(
+                f"the preview wrote {self.frames_written} of {expected_frames} frames "
+                "measured, so it would not line up with persons/frames.parquet")
+        if not self._partial.is_file():
+            raise WorkerFailure(f"ffmpeg exited 0 but wrote no preview at {self._partial}")
+        size = self._partial.stat().st_size
+        if size == 0:
+            self.abort()
+            raise WorkerFailure(f"ffmpeg wrote an empty preview at {self._partial}")
+        os.replace(self._partial, self.destination)
+        return {
+            "fps": round(self.fps, 6),
+            "fps_source": self.fps_source,
+            "frames_written": self.frames_written,
+            "width": self.width,
+            "height": self.height,
+            "has_audio": self.audio_source is not None,
+        }
+
+
+def make_render_writer(args: argparse.Namespace,
+                       frame_index: Mapping[int, float]) -> TrackVideoWriter:
+    """The encoder for one ``--output-video`` request, with its clock already settled.
+
+    The rate is chosen *before* the model runs: the frame index is already loaded, ffprobe has
+    already been asked, and finding out after 126 decoded frames that no rate was available
+    would have cost a full detection pass to produce nothing.
+    """
+    media = probe_media(args.ffprobe, args.video)
+    fps = derive_fps(frame_index)
+    source = "frame_index"
+    if fps is None:
+        fps, source = media["avg_frame_rate"], "ffprobe_average_frame_rate"
+    if fps is None or not math.isfinite(fps) or fps <= 0:
+        raise WorkerFailure(
+            f"cannot render a preview of {args.video.name}: no usable fps. The loaded frame "
+            "index gave none (it needs at least two frames with a positive pts span) and "
+            "ffprobe reported no average frame rate. Encoding at a guessed rate would retime "
+            "the whole preview against persons/frames.parquet, and the picture would look "
+            "fine doing it")
+    return TrackVideoWriter(ffmpeg=args.ffmpeg, destination=args.output_video, fps=fps,
+                            fps_source=source,
+                            audio_source=args.video if media["has_audio"] else None)
+
+
 # --------------------------------------------------------------- the tracking
 
 
@@ -285,12 +645,19 @@ class GmcWarningCounter:
 def track_video(*, video: Path, model_name: str, weights_dir: Path | None, device: str,
                 tracker: str, conf: float, classes: list[int], imgsz: int,
                 frame_index: Mapping[int, float],
-                extra: Sequence[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                extra: Sequence[str],
+                writer: TrackVideoWriter | None = None,
+                ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run detection+tracking over one video and return (document, frame rows).
 
     The model is built *inside* this function and never lifted out, because the tracker
     state that causes id fragmentation lives on the model object. One video per process is
     the primary defence; building here is the second.
+
+    When ``writer`` is given, every decoded frame is drawn and fed to it in the same pass that
+    produced the rows — not in a second pass over the file. A second decode could not prove it
+    was looking at the frames these boxes came from: ultralytics' letterbox, its own decode
+    order and this loop's frame counter are the only thing tying a box to a picture.
     """
     from ultralytics import YOLO
 
@@ -335,48 +702,79 @@ def track_video(*, video: Path, model_name: str, weights_dir: Path | None, devic
     if device_arg is not None:
         kwargs["device"] = device_arg
 
-    with counter:
-        for result in model.track(source=str(video), **kwargs):
-            # Ultralytics decodes the source in order and emits one result per frame, so the
-            # 0-based count of results so far *is* the frame index it decoded. Cross-checked
-            # against the library's own counter when it has one, because if that ever stopped
-            # being true every timestamp in the table would drift silently.
-            frames_measured += 1
-            frame_number = frames_measured - 1
-            reported = getattr(result, "frame_id", None)
-            if reported is not None and int(reported) != frame_number:
-                raise WorkerFailure(
-                    f"ultralytics reported frame_id {int(reported)} for the "
-                    f"{frames_measured}-th decoded frame, so frame order can no longer be "
-                    "assumed and every timestamp in this table would be wrong; the worker "
-                    "refuses to guess"
-                )
-            boxes = result.boxes
-            ids = ([int(v) for v in boxes.id.cpu().numpy()] if boxes.id is not None
-                   and boxes.id.numel() else [])
-            xyxy = boxes.xyxy.cpu().numpy() if boxes.xyxy.numel() else []
-            scores = boxes.conf.cpu().numpy() if boxes.conf.numel() else []
-            stamp = resolve_timestamp(frame_index, frame_number)
-            if stamp is None:
-                unknown_timestamps += 1
-            if ids:
-                frames_with_person += 1
-                max_in_frame = max(max_in_frame, len(ids))
-                per_frame[frame_number] = len(ids)
-            for index, person_id in enumerate(ids):
-                rows.append(_detection_row(
-                    frame_number=frame_number, timestamp=stamp, person_id=person_id,
-                    box=xyxy[index], score=float(scores[index]),
-                    persons_in_frame=len(ids),
-                ))
-                ids_seen[person_id] = ids_seen.get(person_id, 0) + 1
+    try:
+        with counter:
+            for result in model.track(source=str(video), **kwargs):
+                # Ultralytics decodes the source in order and emits one result per frame, so
+                # the 0-based count of results so far *is* the frame index it decoded.
+                # Cross-checked against the library's own counter when it has one, because if
+                # that ever stopped being true every timestamp in the table would drift
+                # silently.
+                frames_measured += 1
+                frame_number = frames_measured - 1
+                reported = getattr(result, "frame_id", None)
+                if reported is not None and int(reported) != frame_number:
+                    raise WorkerFailure(
+                        f"ultralytics reported frame_id {int(reported)} for the "
+                        f"{frames_measured}-th decoded frame, so frame order can no longer be "
+                        "assumed and every timestamp in this table would be wrong; the worker "
+                        "refuses to guess"
+                    )
+                boxes = result.boxes
+                ids = ([int(v) for v in boxes.id.cpu().numpy()] if boxes.id is not None
+                       and boxes.id.numel() else [])
+                xyxy = boxes.xyxy.cpu().numpy() if boxes.xyxy.numel() else []
+                scores = boxes.conf.cpu().numpy() if boxes.conf.numel() else []
+                stamp = resolve_timestamp(frame_index, frame_number)
+                if stamp is None:
+                    unknown_timestamps += 1
+                if ids:
+                    frames_with_person += 1
+                    max_in_frame = max(max_in_frame, len(ids))
+                    per_frame[frame_number] = len(ids)
+                for index, person_id in enumerate(ids):
+                    rows.append(_detection_row(
+                        frame_number=frame_number, timestamp=stamp, person_id=person_id,
+                        box=xyxy[index], score=float(scores[index]),
+                        persons_in_frame=len(ids),
+                    ))
+                    ids_seen[person_id] = ids_seen.get(person_id, 0) + 1
+                if writer is not None:
+                    # Every frame goes to the encoder, including the ones nobody is in: a
+                    # preview missing the empty frames is shorter than the video and its
+                    # clock is wrong.
+                    image = getattr(result, "orig_img", None)
+                    if image is None:
+                        raise WorkerFailure(
+                            f"ultralytics handed no orig_img for frame {frame_number}, so the "
+                            "preview cannot be drawn on the frame this run actually decoded"
+                        )
+                    writer.push(draw_tracks(
+                        image, [(person_id, xyxy[index], float(scores[index]))
+                                for index, person_id in enumerate(ids)]))
+    except BaseException:
+        if writer is not None:
+            # A half-encoded pipe and an orphaned ffmpeg behind a failed tracking run would
+            # leave a .partial nobody owns in the staged tree.
+            writer.abort()
+        raise
     elapsed = time.time() - started
 
     if frames_measured == 0:
+        if writer is not None:
+            writer.abort()
         raise WorkerFailure(
             f"ultralytics decoded 0 frames from {video.name}; nothing was measured, so no "
             "person count can be reported"
         )
+
+    render: dict[str, Any] | None = None
+    if writer is not None:
+        try:
+            render = writer.finish(expected_frames=frames_measured)
+        except BaseException:
+            writer.abort()
+            raise
 
     document = {
         "schema_version": SCHEMA_VERSION,
@@ -413,6 +811,11 @@ def track_video(*, video: Path, model_name: str, weights_dir: Path | None, devic
         "elapsed_seconds": round(elapsed, 3),
         "frames": rows,
     }
+    if render is not None:
+        # Additive on purpose: a document written without --output-video keeps the byte shape
+        # it had before this feature existed, because that file is the preserved tool output
+        # and the pipeline's reuse test reads it.
+        document["render"] = render
     return document, rows
 
 
@@ -477,6 +880,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--classes", default=str(PERSON_CLASS),
                         help="comma-separated COCO class ids; empty means no class filter")
     parser.add_argument("--request-hash", default=None)
+    # Optional rendered preview. Absent means "draw nothing", which is the default and keeps
+    # the raw document byte-for-byte what it was before this option existed.
+    parser.add_argument("--output-video", type=Path, default=None,
+                        help="stage a rendered track-preview video at this path")
+    parser.add_argument("--ffmpeg", default="ffmpeg",
+                        help="ffmpeg executable used to encode --output-video")
+    parser.add_argument("--ffprobe", default="ffprobe",
+                        help="ffprobe executable used to read the source's streams")
     return parser.parse_args(argv)
 
 
@@ -517,7 +928,7 @@ def _same_path(one: Path, two: Path) -> bool:
 
 
 class OutputAlias(NamedTuple):
-    """One pair among this run's four paths that turns out to name the same file."""
+    """One pair among this run's input and output paths that turns out to name one file."""
 
     out_flag: str
     in_flag: str
@@ -540,14 +951,21 @@ def output_aliases(args: argparse.Namespace) -> list[OutputAlias]:
     """
     inputs = {"--video": args.video, "--frame-index": args.frame_index}
     outputs = {"--output-json": args.output_json, "--result-path": args.result_path}
+    if getattr(args, "output_video", None) is not None:
+        # ffmpeg truncates and rewrites whatever it is told to write, and it does that *during*
+        # the tracking pass. Without this entry an --output-video naming the source video would
+        # destroy the operator's clip and still report a successful run.
+        outputs["--output-video"] = args.output_video
     found: list[OutputAlias] = []
     for out_flag, out in outputs.items():
         for in_flag, source in inputs.items():
             if _same_path(out, source):
                 found.append(OutputAlias(out_flag, in_flag, out, source))
-    if _same_path(args.output_json, args.result_path):
-        found.append(OutputAlias("--result-path", "--output-json",
-                                 args.result_path, args.output_json))
+    flags = list(outputs)
+    for index, first in enumerate(flags):
+        for second in flags[index + 1:]:
+            if _same_path(outputs[second], outputs[first]):
+                found.append(OutputAlias(second, first, outputs[second], outputs[first]))
     return found
 
 
@@ -590,10 +1008,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate(args)
         classes = parse_classes(args.classes)
         frame_index = load_frame_index(args.frame_index)
+        writer = make_render_writer(args, frame_index) if args.output_video else None
         document, rows = track_video(
             video=args.video, model_name=args.model, weights_dir=args.weights_dir,
             device=args.device, tracker=args.tracker, conf=args.conf, classes=classes,
-            imgsz=args.imgsz, frame_index=frame_index, extra=[],
+            imgsz=args.imgsz, frame_index=frame_index, extra=[], writer=writer,
         )
         document["video_id"] = args.video_id
         write_json_atomic(args.output_json, document)
@@ -612,9 +1031,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             "weights_sha256": document["weights_sha256"],
             "gmc_failure_count": document["gmc_failure_count"],
         })
+        if document.get("render"):
+            # The stage reads the preview's geometry and clock out of the result contract as
+            # well as the document, so a reused raw artifact can be checked without parsing it.
+            payload["render"] = document["render"]
         log(f"tracked {len(document['person_ids'])} person id(s) over "
             f"{document['frames_measured']} frame(s) on {document['device']} "
             f"({len(rows)} detection row(s), {document['elapsed_seconds']}s)")
+        if document.get("render"):
+            render = document["render"]
+            log(f"rendered preview: {render['frames_written']} frame(s) at "
+                f"{render['width']}x{render['height']} / {render['fps']} fps "
+                f"({render['fps_source']}), audio "
+                f"{'muxed' if render['has_audio'] else 'absent'}")
         if document["gmc_failure_count"]:
             log(f"WARNING: {document['gmc_failure_count']} frame(s) lost camera-motion "
                 f"compensation; ids may be fragmented by the harness, not the scene")

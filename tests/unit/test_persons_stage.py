@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from multimodal_pipeline.exceptions import ValidationError
+from multimodal_pipeline.exceptions import StageError, ValidationError
 from multimodal_pipeline.schemas import read_table
 from multimodal_pipeline.stages.base import stamp_raw
 from multimodal_pipeline.stages.persons import PersonsStage, person_track_rows
@@ -914,3 +916,268 @@ class TestPrepare:
             stage.prepare(context)
         assert type(raised.value).__name__ == "StageError"
         assert "frame_index" in str(raised.value)
+
+
+# --------------------------------------------------- rendered track preview (stage)
+
+
+def render_block(**overrides: Any) -> dict[str, Any]:
+    """The worker's render block for the fixture document: 4 measured frames."""
+    block = {"fps": 25.0, "fps_source": "frame_index", "frames_written": 4,
+             "width": 64, "height": 48, "has_audio": False}
+    block.update(overrides)
+    return block
+
+
+def fake_ffprobe(tmp_path, *, nb_frames: int = 4, audio: bool = False,
+                 name: str = "ffprobe") -> str:
+    """An ffprobe that reports the frame count a container would carry.
+
+    The stage's frame-count check has to be exercised with a *mismatched* count, and the only
+    deterministic way to make one is to answer ffprobe differently — truncating a real render
+    depends on where the truncation lands in the moov atom.
+    """
+    answer = tmp_path / f"{name}-answer.json"
+    streams = [{"codec_type": "video", "nb_frames": str(nb_frames)}]
+    if audio:
+        streams.append({"codec_type": "audio"})
+    answer.write_text(json.dumps({"streams": streams}), encoding="utf-8")
+    script = tmp_path / name
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
+        f"sys.stdout.write(Path({json.dumps(str(answer))}).read_text())\n",
+        encoding="utf-8")
+    script.chmod(0o755)
+    return str(script)
+
+
+class RenderedStage(PersonsStage):
+    """The stage with the worker replaced at the seam the pipeline uses to start it.
+
+    ``run_model`` is the pipeline's own subprocess boundary (``uv run --project ... worker.py``),
+    so faking it leaves the staging, stamping, normalisation and publication code under test
+    identical to the code a GPU run uses. It honours the worker's contract: the argv it was
+    given, a raw document, the worker result JSON beside it, and — when ``--output-video`` was
+    passed — a video at the staged path. On render failure it writes nothing at all, which is
+    what the real worker does when ffmpeg exits non-zero.
+    """
+
+    def __init__(self, *, render_ok: bool = True) -> None:
+        self.render_ok = render_ok
+        self.argvs: list[list[str]] = []
+
+    def run_model(self, ctx, request, raw_path, digest) -> None:
+        from multimodal_pipeline.uv_worker import worker_result_path
+
+        argv = self.worker_argv(ctx, raw_path, digest)
+        self.argvs.append(argv)
+        destination = (Path(argv[argv.index("--output-video") + 1])
+                       if "--output-video" in argv else None)
+        if destination is not None and not self.render_ok:
+            raise StageError("persons worker failed: ffmpeg exited 1 writing the person "
+                             "track preview")
+        document = make_document()
+        if destination is not None:
+            document["render"] = render_block()
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(json.dumps(document), encoding="utf-8")
+        worker_result_path(raw_path.parent,
+                           "persons_worker_result.json").write_text(
+            json.dumps({"status": "ok"}), encoding="utf-8")
+        stamp_raw(raw_path, request=request, digest=digest, worker=None)
+        if destination is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"pretend preview bytes")
+
+
+def rendering(context, tmp_path, **probe: Any):
+    """Switch the render on, point ffprobe at the stub, and supply the two inputs."""
+    context.config.persons.write_video = True
+    context.config.ffmpeg.ffprobe = fake_ffprobe(tmp_path, **probe)
+    context.artifact("frame_index").write_bytes(b"frame index fixture")
+    write_metadata(context)
+    return context
+
+
+def published_paths(context) -> list[Path]:
+    """Every file the persons stage puts on disk when it renders."""
+    raw = context.artifact("persons_raw")
+    return [raw, raw.with_name(raw.name + ".provenance.json"),
+            raw.parent / "persons_worker_result.json",
+            context.artifact("person_frames"), context.artifact("person_tracks"),
+            context.artifact("person_track_video")]
+
+
+class TestRenderFlagsArePipelineOwned:
+    def test_the_worker_sees_no_render_flags_when_the_toggle_is_off(self, context):
+        context.artifact("frame_index").write_bytes(b"frame index fixture")
+        argv = PersonsStage().worker_argv(context, context.artifact("persons_raw"), "digest")
+        for flag in ("--output-video", "--ffmpeg", "--ffprobe"):
+            assert flag not in argv, f"{flag} was passed although nothing was asked to render"
+
+    def test_the_worker_gets_the_destination_and_the_configured_tools(self, context, tmp_path):
+        rendering(context, tmp_path)
+        argv = PersonsStage().worker_argv(context, context.artifact("persons_raw"), "digest")
+        assert argv[argv.index("--output-video") + 1] == str(
+            context.artifact("person_track_video"))
+        assert argv[argv.index("--ffmpeg") + 1] == context.config.ffmpeg.executable
+        assert argv[argv.index("--ffprobe") + 1] == context.config.ffmpeg.ffprobe
+
+    @pytest.mark.parametrize("flag", ["--output-video", "--ffmpeg", "--ffprobe"])
+    @pytest.mark.parametrize("write_video", [True, False])
+    def test_extra_args_cannot_override_the_pipeline_owned_flags(self, context, flag,
+                                                                write_video):
+        """One flag, two directions of damage.
+
+        An ``--output-video`` from ``extra_args`` points the render at a file the stage will
+        never publish, so the preview is silently lost; an ``--ffmpeg`` makes the stage validate
+        a file some other binary wrote. Both hold whatever the toggle says, so the refusal
+        cannot be disabled by the config that is being overridden.
+        """
+        context.config.persons.write_video = write_video
+        context.config.persons.extra_args = [flag, "/tmp/not-yours.mp4"]
+        context.artifact("frame_index").write_bytes(b"frame index fixture")
+        # The frame index exists so the run reaches the refusal instead of stopping at a
+        # missing input, and the pattern keeps the dot in `persons.extra_args`: pytest's
+        # temporary directory is named after this test, so a looser pattern is satisfied by an
+        # unrelated message that quotes the path. Measured -- the first draft passed that way.
+        with pytest.raises(StageError, match=rf"persons\.extra_args.*{re.escape(flag)}"):
+            PersonsStage().execute(context)
+
+    def test_the_refusal_arrives_before_any_worker_could_start(self, context):
+        context.config.persons.write_video = True
+        context.config.persons.extra_args = ["--ffprobe", "/bin/false"]
+        with pytest.raises(StageError, match="persons.extra_args"):
+            PersonsStage().prepare(context)
+
+
+class TestRenderedExecution:
+    def test_flipping_the_toggle_invalidates_a_preserved_raw_run_either_way(self, context,
+                                                                           stage):
+        """The video can only be made during the tracking pass, so the toggle is a request.
+
+        And turning it *off* invalidates too: a raw document carrying a render block is not what
+        a no-render configuration produced, and the reuse test compares requests.
+        """
+        from multimodal_pipeline.stages.base import raw_request_matches
+
+        rendering(context, context.config.project_root)
+        seed_raw(context, stage, make_document())
+        raw = context.artifact("persons_raw")
+        assert raw_request_matches(raw, stage.request_digest(context)) is True
+        context.config.persons.write_video = False
+        assert raw_request_matches(raw, stage.request_digest(context)) is False
+        context.config.persons.write_video = True
+        assert raw_request_matches(raw, stage.request_digest(context)) is True
+
+    def test_a_rendered_run_publishes_the_video_and_everything_it_already_wrote(self, context,
+                                                                              tmp_path):
+        rendering(context, tmp_path)
+        detail = RenderedStage().execute(context)
+        assert detail["extra"]["track_video"] == "persons/tracks.mp4"
+        for path in published_paths(context):
+            assert path.is_file() and path.stat().st_size > 0, path
+        assert not list(context.paths.dataset_dir.rglob(".person-tracks-*")), \
+            "a staged tree survived the run"
+        assert PersonsStage().validate(context)["track_video"] == "persons/tracks.mp4"
+        assert PersonsStage().outputs_present(context) is True
+
+    def test_the_render_never_targets_the_canonical_path(self, context, tmp_path):
+        """The path the worker is handed has to be inside the staged tree.
+
+        The preservation argument rests on this: ffmpeg truncates its destination before it has
+        produced anything, so a worker writing straight to ``persons/tracks.mp4`` destroys the
+        previous render even when its own run then fails.
+        """
+        rendering(context, tmp_path)
+        stage = RenderedStage()
+        stage.execute(context)
+        assert len(stage.argvs) == 1
+        destination = Path(stage.argvs[0][stage.argvs[0].index("--output-video") + 1])
+        assert destination.name == "tracks.mp4"
+        assert destination.parent != context.artifact("person_track_video").parent
+
+    def test_a_failed_render_leaves_the_previous_outputs_byte_identical(self, context, tmp_path):
+        rendering(context, tmp_path)
+        RenderedStage().execute(context)
+        before = {path: path.read_bytes() for path in published_paths(context)}
+        assert before[context.artifact("person_track_video")] == b"pretend preview bytes"
+
+        with pytest.raises(StageError, match="ffmpeg exited 1"):
+            RenderedStage(render_ok=False).execute(context)
+        assert {path: path.read_bytes() for path in published_paths(context)} == before
+
+    def test_a_run_with_the_toggle_off_writes_no_video_and_keeps_the_old_one(self, context,
+                                                                           tmp_path):
+        """Disabling the feature deletes nothing the operator already had."""
+        video = context.artifact("person_track_video")
+        video.parent.mkdir(parents=True, exist_ok=True)
+        video.write_bytes(b"from an earlier render")
+        seed_raw(context, PersonsStage(), make_document())
+        write_metadata(context)
+        context.artifact("frame_index").write_bytes(b"frame index fixture")
+        PersonsStage().normalize(context)
+        assert video.read_bytes() == b"from an earlier render"
+        assert PersonsStage().request(context)["write_video"] is False
+
+
+class TestRenderedValidation:
+    def test_validate_requires_the_preview_frame_count_to_match_exactly(self, context, tmp_path):
+        """No three-frame tolerance, because this encoder is ours.
+
+        The skeleton preview allows three trailing frames because upstream's renderer is a black
+        box that measurably loses them. Here a short preview means the pipe and the tables
+        disagree about which frame is which, and every overlay after the gap sits on the wrong
+        picture while the file still plays.
+        """
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        context.config.ffmpeg.ffprobe = fake_ffprobe(tmp_path, nb_frames=3, name="short-probe")
+        with pytest.raises(ValidationError, match="has 3 frame.*expected 4"):
+            PersonsStage().validate(context)
+
+    def test_a_raw_document_without_a_render_block_is_reported_when_the_toggle_is_on(self,
+                                                                                   context,
+                                                                                   tmp_path):
+        """The video and the document have to tell the same story.
+
+        A raw document with no ``render`` block came from a run that encoded nothing, so a video
+        beside it came from somewhere else. Passing that silently would make the preview
+        evidence for a tracking run that never produced one.
+        """
+        rendering(context, tmp_path)
+        stage = PersonsStage()
+        seed_raw(context, stage, make_document())
+        stage.normalize(context)
+        context.artifact("person_track_video").write_bytes(b"video from elsewhere")
+        with pytest.raises(ValidationError, match="render block"):
+            stage.validate(context)
+
+    def test_an_old_raw_document_still_validates_when_the_toggle_is_off(self, seeded, stage):
+        """No ``render`` key is the normal state of every dataset on disk today.
+
+        The default configuration must keep reusing those, or shipping this feature costs a GPU
+        pass per video for a field that is only meaningful to the runs that asked for it.
+        """
+        stage.normalize(seeded)
+        assert "render" not in json.loads(seeded.artifact("persons_raw").read_text())
+        assert stage.validate(seeded)["persons"] == 2
+
+
+class TestRenderedReuse:
+    def test_outputs_present_requires_the_video_only_when_rendering_is_on(self, context, stage):
+        seed_raw(context, stage, make_document())
+        write_metadata(context)
+        stage.normalize(context)
+        video = context.artifact("person_track_video")
+
+        assert stage.outputs_present(context) is True, "off: the stage must not demand a video"
+        video.write_bytes(b"frames")
+        context.config.persons.write_video = True
+        assert stage.outputs_present(context) is True
+        video.write_bytes(b"")
+        assert stage.outputs_present(context) is False, "an empty preview was reusable"
+        video.unlink()
+        assert stage.outputs_present(context) is False, "a deleted preview was reusable"
+        context.config.persons.write_video = False
+        assert stage.outputs_present(context) is True, "off: a missing video must not force a run"

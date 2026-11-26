@@ -109,6 +109,11 @@ FILE_BLURBS: dict[str, str] = {
     "persons_raw": "the detector's native per-frame document, untouched",
     "person_frames": "body boxes per frame with `person_id`",
     "person_tracks": "per-body-track summaries and sighting gaps",
+    "person_track_video": "the same boxes and ids drawn on the frames "
+                          "(`persons.write_video=true`): a CFR preview, so "
+                          "`source/frame_index.parquet` stays the authority on timing, and "
+                          "each `id=` is a ByteTracker track id inside this video, not one "
+                          "person's identity",
     "stories": "narrative windows proposed by a language model, with the transcript "
                "evidence each one cites — a proposal to read, not a labelling",
     "stories_raw": "preserved per-window responses and the request-keyed cache",

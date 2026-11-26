@@ -576,3 +576,19 @@ class TestRunnerWritesGuides:
         assert (scratch / guides.EXPLANATION_FILENAME).is_file()
         assert not (scratch.parent / guides.EXPLANATION_FILENAME).exists()
         assert not (runner.config.output.directory / guides.EXPLANATION_FILENAME).exists()
+
+
+class TestInventoryBlurbs:
+    def test_every_registered_artifact_is_explained_in_its_own_guide(self) -> None:
+        """A slot with no blurb still appears — as "registered artifact; see `manifest.json`".
+
+        That fallback is what an analyst reads instead of an explanation, so adding an artifact
+        to the registry silently costs the guides their usefulness. Driving the check from the
+        live registry rather than a copy here makes it die on the day the slot is added, which
+        is exactly when nobody has written the sentence yet.
+        """
+        undescribed = sorted(name for name in ARTIFACT_LAYOUT
+                             if name not in guides.FILE_BLURBS)
+        assert not undescribed, (
+            f"{len(undescribed)} registered artifact(s) appear in the guides without a "
+            f"blurb: {', '.join(undescribed)}")
