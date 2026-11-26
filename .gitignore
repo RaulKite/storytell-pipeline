@@ -63,3 +63,6 @@ data/processed/
 # would make every clone ask for project trust.
 .pi/*
 !.pi/modes.config.json
+
+# Local scratch and downloaded archives (e.g. corpus zips) never belong in Git
+/tmp/
