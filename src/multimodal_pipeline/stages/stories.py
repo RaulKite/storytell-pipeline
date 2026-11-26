@@ -55,6 +55,7 @@ import random
 import re
 import string
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -129,7 +130,10 @@ _SEGMENT_ID_RE = re.compile(r"(?i)^seg\d+$")
 
 #: How many (token, word) cells one alignment may fill. The grid is bounded so a segment
 #: whose transcript and alignment have nothing in common cannot spend unbounded time on a
-#: correspondence that does not exist; above it, equal keys are placed positionally.
+#: correspondence that does not exist; above it the interior stays unaligned, so an edge
+#: word with no exact correspondence falls back to its segment's own boundary. Placing the
+#: equal keys positionally was the other option and it is a claim, not a fallback: it says
+#: token *i* is word *i* without having compared the neighbourhoods that decide it.
 _ALIGNMENT_CELL_LIMIT = 400_000
 
 PROMPTS: dict[str, str] = {
@@ -305,14 +309,38 @@ class StoriesTransportError(RuntimeError):
     """Transient endpoint problem worth retrying."""
 
 
+class _RepairRejectedError(RuntimeError):
+    """The endpoint refused the *repair* body, not the question (400/413).
+
+    Its own type because it is neither: a transport error would resend the same oversized
+    repair forever, and a ``StageError`` ends the sequence on the first refusal — which is
+    how a context-limit error on a follow-up ended it for a request that had an answer.
+    """
+
+
 #: What a credential is replaced with in retained text and log messages.
 REDACTED = "[redacted]"
 
-#: Header shapes a gateway can echo back when it rejects a request. Both are redacted
+#: Shapes a gateway can echo back when it rejects a request. All three are redacted
 #: because a provider that quotes the request in an error message can quote the
-#: credential along with it.
+#: credential along with it: a header line, a ``key: value`` field, and the JSON-quoted
+#: form a serialised request or error object carries (``"api_key": "sk-..."``).
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s\"',;]+")
 _AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^\s\"',;]+")
+_JSON_CREDENTIAL_RE = re.compile(
+    r"(?i)\"(authorization|api[_-]?key|x-api-key|access[_-]?token|secret|token)\""
+    r"\s*:\s*\"[^\"]*\""
+)
+
+#: Bounds on a repair message. It is a *second* request carrying the rejected answer and
+#: the validator's problems, so an answer of 100 kB or a validator that reports a thousand
+#: issues turned the retry into a request the endpoint refuses for length — a
+#: context-limit error ended the sequence, and the resampling that would have converged
+#: never ran. The answer is omitted once it passes the configured character budget
+#: (``stories.repair_max_answer_chars``), and the problem list is always bounded here.
+_REPAIR_MAX_PROBLEMS = 30
+_REPAIR_MAX_PROBLEM_CHARS = 4_000
+DEFAULT_REPAIR_MAX_ANSWER_CHARS = 20_000
 
 
 # --------------------------------------------------------------- quotes and word times
@@ -361,26 +389,39 @@ def _normalise_quote(quote: str) -> str:
     return normalised.strip(_EDGE_CHARACTERS)
 
 
-def _token_cores(text: str) -> list[tuple[int, int]]:
-    """Each word token of ``text`` as its punctuation-stripped **core** range.
+def _token_ranges(text: str) -> list[tuple[int, int, int]]:
+    """Each word token of ``text`` as ``(core_start, core_end, token_end)``.
 
-    A token's core is what remains after leading and trailing punctuation is removed, and
-    it includes the non-ASCII marks Spanish and quoted speech bring (``¿¡«»“”``). The core
-    is what a quote has to cover: quoting ``not that one`` out of ``'not that one!'`` is
-    quoting that token, while quoting ``can`` out of ``can't`` is not — the apostrophe is
-    inside the token, so ``can`` does not end at the token's end. A token made only of
+    Three positions rather than two, because the two ways an alignment row names its
+    characters are different and both are legitimate: the *core* is the punctuation-stripped
+    token (what a quote has to cover), and ``token_end`` is where the raw token ends,
+    punctuation included. An aligner that ran on the original text often reports ``go,``'s
+    span as the whole ``go,``; one that stripped the punctuation reports the core. Both name
+    the same token, so both are honoured and neither is guessed at. A token made only of
     punctuation has no core and cannot be a quote edge.
     """
-    cores: list[tuple[int, int]] = []
+    ranges: list[tuple[int, int, int]] = []
     for match in _TOKEN_RE.finditer(text):
-        start, end = match.start(), match.end()
+        token_start, token_end = match.start(), match.end()
+        start, end = token_start, token_end
         while start < end and text[start] in _EDGE_CHARACTERS:
             start += 1
         while end > start and text[end - 1] in _EDGE_CHARACTERS:
             end -= 1
         if end > start:
-            cores.append((start, end))
-    return cores
+            ranges.append((start, end, token_end))
+    return ranges
+
+
+def _token_cores(text: str) -> list[tuple[int, int]]:
+    """Each word token of ``text`` as its punctuation-stripped **core** range.
+
+    The core is what a quote has to cover: quoting ``not that one`` out of
+    ``'not that one!'`` is quoting that token, while quoting ``can`` out of ``can't`` is
+    not — the apostrophe is inside the token, so ``can`` does not end at the token's end.
+    The ranges themselves come from :func:`_token_ranges`, so the core is defined once.
+    """
+    return [(start, end) for start, end, _token_end in _token_ranges(text)]
 
 
 def quote_occurrences(quote: str, text: str) -> list[tuple[int, int]]:
@@ -461,7 +502,7 @@ def _alignment_moves(token_keys: Sequence[str], word_keys: Sequence[str], *,
     once per unmatched token and word, so a segment of a few thousand tokens raised
     ``RecursionError`` instead of aligning. The common head and tail — where both sides are
     equal word for word — are matched first, which is what keeps the grid small on the
-    normal case; a segment whose remaining grid would be enormous is placed positionally
+    normal case; a segment whose remaining grid would be enormous stays unaligned
     (:data:`_ALIGNMENT_CELL_LIMIT`) rather than spending unbounded time on a correspondence
     nothing can find.
     """
@@ -491,12 +532,12 @@ def _core_alignment_moves(tokens: Sequence[str], words: Sequence[str], token_off
     if not count_tokens or not count_words:
         return []
     if count_tokens * count_words > _ALIGNMENT_CELL_LIMIT:
-        # No correspondence worth finding inside this budget: keep the words that sit at the
-        # same position and leave the rest without a time, which is what "no exact
-        # alignment" already means.
-        return [(token_offset + index, 1, word_offset + index, 1)
-                for index in range(min(count_tokens, count_words))
-                if tokens[index] and tokens[index] == words[index]]
+        # No correspondence worth finding inside this budget. Nothing is placed here, not
+        # even the keys that happen to be equal at the same index: position is exactly what
+        # the grid was needed to check, and a positional guess would hand the edge word a
+        # time it has not earned. "No exact alignment" is already a supported answer, so
+        # the boundary falls back to its segment and says ``segment``.
+        return []
     skip_token, skip_word, one_to_one = 0, 1, 2
     words_to_token = 3
     tokens_to_word = 3 + _MAX_SPLIT_OR_MERGE
@@ -566,17 +607,19 @@ def _core_alignment_moves(tokens: Sequence[str], words: Sequence[str], token_off
 
 
 def _offset_groups(text: str, words: Sequence[Mapping[str, Any]], keys: Sequence[str],
-                   cores_by_start: Mapping[int, int],
-                   cores_by_end: Mapping[int, int]) -> list[tuple[int, list[int]]]:
+                   tokens_by_core_start: Mapping[int, tuple[int, int, int]]) \
+        -> list[tuple[int, list[int]]]:
     """Word→token anchors read from the alignment's own character offsets.
 
     ``character_start``/``character_end`` are NULL in every corpus measured so far, which
     is why placement did not depend on them. A present-but-wrong offset must not move a
     boundary (all-zeros offsets are a real defect, not a hypothesis), so an offset is
     honoured only when the slice it names is *exactly this word* after the permitted
-    normalisation **and** exactly one token. When that holds it says something the token
-    aligner cannot: two identical words are placed by their own offsets instead of by
-    order.
+    normalisation **and** names exactly one token — either the token's punctuation-stripped
+    core or the whole token including its edge punctuation, because an aligner may report
+    either (``go,`` at ``[3, 6)`` and ``go`` at ``[3, 5)`` are the same word). When that
+    holds it says something the token aligner cannot: two identical words are placed by
+    their own offsets instead of by order.
 
     The result is a chain of ``(token_index, [word positions])`` groups in increasing
     order; several words may anchor to one token (a contraction the aligner split), and a
@@ -591,8 +634,11 @@ def _offset_groups(text: str, words: Sequence[Mapping[str, Any]], keys: Sequence
             continue
         if not 0 <= start < end <= len(text) or _squash(text[start:end]) != key:
             continue
-        token_index = cores_by_start.get(start)
-        if token_index is None or cores_by_end.get(end) != token_index:
+        anchor = tokens_by_core_start.get(start)
+        if anchor is None:
+            continue
+        token_index, core_end, token_end = anchor
+        if end not in (core_end, token_end):
             continue
         if groups and groups[-1][0] == token_index:
             if position > groups[-1][1][-1]:
@@ -625,6 +671,7 @@ def align_token_times(text: str,
     claim neither, because the word's boundary is not their boundary.
     """
     cores = _token_cores(text)
+    ranges = _token_ranges(text)
     entries: list[dict[str, Any]] = [
         {"char_start": start, "char_end": end, "start_time": None, "end_time": None,
          "word_indexes": []}
@@ -636,8 +683,9 @@ def align_token_times(text: str,
     kept = [index for index, key in enumerate(word_keys) if key]
     kept_keys = [word_keys[index] for index in kept]
     groups = _offset_groups(text, [word_list[index] for index in kept], kept_keys,
-                            {start: index for index, (start, _end) in enumerate(cores)},
-                            {end: index for index, (_start, end) in enumerate(cores)})
+                            {core_start: (index, core_end, token_end)
+                             for index, (core_start, core_end, token_end)
+                             in enumerate(ranges)})
     # (token index, token count, word positions) in "kept" space; the end sentinel aligns
     # whatever is left after the last anchor.
     plan: list[tuple[int, int, list[int]]] = []
@@ -901,7 +949,8 @@ class StoriesRequest:
 
     def followup_body(self, previous: str | None, problems: Sequence[str], *,
                       model_fallback: str = "",
-                      extra_body_fallback: Mapping[str, Any] | None = None
+                      extra_body_fallback: Mapping[str, Any] | None = None,
+                      max_answer_chars: int = DEFAULT_REPAIR_MAX_ANSWER_CHARS
                       ) -> dict[str, Any]:
         """A retry of the same question: the rejected answer, then what was wrong with it.
 
@@ -909,11 +958,16 @@ class StoriesRequest:
         answer is filed as the answer to the request that was asked, not to a conversation
         that happened to converge. Resampling the identical prompt and hoping for a
         different answer is not a plan; telling the model which checks it failed is.
+
+        A rejected answer longer than ``max_answer_chars`` is **omitted**: resending it is
+        what pushed the repair over the endpoint's context limit, and a retry that is
+        refused for length is a sequence ended by its own first attempt. The problems alone
+        still name every failed check, so the question plus the problems is the repair.
         """
         body = self.body(model_fallback=model_fallback,
                          extra_body_fallback=extra_body_fallback)
         messages = list(body.get("messages") or [])
-        if previous:
+        if previous and len(previous) <= max_answer_chars:
             messages.append({"role": "assistant", "content": previous})
         messages.append({"role": "user", "content": feedback_message(problems)})
         body["messages"] = messages
@@ -926,15 +980,29 @@ def feedback_message(problems: Sequence[str]) -> str:
     It names the checks that failed, in the validator's own words, and asks for the whole
     object again: a model that returns only the repaired fragment leaves the rest of the
     answer missing, which is a different defect wearing the same shape.
+
+    The list is bounded (:data:`_REPAIR_MAX_PROBLEMS` items,
+    :data:`_REPAIR_MAX_PROBLEM_CHARS` characters) because this text is sent back as a
+    request: a validator that reports a thousand problems used to build a follow-up the
+    endpoint refused for length. The first thirty are the ones the model can act on, and
+    the count says how many were left out rather than pretending the list was complete.
     """
-    lines = [f"- {problem}" for problem in problems if str(problem).strip()]
+    problems = [str(problem) for problem in problems if str(problem).strip()]
+    lines = [f"- {problem}" for problem in problems[:_REPAIR_MAX_PROBLEMS]]
     if not lines:
         lines = ["- the previous answer could not be read as the required JSON object"]
+    elif len(problems) > _REPAIR_MAX_PROBLEMS:
+        lines.append(f"- ({len(problems) - _REPAIR_MAX_PROBLEMS} further problem(s) omitted "
+                     f"for length; fix the ones above first)")
+    listed = "\n".join(lines)
+    if len(listed) > _REPAIR_MAX_PROBLEM_CHARS:
+        listed = (listed[:_REPAIR_MAX_PROBLEM_CHARS].rstrip()
+                  + "\n- (further problem text omitted for length)")
     return ("Your previous answer was rejected by the pipeline's validation. Fix every "
             "problem listed below and return the corrected answer as one complete JSON "
             "object with the same contract as before: include every storytelling event, "
             "story and uncertain span you still claim, not only the parts you changed. "
-            "Return only the JSON object.\n\nProblems:\n" + "\n".join(lines))
+            "Return only the JSON object.\n\nProblems:\n" + listed)
 
 
 def _problems_from(error: Exception) -> list[str]:
@@ -1774,6 +1842,53 @@ def _uncertain_row(span: Mapping[str, Any], request: StoriesRequest) -> dict[str
     }
 
 
+def _cell(value: Any) -> Any:
+    """A column value as something a multiset can hold (and two equal values share)."""
+    try:
+        hash(value)
+    except TypeError:  # pragma: no cover - every stories column is a scalar
+        return repr(value)
+    return value
+
+
+def _row_disagreements(table: str, raw_name: str, index: int,
+                       expected: Sequence[Mapping[str, Any]],
+                       on_disk: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Field-by-field disagreement between one window's rows and the rows it yields.
+
+    Every column is compared as a **multiset**, not only the id columns and not only the
+    count: an answer whose quote now occurs twice resolves to a different time under the
+    same id, and comparing position by position would also report a harmless reordering as
+    a defect. The row *set* is the claim; each value in it is part of the claim.
+
+    A count difference is reported on its own, because it is the one disagreement a column
+    multiset can hide: a duplicated row with identical values, or a row whose every column
+    still appears elsewhere in the table.
+    """
+    problems: list[str] = []
+    if len(expected) != len(on_disk):
+        problems.append(f"stories/{table}.parquet and stories/raw/{raw_name} disagree about "
+                        f"window {index}: the table has {len(on_disk)} row(s) for this "
+                        f"request, the response yields {len(expected)}")
+    columns = list(dict.fromkeys([column for row in list(expected) + list(on_disk)
+                                 for column in row]))
+    for column in columns:
+        on_disk_values = Counter(_cell(row.get(column)) for row in on_disk)
+        fresh_values = Counter(_cell(row.get(column)) for row in expected)
+        if on_disk_values == fresh_values:
+            continue
+        missing = list((fresh_values - on_disk_values).elements())
+        extra = list((on_disk_values - fresh_values).elements())
+        problems.append(f"stories/{table}.parquet and stories/raw/{raw_name} disagree about "
+                        f"window {index} in column {column}: the table has "
+                        f"{extra[:3]}, the response yields {missing[:3]}")
+        if len(problems) >= 4:
+            problems.append(f"stories/{table}.parquet disagrees with stories/raw/{raw_name} "
+                            f"in further columns; the first ones are listed above")
+            break
+    return problems
+
+
 @dataclass
 class StoriesVerdict:
     """One window's answer: the raw text, the parsed payload, and the rows it produced."""
@@ -1817,6 +1932,7 @@ class StoriesClient:
     def __init__(self, *, base_url: str, api_key: str, model: str, temperature: float = 0.0,
                  timeout_seconds: float = 120.0, max_retries: int = 3,
                  backoff_base_seconds: float = 1.0, extra_body: dict[str, Any] | None = None,
+                 repair_max_answer_chars: int = DEFAULT_REPAIR_MAX_ANSWER_CHARS,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -1826,8 +1942,13 @@ class StoriesClient:
         self.max_retries = max_retries
         self.backoff_base = backoff_base_seconds
         self.extra_body = extra_body or {}
+        self.repair_max_answer_chars = repair_max_answer_chars
         self._sleep = sleep
         self.request_count = 0
+        #: How many repairs the endpoint refused as too large (400/413) and were resent as
+        #: the plain question instead. Counted, so a batch that leaned on the fallback says
+        #: so in ``stories_summary.json`` rather than looking like a clean first pass.
+        self.repair_fallbacks = 0
         self.timings_ms: list[float] = []
         self.usage: dict[str, int] = {}
 
@@ -1837,15 +1958,18 @@ class StoriesClient:
         last_error: Exception | None = None
         # The body of the next attempt. A rejected *answer* earns a repair: the same prompt,
         # the rejected answer as an assistant message and the validator's problems as the
-        # follow-up question. A rejected *transport* keeps the body it already has.
+        # follow-up question. A rejected *transport* keeps the body it already has, and a
+        # repair the endpoint refuses as too large (400/413) is replaced by the plain
+        # question: the sequence continues instead of ending on its own follow-up.
         body = request.body(model_fallback=self.model,
                             extra_body_fallback=self.extra_body)
+        repair = False
         for attempt in range(self.max_retries + 1):
             started = time.time()
             raw_text: str | None = None
             feedback: list[str] | None = None
             try:
-                payload = self._post(body)
+                payload = self._post(body, repair=repair)
                 self.timings_ms.append(round((time.time() - started) * 1000, 1))
                 self._record_usage(payload)
                 try:
@@ -1860,6 +1984,15 @@ class StoriesClient:
                 return StoriesVerdict(content=raw_text, payload=parsed, answer=answer)
             except StoriesTransportError as exc:
                 last_error = exc
+            except _RepairRejectedError as exc:
+                # The endpoint judged the *repair* too large, not the question. Resending
+                # the same repair would be refused again, so the next attempt is the plain
+                # original body — and the refusal is counted in the run summary.
+                last_error = exc
+                self.repair_fallbacks += 1
+                body = request.body(model_fallback=self.model,
+                                    extra_body_fallback=self.extra_body)
+                repair = False
             except (ValidationError, ValueError) as exc:
                 # A malformed answer is the model's mistake, not the network's, but
                 # resampling usually fixes it — up to a point. Every rejected answer is
@@ -1871,9 +2004,11 @@ class StoriesClient:
                 feedback = _problems_from(exc)
             if attempt < self.max_retries:
                 if feedback is not None:
-                    body = request.followup_body(raw_text, feedback,
-                                                 model_fallback=self.model,
-                                                 extra_body_fallback=self.extra_body)
+                    body = request.followup_body(
+                        raw_text, feedback, model_fallback=self.model,
+                        extra_body_fallback=self.extra_body,
+                        max_answer_chars=self.repair_max_answer_chars)
+                    repair = True
                 delay = self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base)
                 self._sleep(delay)
         raise StageError(
@@ -1936,10 +2071,12 @@ class StoriesClient:
                 counter += 1
                 candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
 
-    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, body: dict[str, Any], *, repair: bool = False) -> dict[str, Any]:
         # The caller builds the body (the first attempt from the request, a retry from the
         # request plus the rejected answer and the problems): the cache key hashes the
         # request's own body, so a repair can never be mistaken for another question.
+        # ``repair`` only decides how a 400/413 is reported: the same status on the original
+        # question is final, on a follow-up it means "this follow-up was too large".
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -1954,25 +2091,41 @@ class StoriesClient:
             # header, which is why the key is not reachable from this message.
             raise StoriesTransportError(f"transport error: {exc}") from exc
         if response.status_code == 429 or response.status_code >= 500:
-            raise StoriesTransportError(f"HTTP {response.status_code}: {response.text[:300]}")
+            raise StoriesTransportError(
+                f"HTTP {response.status_code}: {self.redact(response.text[:300])}")
         if response.status_code >= 400:
+            excerpt = self.redact(response.text[:400])
+            if repair and response.status_code in (400, 413):
+                raise _RepairRejectedError(
+                    f"HTTP {response.status_code} on the repair: {excerpt}")
+            # Redacted before it is raised: this text is the stage's failure message and
+            # goes to the log and the run report, and a gateway that echoes the request
+            # (or the header) echoes the credential with it.
             raise StageError(f"stories endpoint rejected the request "
-                             f"(HTTP {response.status_code}): {response.text[:400]}")
+                             f"(HTTP {response.status_code}): {excerpt}")
         try:
             return response.json()
         except ValueError as exc:
-            raise StoriesTransportError(f"non-JSON response body: {response.text[:200]}") from exc
+            raise StoriesTransportError(
+                f"non-JSON response body: {self.redact(response.text[:200])}") from exc
 
     def redact(self, text: str) -> str:
-        """The same text with the configured credential taken out of it.
+        """The same text with credentials taken out of it.
 
-        Applied to every retained attempt and to the failure message, because both are
-        written to disk and to the stage log: a provider that echoes the request (or the
-        header it received) must not turn a rejected answer into a leaked API key.
+        Applied to every retained attempt, to every endpoint excerpt and to the failure
+        message, because all of them are written to disk and to the stage log: a provider
+        that echoes the request (or the header it received) must not turn a rejected answer
+        into a leaked API key. The configured key is removed literally, and three shapes a
+        gateway can echo are removed by pattern — a ``Bearer`` token, an
+        ``authorization:``/``api_key:`` field, and the JSON-quoted form a serialised request
+        carries (``"api_key": "sk-..."``), whose value may be a *different* credential
+        than ours: a gateway that quotes its own configuration leaks that one.
         """
         cleaned = str(text)
         if self.api_key:
             cleaned = cleaned.replace(self.api_key, REDACTED)
+        cleaned = _JSON_CREDENTIAL_RE.sub(
+            lambda match: f'"{match.group(1)}": "{REDACTED}"', cleaned)
         cleaned = _BEARER_RE.sub(f"Bearer {REDACTED}", cleaned)
         cleaned = _AUTHORIZATION_RE.sub(f"authorization: {REDACTED}", cleaned)
         return cleaned
@@ -2000,6 +2153,7 @@ class MockStoriesClient:
     def __init__(self, model: str = "mock") -> None:
         self.model = model
         self.request_count = 0
+        self.repair_fallbacks = 0
         self.timings_ms: list[float] = []
         self.usage: dict[str, int] = {}
 
@@ -2394,6 +2548,7 @@ class StoriesStage(Stage):
             for kind, count in _drop_counts(verdict.dropped).items():
                 drop_counts[kind] += count
 
+        repair_fallbacks = int(getattr(client, "repair_fallbacks", 0) or 0)
         metadata = {"video_id": ctx.video_id, "model": cfg.model,
                     "prompt_version": cfg.prompt_version, "windows": len(requests),
                     "speaker_source": used_source}
@@ -2430,6 +2585,10 @@ class StoriesStage(Stage):
             # that also has a response behind it.
             "raw_windows": raw_windows,
             "batches_reused": reused,
+            # How many repairs the endpoint refused as too large and were resent as the
+            # plain question. Counted so a batch that leaned on the fallback is visible
+            # instead of looking like a clean first pass.
+            "repair_fallbacks": repair_fallbacks,
             "requests_made": getattr(client, "request_count", 0),
             "request_timings_ms": getattr(client, "timings_ms", [])[-200:],
             "token_usage": getattr(client, "usage", {}),
@@ -2457,7 +2616,9 @@ class StoriesStage(Stage):
                 f"{empty_windows} empty, {drop_counts['events']} event(s) dropped outside "
                 f"a window (with {drop_counts['stories']} story/stories), "
                 f"{reused}/{len(requests)} reused; speaker_source "
-                f"{cfg.speaker_source} -> {used_source}")
+                f"{cfg.speaker_source} -> {used_source}"
+                + (f"; {repair_fallbacks} repair(s) refused for length and resent as the "
+                   f"plain question" if repair_fallbacks else ""))
         return {"tool_version": cfg.provider, "model_version": cfg.model,
                 "extra": {"events_total": len(events), "stories_total": len(stories),
                           "uncertain_spans_total": len(uncertain),
@@ -2468,6 +2629,7 @@ class StoriesStage(Stage):
                           "dropped_uncertain_spans_outside_window":
                               drop_counts["uncertain_spans"],
                           "batches_reused": reused,
+                          "repair_fallbacks": repair_fallbacks,
                           "speaker_source_requested": cfg.speaker_source,
                           "speaker_source_used": used_source}}
 
@@ -2479,7 +2641,8 @@ class StoriesStage(Stage):
                              temperature=cfg.temperature, timeout_seconds=cfg.timeout_seconds,
                              max_retries=cfg.max_retries,
                              backoff_base_seconds=cfg.backoff_base_seconds,
-                             extra_body=cfg.extra_body)
+                             extra_body=cfg.extra_body,
+                             repair_max_answer_chars=cfg.repair_max_answer_chars)
 
     @staticmethod
     def _ensure_raw(raw_dir: Path, request: StoriesRequest, verdict: StoriesVerdict) -> None:
@@ -2674,14 +2837,21 @@ class StoriesStage(Stage):
 
     def _raw_evidence_problems(self, ctx: StageContext, summary: Mapping[str, Any],
                                tables: Mapping[str, list[dict[str, Any]]]) -> list[str]:
-        """Every window the summary lists, re-read and re-validated from disk.
+        """Every window the summary lists, re-read, re-validated and re-rowed from disk.
 
         The tables are a conclusion; ``stories/raw`` holds the evidence for it. Checking
         only that a file exists accepts a truncated or hand-edited response, because nothing
         ever reads it: a corrupt raw file next to a plausible row passed ``validate()``. So
         each listed window is parsed and re-run through the same validator the run used,
-        against a request rebuilt from the current transcript, and the ids it yields must be
-        the rows the tables attribute to that window.
+        against a request rebuilt from the current transcript, and **the rows it yields are
+        rebuilt** (:func:`_event_row` and friends, the same builders the run used) and
+        compared to the table's rows for that ``request_key`` field by field.
+
+        Ids and counts were not enough. A raw response whose quote now occurs twice in its
+        segment yields a different resolved time under the same id, and a response swapped
+        between two windows keeps both ids' *shapes*: both passed an id-set comparison. Every
+        column is compared, and the comparison is scoped by ``request_key`` rather than by
+        ``window_index``, because the key is the provenance the row claims.
         """
         problems: list[str] = []
         raw_dir = ctx.artifact("stories_raw")
@@ -2738,24 +2908,20 @@ class StoriesStage(Stage):
                 problems.append(f"stories/raw/{name} no longer passes the stories validation "
                                 f"against the current transcript: {issues[:300]}")
                 continue
-            for table_name, rows, field in (("storytelling_events", events, "event_id"),
-                                            ("stories", stories, "story_id")):
-                on_disk = {str(row[field]) for row in rows
-                           if int(row["window_index"]) == index}
-                in_raw = {str(row[field]) for row in answer.events if field == "event_id"}
-                if field == "story_id":
-                    in_raw = {str(row[field]) for row in answer.stories}
-                if on_disk != in_raw:
-                    problems.append(
-                        f"stories/{table_name}.parquet and stories/raw/{name} disagree about "
-                        f"window {index}: the table has {sorted(on_disk)}, the response "
-                        f"yields {sorted(in_raw)}")
-            spans_on_disk = sum(1 for row in uncertain
-                                if int(row["window_index"]) == index)
-            if spans_on_disk != len(answer.uncertain_spans):
-                problems.append(f"stories/uncertain_spans.parquet has {spans_on_disk} row(s) "
-                                f"for window {index}, stories/raw/{name} yields "
-                                f"{len(answer.uncertain_spans)}")
+            # ``validate_response`` already returns the *rows* it would write, built by the
+            # same ``_event_row``/``_story_row``/``_uncertain_row`` the run uses, so this is
+            # the answer recomputed into a table and not a second, drifting notion of one.
+            rebuilt_rows = {
+                "storytelling_events": list(answer.events),
+                "stories": list(answer.stories),
+                "uncertain_spans": list(answer.uncertain_spans),
+            }
+            for table_name, rows in (("storytelling_events", events),
+                                     ("stories", stories),
+                                     ("uncertain_spans", uncertain)):
+                on_disk = [row for row in rows if str(row["request_key"]) == key]
+                problems.extend(_row_disagreements(table_name, name, index,
+                                                   rebuilt_rows[table_name], on_disk))
         for table_name, rows, field in (("storytelling_events", events, "event_id"),
                                         ("stories", stories, "story_id"),
                                         ("uncertain_spans", uncertain,

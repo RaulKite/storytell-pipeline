@@ -377,6 +377,16 @@ class StoriesConfig(_Model):
     never falls back to the other engine: swapping engines silently would relabel a
     transcript under a name the operator did not ask for.
 
+    ``repair_max_answer_chars`` bounds the retry a rejected answer earns. That retry is a
+    second request: the same prompt, the rejected answer as an assistant message and the
+    validator's problems, so a very long answer pushed it past the endpoint's context limit
+    and the sequence ended on a length error instead of resampling. Above this budget the
+    rejected answer is omitted and the problems alone are sent — the check that failed is
+    what the model needs, not the text it already wrote. The problem list is bounded
+    separately in code (30 items, 4000 characters), and a repair the endpoint still refuses
+    as too large (HTTP 400/413) is resent as the plain question and counted as
+    ``repair_fallbacks`` in ``stories_summary.json``.
+
     ``max_segments_per_request`` is ``None`` — the whole transcript in one request — by
     default, because a storytelling event and its coda can sit at opposite ends of a short
     conversation and splitting it manufactures the boundary problem. Set it to a number to
@@ -409,6 +419,10 @@ class StoriesConfig(_Model):
     speaker_source: str = "nemotron"
     speaker_min_coverage: float = 0.6
     speaker_max_competing: float = 0.25
+    #: Largest rejected answer resent inside a repair. Above it the answer is omitted and
+    #: the retry carries only the problems, because a repair that exceeds the endpoint's
+    #: context window ends the sequence instead of fixing it.
+    repair_max_answer_chars: int = 20000
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("provider")
@@ -439,6 +453,17 @@ class StoriesConfig(_Model):
             raise ValueError(
                 "stories.max_segments_per_request must be >= 1 or null: it is how many "
                 "segments travel in one window, and 0 would send no transcript at all"
+            )
+        return value
+
+    @field_validator("repair_max_answer_chars")
+    @classmethod
+    def _repair_budget(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                "stories.repair_max_answer_chars must be >= 1: it is a character budget for "
+                "the rejected answer resent inside a repair, and 0 would leave the repair "
+                "with no answer at all"
             )
         return value
 

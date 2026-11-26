@@ -55,6 +55,7 @@ from multimodal_pipeline.schemas import (
     read_table,
     write_table,
 )
+from multimodal_pipeline.stages import stories as stories_module
 from multimodal_pipeline.stages.base import STAGE_DEPENDENCIES, STAGE_ORDER
 from multimodal_pipeline.stages.stories import (
     PROMPTS,
@@ -65,6 +66,7 @@ from multimodal_pipeline.stages.stories import (
     align_token_times,
     _drop_counts,
     build_requests,
+    feedback_message,
     locate_quote,
     parse_stories_response,
     prepare_segments,
@@ -951,6 +953,70 @@ class TestBoundaryTimes:
         assert entries[999]["end_time"] == pytest.approx(1002.5)
         assert entries[count - 1]["end_time"] == pytest.approx(3.5 + count - 1)
 
+    def test_an_offset_may_cover_the_token_with_its_punctuation(self) -> None:
+        """``go,`` at [3, 6) and ``go`` at [3, 5) name the same token.
+
+        An aligner that ran on the original text reports the word *with* its edge
+        punctuation; one that stripped it reports the core. Honouring only the core dropped
+        the second form, and the occurrence it named then fell back to word order.
+        """
+        words = [
+            {"segment_id": "seg000001", "word": "go", "start_time": 3.2, "end_time": 3.4,
+             "character_start": 3, "character_end": 6},
+            {"segment_id": "seg000001", "word": "go", "start_time": 3.0, "end_time": 3.2},
+        ]
+        entries = align_token_times("go go,", words)
+        assert entries[1]["start_time"] == pytest.approx(3.2)
+        assert entries[1]["end_time"] == pytest.approx(3.4)
+        # The anchor is what moved it: by order the 3.2 row belongs to the first "go".
+        assert entries[0]["start_time"] is None
+
+    def test_beyond_the_alignment_budget_nothing_is_placed_positionally(
+            self, monkeypatch) -> None:
+        """Above the cell budget the interior is unaligned, not guessed at by position.
+
+        The positional fallback claimed token *i* was word *i* without having compared the
+        neighbourhoods that decide it. Leaving the interior unresolved is the same answer
+        as "no exact alignment", so an affected boundary says ``segment`` instead of
+        borrowing a time it has not earned.
+        """
+        rows = [segment(1, text="x a b y"), segment(2, text="nada")]
+        words = [
+            {"segment_id": "seg000001", "word": "p", "start_time": 3.0, "end_time": 3.2},
+            {"segment_id": "seg000001", "word": "a", "start_time": 3.2, "end_time": 3.4},
+            {"segment_id": "seg000001", "word": "q", "start_time": 3.4, "end_time": 3.6},
+            {"segment_id": "seg000001", "word": "r", "start_time": 3.6, "end_time": 3.8},
+            {"segment_id": "seg000002", "word": "nada", "start_time": 6.0,
+             "end_time": 6.2},
+        ]
+        # Inside the budget the one truly equal key is found: "a" is the second token.
+        placed = align_token_times("x a b y", words[:4])
+        assert placed[1]["start_time"] == pytest.approx(3.2)
+        monkeypatch.setattr(stories_module, "_ALIGNMENT_CELL_LIMIT", 0)
+        assert all(entry["start_time"] is None
+                   for entry in align_token_times("x a b y", words[:4]))
+        request = request_for(rows=prepared(rows, words=words))
+        payload = answer(events=[{
+            "event_id": "SE1",
+            "start": {"segment_id": "seg000001", "transcript_quote": "x a b y",
+                      "speaker": "unknown", "boundary_type": "pre_telling", "reason": "x"},
+            "end": {"segment_id": "seg000002", "transcript_quote": "nada",
+                    "speaker": "unknown", "boundary_type": "coda", "reason": "x"},
+            "story_ids": ["S1"], "tellers": ["unknown"],
+            "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}],
+            stories=[{
+                "story_id": "S1", "event_id": "SE1",
+                "start": {"segment_id": "seg000001", "transcript_quote": "a b",
+                          "speaker": "unknown", "reason": "x"},
+                "end": {"segment_id": "seg000001", "transcript_quote": "a b y",
+                        "speaker": "unknown", "reason": "x"},
+                "tellers": ["unknown"], "summary": "s",
+                "story_evidence": ["one represented event"],
+                "evidence_segment_ids": ["seg000001"], "confidence": "high", "notes": ""}])
+        story = validate_response(payload, request).stories[0]
+        assert story["start_time"] == pytest.approx(3.0)  # the segment's own start
+        assert story["start_time_precision"] == "segment"
+
     def test_a_case_expanding_character_does_not_create_a_quote(self) -> None:
         """``sidefold('ß') == 'ss'`` used to make ``sa`` match inside ``ßa``.
 
@@ -1648,6 +1714,7 @@ class TestConfig:
         assert cfg.speaker_source == "nemotron"
         assert cfg.speaker_min_coverage == 0.6
         assert cfg.speaker_max_competing == 0.25
+        assert cfg.repair_max_answer_chars == 20000
 
     def test_the_v1_prompt_version_is_refused_with_a_reason(self) -> None:
         import pydantic
@@ -1688,6 +1755,21 @@ class TestConfig:
             PipelineConfig.model_validate({
                 "input": {"directory": "/tmp/in"}, "output": {"directory": "/tmp/out"},
                 "stories": {"max_segments_per_request": 0}})
+
+    def test_a_zero_repair_answer_budget_is_refused(self) -> None:
+        import pydantic
+
+        from multimodal_pipeline.config import PipelineConfig
+
+        with pytest.raises(pydantic.ValidationError, match="repair_max_answer_chars"):
+            PipelineConfig.model_validate({
+                "input": {"directory": "/tmp/in"}, "output": {"directory": "/tmp/out"},
+                "stories": {"repair_max_answer_chars": 0}})
+
+    def test_the_client_gets_the_configured_repair_budget(self, context) -> None:
+        use_stage_config(context, provider="openai-compatible", base_url="https://x.invalid/v1",
+                         api_key="sk-test", model="chat", repair_max_answer_chars=1234)
+        assert StoriesStage()._client(context).repair_max_answer_chars == 1234
 
     def test_an_unconfigured_endpoint_degrades_to_a_skip_not_a_crash(self, context) -> None:
         seed_segments(context, SEGMENTS)
@@ -2198,6 +2280,67 @@ class TestValidate:
         with pytest.raises(ValidationError, match="disagree about window"):
             StoriesStage().validate(context)
 
+    def test_a_raw_response_whose_time_moved_under_the_same_id_is_caught(
+            self, context) -> None:
+        """The edited response still validates; it just resolves to another time.
+
+        Ids and counts are unchanged — one event, one story, the same ``w0-S1`` — because
+        only the ``occurrence`` moved from the first "the ring" to the second. An id-set
+        comparison passed this, and the table then carried a time its evidence no longer
+        supports.
+        """
+        rows = [segment(1, text="the ring the ring"),
+                segment(2, text=SEGMENTS[1]["text"], speaker="SPEAKER_01"),
+                segment(3, text=SEGMENTS[2]["text"])]
+        words = word_rows(rows)
+        request = request_for(rows=prepared(rows, words=words))
+        story = story_payload(request)
+        story["start"] = {"segment_id": "seg000001", "transcript_quote": "the ring",
+                         "occurrence": 1, "speaker": label(request, "seg000001"),
+                         "reason": "the speaker enters the story world"}
+        event = event_payload(request, start={
+            "segment_id": "seg000001", "transcript_quote": "the ring the ring",
+            "speaker": label(request, "seg000001"), "boundary_type": "pre_telling",
+            "reason": "the gist comes first"})
+        use_stage_config(context)
+        seed_segments(context, rows)
+        seed_words(context, words)
+        run_stage(context, FakeClient([envelope(answer(events=[event], stories=[story]))]))
+        assert StoriesStage().validate(context)["stories"] == 1
+        raw = min(context.artifact("stories_raw").glob("window_*.json"))
+        edited = json.loads(raw.read_text(encoding="utf-8"))
+        assert edited["stories"][0]["start"]["occurrence"] == 1
+        edited["stories"][0]["start"]["occurrence"] = 2
+        raw.write_text(json.dumps(edited), encoding="utf-8")
+        with pytest.raises(ValidationError, match="disagree about window") as excinfo:
+            StoriesStage().validate(context)
+        assert "start_time" in str(excinfo.value), str(excinfo.value)
+
+    def test_two_windows_filed_under_each_others_request_keys_are_caught(self, context) -> None:
+        """The rows are scoped by the request_key they carry, not by their window index.
+
+        Swapping the two keys leaves every window index, segment id and row count exactly
+        where it was, so a comparison that grouped the table by ``window_index`` found
+        nothing wrong: the rows it compared to window 0's response were still window 0's
+        rows.
+        """
+        rows = [segment(1), segment(2), segment(3), segment(4, text="and then we laughed")]
+        use_stage_config(context, max_segments_per_request=2, context_segments=0)
+        seed_segments(context, rows)
+        run_stage(context)
+        assert StoriesStage().validate(context)["windows"] == 2
+        events = rows_of(context, "storytelling_events")
+        assert len(events) == 2, events
+        keys = [str(row["request_key"]) for row in events]
+        assert keys[0] != keys[1]
+        events[0]["request_key"], events[1]["request_key"] = keys[1], keys[0]
+        write_table(context.artifact("storytelling_events"),
+                    pa.Table.from_pylist(events, schema=STORYTELLING_EVENTS_SCHEMA),
+                    STORYTELLING_EVENTS_SCHEMA)
+        with pytest.raises(ValidationError, match="disagree about window") as excinfo:
+            StoriesStage().validate(context)
+        assert "event_id" in str(excinfo.value), str(excinfo.value)
+
     def test_a_summary_that_does_not_list_its_raw_windows_is_refused(self, context) -> None:
         use_stage_config(context)
         seed_segments(context, SEGMENTS)
@@ -2427,6 +2570,86 @@ class TestClients:
         assert {key: value for key, value in first.items() if key != "messages"} == {
             key: value for key, value in second.items() if key != "messages"}
 
+    def test_a_long_rejected_answer_is_omitted_from_the_repair(self, endpoint) -> None:
+        """A repair is a second request, so the rejected answer has a size limit.
+
+        Resending a very long answer is what pushed the follow-up past the endpoint's
+        context limit; the problems alone still name every failed check.
+        """
+        request = request_for()
+        long_answer = "I cannot help with that. " * 30
+        assert len(long_answer) > 200
+        server, state = endpoint([(200, ok_body(long_answer)),
+                                  (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=1, repair_max_answer_chars=200)
+        verdict = client.detect(request)
+        assert verdict.answer.empty
+        repair = state.bodies[1]
+        assert [message["role"] for message in repair["messages"]] == ["user", "user"]
+        assert repair["messages"][0]["content"] == request.prompt()
+        assert "return the corrected answer" in repair["messages"][1]["content"]
+
+    def test_a_short_rejected_answer_is_still_resent_in_the_repair(self, endpoint) -> None:
+        request = request_for()
+        broken = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        broken["stories"][0]["evidence_segment_ids"] = ["seg999999"]
+        server, state = endpoint([(200, ok_body(envelope(broken))),
+                                  (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=1, repair_max_answer_chars=20000)
+        client.detect(request)
+        assert [message["role"] for message in state.bodies[1]["messages"]] == [
+            "user", "assistant", "user"]
+
+    def test_the_repair_feedback_is_length_bounded(self) -> None:
+        """The problem list is part of a request too: it is bounded, and says so."""
+        limit = stories_module._REPAIR_MAX_PROBLEMS
+        message = feedback_message([f"problem {index}" for index in range(200)])
+        assert f"- problem {limit - 1}\n" in message
+        assert f"- problem {limit}\n" not in message
+        assert f"{200 - limit} further problem(s) omitted" in message
+        huge = feedback_message(["x" * 10_000])
+        assert len(huge) < stories_module._REPAIR_MAX_PROBLEM_CHARS + 1_000
+        assert "return the corrected answer" in huge
+
+    @pytest.mark.parametrize("status", [400, 413])
+    def test_a_repair_the_endpoint_refuses_for_length_falls_back_to_the_plain_body(
+            self, endpoint, status: int) -> None:
+        """A context-limit error on the follow-up must not end the sequence.
+
+        The endpoint judged the repair too large, not the question. Resending the same
+        repair would be refused again, so the next attempt is the plain original body —
+        and the refusal is counted instead of disappearing into the retry history.
+        """
+        request = request_for()
+        broken = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        broken["stories"][0]["evidence_segment_ids"] = ["seg999999"]
+        server, state = endpoint([(200, ok_body(envelope(broken))),
+                                  (status, "request too large"),
+                                  (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=2)
+        verdict = client.detect(request)
+        assert client.repair_fallbacks == 1
+        assert client.request_count == 3
+        assert [message["role"] for message in state.bodies[1]["messages"]] == [
+            "user", "assistant", "user"]
+        assert [message["role"] for message in state.bodies[2]["messages"]] == ["user"]
+        assert state.bodies[2]["messages"][0]["content"] == request.prompt()
+        assert verdict.answer.empty
+
+    def test_the_stage_records_a_repair_the_endpoint_refused(self, context, endpoint) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        request = request_for()
+        broken = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        broken["stories"][0]["evidence_segment_ids"] = ["seg999999"]
+        server, _state = endpoint([(200, ok_body(envelope(broken))),
+                                   (413, "request too large"),
+                                   (200, ok_body(envelope(honest_answer(request))))])
+        stage = StoriesStage()
+        stage._client = lambda _ctx: stories_client(server, max_retries=2)
+        assert stage.run(context).status == "completed"
+        assert summary(context)["repair_fallbacks"] == 1
+
     def test_a_fixable_answer_converges_on_the_retry(self, endpoint) -> None:
         """The first attempt invents a segment id; the repaired one is accepted."""
         request = request_for()
@@ -2489,6 +2712,25 @@ class TestClients:
             assert "sk-test-123" not in stored
             assert "[redacted]" in stored
             assert "attempt" in stored
+
+    def test_a_401_excerpt_is_redacted_before_it_is_raised(self, endpoint) -> None:
+        """The response excerpt goes to the log and the report, so it is redacted first.
+
+        Both credentials are removed: ours, echoed back, and a *different* one quoted in a
+        JSON field the gateway serialised — a provider that echoes its own configuration
+        leaks that one, and it is not ours to publish.
+        """
+        echoed = ('{"error": "invalid_api_key", "authorization": "Bearer sk-test-123", '
+                  '"api_key": "sk-other-999", "token": "t-other-123"}')
+        server, _state = endpoint([(401, echoed)])
+        client = stories_client(server, max_retries=0)
+        with pytest.raises(StageError, match="HTTP 401") as excinfo:
+            client.detect(request_for())
+        message = str(excinfo.value) + str(excinfo.value.details)
+        assert "sk-test-123" not in message
+        assert "sk-other-999" not in message
+        assert "t-other-123" not in message
+        assert "[redacted]" in message
 
     def test_the_api_key_never_appears_in_a_failure_report(self) -> None:
         client = StoriesClient(base_url="http://127.0.0.1:1/v1", api_key="sk-secret-123456",

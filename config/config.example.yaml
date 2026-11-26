@@ -131,6 +131,14 @@ stories:
   speaker_min_coverage: 0.6      # fraction of a word's duration the dominant speaker must
                                  # cover before the word is attributed to it
   speaker_max_competing: 0.25    # and no other speaker may cover this much of it
+  repair_max_answer_chars: 20000 # largest rejected answer resent inside a repair. A
+                                 # retry carries the rejected answer plus the problems, and a
+                                 # very long answer could push it past the endpoint's context
+                                 # limit — which ended the sequence instead of fixing it. Above
+                                 # this budget the answer is omitted and only the problems are
+                                 # sent. A repair the endpoint still refuses (400/413) is
+                                 # resent as the plain question and counted as
+                                 # repair_fallbacks in stories_summary.json.
   cache: true                    # completed windows are reused across runs; the key covers
                                  # the endpoint, the prompt text, the rendered speaker runs
                                  # and the speaker-source settings
