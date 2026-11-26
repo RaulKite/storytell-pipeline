@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use Storytel Pipeline in your research, please cite it as below."
+title: Storytel Pipeline
+type: software
+version: "0.1.0"
+license: MIT
+repository-code: https://github.com/RaulKite/storytell-pipeline
+authors:
+  - given-names: Raúl
+    family-names: Sánchez
+    email: raul@um.es
