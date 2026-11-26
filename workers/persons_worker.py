@@ -384,9 +384,11 @@ def draw_tracks(frame: Any, detections: Sequence[tuple[int, Sequence[float], flo
 class TrackVideoWriter:
     """Pipe drawn BGR frames into ffmpeg as rawvideo and publish one CFR preview.
 
-    One subprocess, one argv list, ``stdin`` as the frame pipe. Never a shell: the destination
-    is a path the operator's config chose, and the OpenPose stage already pays for upstream's
-    single-quoted shell command.
+    Two ffmpeg invocations, each an argv list, never a shell: the destination is a path the
+    operator's config chose, and the OpenPose stage already pays for upstream's single-quoted
+    shell command. The first encodes the frames on their own; the second attaches the source
+    audio to that finished video by stream copy. They are separate for a measured reason — see
+    :meth:`_mux_audio`.
 
     The encoder starts lazily on the first frame because the frame *is* the geometry: the
     rawvideo header takes a fixed ``WxH`` and the only honest source of it is the pixels
@@ -409,25 +411,40 @@ class TrackVideoWriter:
         # "Unable to choose an output format" (measured against the real binary, and invisible
         # to a fake that only reads argv).
         self._partial = destination.parent / f".{destination.stem}.partial.mp4"
+        self._muxed = destination.parent / f".{destination.stem}.muxed.mp4"
         self._log: Path | None = None
 
     # ------------------------------------------------------------------ internals
 
     def _argv(self, width: int, height: int) -> list[str]:
-        argv = [self.ffmpeg, "-v", "error", "-nostdin", "-y",
+        """The encoder for the frames alone: no audio input at all.
+
+        Deliberately never muxes. A single call that took the source as a second input and
+        ended with ``-shortest`` let the audio decide where the video stopped: the repository's
+        own KABC clip is 126 frames of video whose audio runs 4.200 s against the video's
+        4.204 s, and ffmpeg wrote **125** frames from it -- measured, and the stage refused the
+        render. A 15 s clip with a 2 s tone lost most of itself the same way.
+        """
+        return [self.ffmpeg, "-v", "error", "-nostdin", "-y",
                 "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
-                "-r", f"{self.fps:.6f}", "-i", "-"]
-        if self.audio_source is not None:
-            # Second input is the source; its audio goes in as AAC (codec copy into MP4 is
-            # what upstream's own command gets wrong), and -shortest ends at the video, which
-            # is the stream this render actually controls.
-            argv += ["-i", str(self.audio_source), "-map", "0:v:0", "-map", "1:a:0",
-                     "-c:a", "aac", "-shortest"]
-        else:
-            argv += ["-an"]
-        argv += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                 str(self._partial)]
-        return argv
+                "-r", f"{self.fps:.6f}", "-i", "-",
+                "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", str(self._partial)]
+
+    def _mux_argv(self) -> list[str]:
+        """The second pass: copy the finished video, encode the audio, pad it to the video.
+
+        ``-c:v copy`` is what makes the frame count safe — ffmpeg is handed a complete video
+        stream and does not decode or re-encode a single frame of it. ``apad`` then makes the
+        audio infinite, so ``-shortest`` stops at the *video* and can only ever trim the audio
+        this render does not measure. Short source audio can no longer shorten the picture, and
+        long source audio is cut to the preview's length instead of stretching the container.
+        """
+        return [self.ffmpeg, "-v", "error", "-nostdin", "-y",
+                "-i", str(self._partial), "-i", str(self.audio_source),
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-c:a", "aac", "-af", "apad", "-shortest",
+                "-movflags", "+faststart", str(self._muxed)]
 
     def _stderr_text(self) -> str:
         if self._log is None:
@@ -444,6 +461,34 @@ class TrackVideoWriter:
             except OSError:
                 pass
             self._log = None
+
+    def _run_once(self, argv: list[str]) -> tuple[int, str]:
+        """Run one ffmpeg invocation, capturing stderr in a file nobody can race for.
+
+        ``stdin`` is ``DEVNULL`` rather than inherited: the mux pass must not touch the frame
+        pipe even by accident, and a run started from a terminal or from a test harness hands
+        a real stdin down.
+        """
+        self.destination.parent.mkdir(parents=True, exist_ok=True)
+        handle, name = tempfile.mkstemp(dir=self.destination.parent,
+                                       prefix=".tracks-ffmpeg-", suffix=".log")
+        os.close(handle)
+        log = Path(name)
+        try:
+            with log.open("wb") as errors:
+                completed = subprocess.run(argv, stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.DEVNULL, stderr=errors,
+                                           shell=False, check=False)
+            return completed.returncode, log.read_text(encoding="utf-8",
+                                                       errors="replace").strip()[-800:]
+        except OSError as exc:
+            raise WorkerFailure(f"ffmpeg {self.ffmpeg!r} could not be run to render the "
+                                f"person track preview: {exc}") from exc
+        finally:
+            try:
+                log.unlink()
+            except OSError:
+                pass
 
     def _start(self, width: int, height: int) -> None:
         self.destination.parent.mkdir(parents=True, exist_ok=True)
@@ -512,10 +557,30 @@ class TrackVideoWriter:
             except Exception:  # noqa: BLE001 - teardown must not mask the run's outcome
                 pass
         self._cleanup_log()
-        try:
-            self._partial.unlink()
-        except OSError:
-            pass
+        for leftover in (self._partial, self._muxed):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+    def _mux_audio(self) -> None:
+        """Attach the source audio to a video stream that is already complete.
+
+        Kept separate from the encode for the reason in :meth:`_argv`: with the source as a
+        second input, ``-shortest`` let the *audio* decide the length of the picture. Here the
+        video is finished on disk and stream-copied, so no frame is decoded again, and
+        ``apad`` (see :meth:`_mux_argv`) means audio is never the stream that ends first.
+        """
+        assert self.audio_source is not None
+        returncode, errors = self._run_once(self._mux_argv())
+        if returncode != 0:
+            self.abort()
+            raise WorkerFailure(
+                f"ffmpeg exited {returncode} muxing the source audio onto the person track "
+                f"preview ({self.destination.name}): {errors or 'no output from ffmpeg'}")
+        if not self._muxed.is_file() or self._muxed.stat().st_size == 0:
+            self.abort()
+            raise WorkerFailure(f"ffmpeg exited 0 but wrote no preview at {self._muxed}")
 
     def finish(self, *, expected_frames: int) -> dict[str, Any]:
         """Close the pipe, hold ffmpeg to the frame count, and publish in one step.
@@ -554,7 +619,18 @@ class TrackVideoWriter:
         if size == 0:
             self.abort()
             raise WorkerFailure(f"ffmpeg wrote an empty preview at {self._partial}")
-        os.replace(self._partial, self.destination)
+        if self.audio_source is None:
+            os.replace(self._partial, self.destination)
+        else:
+            # The frame count above is the encoder's, and the mux pass cannot change it: the
+            # video stream goes in byte-identical. What the mux adds is audio, which nothing
+            # in this stage measures.
+            self._mux_audio()
+            os.replace(self._muxed, self.destination)
+            try:
+                self._partial.unlink()
+            except OSError:
+                pass
         return {
             "fps": round(self.fps, 6),
             "fps_source": self.fps_source,

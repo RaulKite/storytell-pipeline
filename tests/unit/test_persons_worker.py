@@ -19,6 +19,7 @@ import importlib.util
 import json
 import logging
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -878,9 +879,15 @@ from pathlib import Path
 
 program = sys.argv[0]
 argv = sys.argv[1:]
-data = sys.stdin.buffer.read()
-Path(LOG).write_text(json.dumps({"program": program, "argv": argv, "bytes": len(data),
-                                 "frames": len(data) // FRAME_BYTES}))
+# Two invocations reach this stub per rendered run: the rawvideo encode and, when the source
+# has audio, the mux pass. Only the encode consumes the frame pipe; the mux reads a finished
+# file and must not block on stdin.
+encoder = "rawvideo" in argv
+data = sys.stdin.buffer.read() if encoder else b""
+calls = json.loads(Path(LOG).read_text()) if Path(LOG).exists() else []
+calls.append({"program": program, "argv": argv, "bytes": len(data),
+              "frames": len(data) // FRAME_BYTES if encoder else None})
+Path(LOG).write_text(json.dumps(calls))
 if EXIT:
     sys.exit(EXIT)
 if BODY:
@@ -892,9 +899,10 @@ def write_fake_ffmpeg(tmp_path, *, exit_code: int = 0, body: bytes = b"fake-mp4"
                       frame_bytes: int = 48 * 64 * 3, name: str = "fake-ffmpeg"):
     """A stand-in ffmpeg that consumes the rawvideo pipe and reports what it saw.
 
-    The argv it was handed is recorded verbatim, so the assertions are on the exact
-    pipeline-owned command line (rawvideo header, libx264, the audio map) rather than on what
-    the worker meant to run — and on the destination path surviving intact.
+    The argv of every invocation it was handed is recorded verbatim, in order, so the
+    assertions are on the exact pipeline-owned command lines (rawvideo header, libx264, the
+    mux pass's stream copy) rather than on what the worker meant to run — and on the
+    destination path surviving intact.
     """
     script = tmp_path / name
     log = tmp_path / f"{name}-call.json"
@@ -934,6 +942,11 @@ def render_args(tmp_path, *, video=None, ffmpeg=None, ffprobe=None, dest=None,
 
 
 def read_call(log: Path) -> dict[str, Any]:
+    """The encoder invocation: the first ffmpeg call of the run."""
+    return read_calls(log)[0]
+
+
+def read_calls(log: Path) -> list[dict[str, Any]]:
     return json.loads(log.read_text(encoding="utf-8"))
 
 
@@ -1192,18 +1205,33 @@ class TestEncoderCommand:
         assert argv[-3:] == ["-movflags", "+faststart", argv[-1]]
         assert "-an" in argv and "-map" not in argv
 
-    def test_the_source_audio_is_muxed_when_the_source_has_a_stream(
+    def test_the_source_audio_is_muxed_after_the_video_is_complete(
             self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """Two passes on purpose: the second one cannot shorten the first one.
+
+        Measured defect this replaces: a single call with the source as a second input and
+        ``-shortest`` let the audio decide the video's length. The KABC clip is 126 frames
+        with 4.200 s of audio against 4.204 s of video, and ffmpeg wrote 125 of them.
+        """
         FakeModel.results = [FakeResult(0, [1])]
         ffmpeg, log = write_fake_ffmpeg(tmp_path)
         payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
                              extra=render_args(tmp_path, ffmpeg=ffmpeg, audio=True))
         assert payload["status"] == "ok", payload.get("error")
-        argv = read_call(log)["argv"]
+        calls = read_calls(log)
+        assert len(calls) == 2, calls
+        encode, mux = calls[0], calls[1]
         assert payload["_document"]["render"]["has_audio"] is True
-        _slice_index(argv, ["-i", str(clip), "-map", "0:v:0", "-map", "1:a:0",
-                            "-c:a", "aac", "-shortest"])
-        assert "-an" not in argv
+        # The encode never sees the source, so no audio stream can end it early.
+        assert str(clip) not in encode["argv"]
+        assert "-an" in encode["argv"] and "-shortest" not in encode["argv"]
+        assert "-map" not in encode["argv"]
+        # The mux copies the finished video and pads the audio so -shortest ends at the video.
+        _slice_index(mux["argv"], ["-i", encode["argv"][-1], "-i", str(clip),
+                                    "-map", "0:v:0", "-map", "1:a:0",
+                                    "-c:v", "copy", "-c:a", "aac", "-af", "apad",
+                                    "-shortest"])
+        assert mux["frames"] is None, "the mux pass read the frame pipe"
 
     def test_the_destination_path_travels_as_one_argument_not_as_a_shell_string(
             self, worker, tmp_path, clip, frame_index_file, fake_cv2):
@@ -1359,3 +1387,50 @@ class TestAgainstRealFfmpeg:
         assert kinds == ({"video", "audio"} if with_audio else {"video"})
         video = next(s for s in ffprobe_streams(dest)["streams"] if s["codec_type"] == "video")
         assert int(video["nb_frames"]) == 5, "the preview is not the frames measured"
+
+    def test_audio_shorter_than_the_video_does_not_shorten_it(self, worker, tmp_path, fake_cv2):
+        """The measured defect this commit fixes, on real media.
+
+        A single ffmpeg call with ``-shortest`` and the source as a second input stops the
+        *video* when the audio runs out: the reviewer measured 125 frames from the repository's
+        126-frame KABC clip, whose audio is 4.200 s against 4.204 s of video, and measured a
+        15 s clip with a 2 s tone losing thirteen seconds of picture. So the clip here has ten
+        frames (0.4 s at 25 fps) and a 0.05 s tone, and every frame has to survive.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from multimodal_pipeline.stages.metadata import ffprobe_streams
+
+        clip = tmp_path / "short-audio.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=0.4",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=0.05",
+                        "-map", "0:v:0", "-map", "1:a:0",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", str(clip)], check=True, capture_output=True)
+        index = tmp_path / "frame_index.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array(list(range(10)), type=pa.int64()),
+            "pts_seconds": pa.array([i * 0.04 for i in range(10)], type=pa.float64()),
+        }), index)
+        FakeModel.results = [FakeResult(i, [1]) for i in range(10)]
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index, extra=[
+            "--output-video", str(dest), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+        assert payload["status"] == "ok", payload.get("error")
+        assert payload["_document"]["render"]["has_audio"] is True
+        decoded = ffprobe_count_frames(dest)
+        assert decoded == 10, f"the preview kept {decoded} of 10 frames"
+        audio = next(s for s in ffprobe_streams(dest)["streams"] if s["codec_type"] == "audio")
+        assert float(audio["duration"]) >= 0.3, audio
+
+
+def ffprobe_count_frames(path: Path) -> int:
+    """Decoded frame count of a file's video stream, which is what a player sees."""
+    completed = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_frames", "-of", "json", str(path)],
+        check=True, capture_output=True, text=True)
+    streams = json.loads(completed.stdout)["streams"]
+    return int(streams[0]["nb_read_frames"])
