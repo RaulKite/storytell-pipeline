@@ -12,6 +12,25 @@ They contain no recording frames and make no accuracy claim.
 Back to [Datasets](../datasets.md), [Modalities](../modalities.md) or the
 [overview](../../README.md).
 
+## Brand assets
+
+Hand-written SVG under `brand/`, used by the landing page. No external fonts, images or
+scripts: the text is real `<text>`, so it scales, copies and reads as text. The two variants
+of each asset carry identical geometry and differ only in palette, so they cannot drift.
+Both are illustrations of the *schema*: the timeline shows invented values, not a recording.
+
+| Asset | Purpose |
+|---|---|
+| `brand/logo.svg` | Square mark: waveform, pose skeleton and text lines converge on one time axis. Self-contained plate, so it reads the same in light and dark mode. |
+| `brand/banner-light.svg` | README banner, dark text: mark, name and tagline |
+| `brand/banner-dark.svg` | The same banner for GitHub dark mode (`#0d1117` context) |
+| `brand/modalities-light.svg` | Six lanes on one time axis, feeding one dataset directory and the ELAN export |
+| `brand/modalities-dark.svg` | The same infographic for GitHub dark mode |
+
+The timeline is synthetic and says so inside the picture; lane names, tools and table
+paths follow [Datasets](../datasets.md#table-reference) and
+[`ARTIFACT_LAYOUT`](../../src/multimodal_pipeline/artifacts.py). Editing one needs the other.
+
 ## Regenerate
 
 Run from the repository root:

@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520" role="img" aria-labelledby="mod-title mod-desc">
+  <title id="mod-title">Six modalities on one shared time axis</title>
+  <desc id="mod-desc">Synthetic illustration, invented values, no recording: six labelled lanes for speech, language, acoustics, vision, speakers and stories share one axis in seconds from video start and feed one dataset directory of Parquet tables, raw tool output, provenance and an ELAN export.</desc>
+  <rect width="1200" height="520" fill="#ffffff"/>
+  <text x="32" y="44" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" letter-spacing="-0.3" fill="#0d1117">Six modalities, one time axis</text>
+  <text x="1168" y="44" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" text-anchor="end" fill="#59636e">one invented 60 s clip</text>
+  <path d="M260 76 H820" stroke="#59636e" stroke-width="1.4"/>
+  <text x="820" y="56" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" text-anchor="end" font-style="italic" fill="#59636e">seconds from video start</text>
+  <path d="M260 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="260" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">0</text>
+  <path d="M353.333 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="353.333" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">10</text>
+  <path d="M446.667 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="446.667" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">20</text>
+  <path d="M540 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="540" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">30</text>
+  <path d="M633.333 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="633.333" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">40</text>
+  <path d="M726.667 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="726.667" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">50</text>
+  <path d="M820 72 V78" stroke="#59636e" stroke-width="1.2"/>
+  <text x="820" y="68" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="middle" fill="#59636e">60</text>
+  <rect x="252" y="88" width="576" height="62" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <rect x="252" y="156" width="576" height="62" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <rect x="252" y="224" width="576" height="62" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <rect x="252" y="292" width="576" height="62" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <rect x="252" y="360" width="576" height="62" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <rect x="252" y="428" width="576" height="62" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <path d="M502.667 88 V490" stroke="#59636e" stroke-width="1" stroke-dasharray="3 5" opacity="0.4"/>
+  <path d="M698.667 88 V490" stroke="#59636e" stroke-width="1" stroke-dasharray="3 5" opacity="0.4"/>
+  <text x="32" y="107" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0d1117">Speech</text>
+  <text x="32" y="121.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" fill="#3d444d">WhisperX · pyannote</text>
+  <text x="32" y="133.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">speech/words.parquet</text>
+  <text x="32" y="145.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">speech/speaker_turns.parquet</text>
+  <text x="32" y="175" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0d1117">Language</text>
+  <text x="32" y="189.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" fill="#3d444d">spaCy · translation endpoint</text>
+  <text x="32" y="201.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">linguistic/source/tokens.parquet</text>
+  <text x="32" y="213.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">translation/segments_en.parquet</text>
+  <text x="32" y="243" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0d1117">Acoustics</text>
+  <text x="32" y="257.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" fill="#3d444d">Praat via Parselmouth</text>
+  <text x="32" y="269.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">acoustic/frame_features.parquet</text>
+  <text x="32" y="281.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#59636e">gaps = unvoiced, not 0 Hz</text>
+  <text x="32" y="311" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0d1117">Vision</text>
+  <text x="32" y="325.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" fill="#3d444d">OpenPose · YOLO (optional)</text>
+  <text x="32" y="337.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">pose/body.parquet</text>
+  <text x="32" y="349.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">persons/tracks.parquet</text>
+  <text x="32" y="379" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0d1117">Speakers</text>
+  <text x="32" y="393.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" fill="#3d444d">TalkNet (optional)</text>
+  <text x="32" y="405.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">speaker/active_speaker_frames.parquet</text>
+  <text x="32" y="417.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#59636e">25 FPS working grid</text>
+  <text x="32" y="447" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0d1117">Stories</text>
+  <text x="32" y="461.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" fill="#3d444d">LLM endpoint</text>
+  <text x="32" y="473.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.6" fill="#59636e">stories/stories.parquet</text>
+  <text x="32" y="485.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#59636e">candidates, not detections</text>
+  <rect x="269.333" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="273.253" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="278.107" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="281.28" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="288.187" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="411.2" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="414.933" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="422.4" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="426.133" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="549.333" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="554" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="557.733" y="96" width="8.02667" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="566.6" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="570.8" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="689.333" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="693.067" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="698.667" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="706.133" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="710.8" y="96" width="8.4" height="17" rx="4.5" fill="#0072B2"/>
+  <rect x="720.133" y="96" width="7" height="17" rx="4.5" fill="#0072B2"/>
+  <text x="350.533" y="108.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" text-anchor="middle" fill="#59636e">aligned words</text>
+  <rect x="265.6" y="122" width="80.2667" height="17" rx="4.5" fill="#56B4E9" stroke="#56B4E9" stroke-width="1.4"/>
+  <text x="269" y="134.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">S1</text>
+  <rect x="345.867" y="122" width="50.4" height="17" rx="4.5" fill="none" stroke="#56B4E9" stroke-width="1.4"/>
+  <text x="349.267" y="134.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="600" fill="#56B4E9">S2</text>
+  <rect x="396.267" y="122" width="91.4667" height="17" rx="4.5" fill="#56B4E9" stroke="#56B4E9" stroke-width="1.4"/>
+  <text x="399.667" y="134.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">S1</text>
+  <rect x="487.733" y="122" width="80.2667" height="17" rx="4.5" fill="none" stroke="#56B4E9" stroke-width="1.4"/>
+  <text x="491.133" y="134.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="600" fill="#56B4E9">S2</text>
+  <rect x="568" y="122" width="104.533" height="17" rx="4.5" fill="#56B4E9" stroke="#56B4E9" stroke-width="1.4"/>
+  <text x="571.4" y="134.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">S1</text>
+  <rect x="672.533" y="122" width="128.8" height="17" rx="4.5" fill="none" stroke="#56B4E9" stroke-width="1.4"/>
+  <text x="675.933" y="134.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="600" fill="#56B4E9">S2</text>
+  <rect x="269.333" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="272.133" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="276.053" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="278.48" y="166" width="4.66667" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="283.707" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="286.507" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="411.2" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="414.187" y="166" width="5.41333" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="420.16" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="423.147" y="166" width="4.10667" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="549.333" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="553.067" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="556.053" y="166" width="6.72" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="563.333" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="566.88" y="166" width="4.66667" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="689.333" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="692.507" y="166" width="4.29333" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="697.36" y="166" width="5.78667" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="703.707" y="166" width="4" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="707.627" y="166" width="6.90667" height="11" rx="3" fill="#007D5C" opacity="0.85"/>
+  <rect x="265.6" y="190" width="110.133" height="17" rx="4.5" fill="#007D5C" opacity="0.2"/>
+  <text x="269.6" y="202.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#3d444d">English</text>
+  <rect x="405.6" y="190" width="112" height="17" rx="4.5" fill="#007D5C" opacity="0.2"/>
+  <text x="409.6" y="202.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#3d444d">English</text>
+  <rect x="543.733" y="190" width="115.733" height="17" rx="4.5" fill="#007D5C" opacity="0.2"/>
+  <text x="547.733" y="202.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#3d444d">English</text>
+  <rect x="683.733" y="190" width="112" height="17" rx="4.5" fill="#007D5C" opacity="0.2"/>
+  <text x="687.733" y="202.2" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#3d444d">English</text>
+  <text x="350.533" y="175" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" text-anchor="middle" fill="#59636e">source tokens</text>
+  <path d="M260 253.92 L264.667 251.029 L269.333 249.281 L274 248.24 L278.667 247.324 L283.333 246.158 L288 244.791 L292.667 243.673 L297.333 243.398 L302 244.351 L306.667 246.431 L311.333 249.014 L316 251.164 L320.667 252.03 L325.333 251.216 L330 248.967 L334.667 246.08 L339.333 243.569 L344 242.247 L348.667 242.428 L353.333 243.853 L358 245.903 L362.667 247.942 L367.333 249.651" fill="none" stroke="#B2528B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M390.667 262.982 L395.333 266.83 L400 269.56 L404.667 270.507 L409.333 269.574 L414 267.3 L418.667 264.647 L423.333 262.608 L428 261.812 L432.667 262.307 L437.333 263.613 L442 265.01 L446.667 265.915 L451.333 266.153 L456 265.998 L460.667 265.967 L465.333 266.48 L470 267.56 L474.667 268.741 L479.333 269.23 L484 268.263 L488.667 265.481 L493.333 261.147 L498 256.084 L502.667 251.371 L507.333 247.922" fill="none" stroke="#B2528B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M535.333 246.607 L540 246.216 L544.667 246.29 L549.333 247.134 L554 248.603 L558.667 250.108 L563.333 250.87 L568 250.292 L572.667 248.289 L577.333 245.386 L582 242.544 L586.667 240.787 L591.333 240.786 L596 242.608 L600.667 245.731 L605.333 249.311 L610 252.572 L614.667 255.129 L619.333 257.091 L624 258.902 L628.667 261.022 L633.333 263.597 L638 266.315 L642.667 268.507 L647.333 269.464 L652 268.805 L656.667 266.72 L661.333 263.957 L666 261.542 L670.667 260.37 L675.333 260.842 L680 262.718 L684.667 265.251 L689.333 267.539 L694 268.915 L698.667 269.198 L703.333 268.693 L708 267.947 L712.667 267.4 L717.333 267.108 L722 266.687 L726.667 265.508 L731.333 263.043 L736 259.203 L740.667 254.471 L745.333 249.778" fill="none" stroke="#B2528B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <text x="816" y="257" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="8.8" text-anchor="end" fill="#59636e">pitch (Hz, invented)</text>
+  <g stroke="#C45200" stroke-width="1.7" stroke-linecap="round" fill="none"><path d="M310 308 L316 313 L322 308"/><path d="M316 313 V321"/><path d="M310 308 L307 315"/><path d="M322 308 L325 315"/><path d="M316 321 L311 328"/><path d="M316 321 L321 328"/></g>
+  <circle cx="316" cy="305.5" r="3.2" fill="#C45200"/>
+  <circle cx="316" cy="313" r="1.5" fill="#C45200"/>
+  <circle cx="316" cy="321" r="1.5" fill="#C45200"/>
+  <g stroke="#C45200" stroke-width="1.7" stroke-linecap="round" fill="none"><path d="M459.333 308 L465.333 313 L471.333 308"/><path d="M465.333 313 V321"/><path d="M459.333 308 L456.333 315"/><path d="M471.333 308 L474.333 315"/><path d="M465.333 321 L460.333 328"/><path d="M465.333 321 L470.333 328"/></g>
+  <circle cx="465.333" cy="305.5" r="3.2" fill="#C45200"/>
+  <circle cx="465.333" cy="313" r="1.5" fill="#C45200"/>
+  <circle cx="465.333" cy="321" r="1.5" fill="#C45200"/>
+  <g stroke="#C45200" stroke-width="1.7" stroke-linecap="round" fill="none"><path d="M608.667 308 L614.667 313 L620.667 308"/><path d="M614.667 313 V321"/><path d="M608.667 308 L605.667 315"/><path d="M620.667 308 L623.667 315"/><path d="M614.667 321 L609.667 328"/><path d="M614.667 321 L619.667 328"/></g>
+  <circle cx="614.667" cy="305.5" r="3.2" fill="#C45200"/>
+  <circle cx="614.667" cy="313" r="1.5" fill="#C45200"/>
+  <circle cx="614.667" cy="321" r="1.5" fill="#C45200"/>
+  <g stroke="#C45200" stroke-width="1.7" stroke-linecap="round" fill="none"><path d="M758 308 L764 313 L770 308"/><path d="M764 313 V321"/><path d="M758 308 L755 315"/><path d="M770 308 L773 315"/><path d="M764 321 L759 328"/><path d="M764 321 L769 328"/></g>
+  <circle cx="764" cy="305.5" r="3.2" fill="#C45200"/>
+  <circle cx="764" cy="313" r="1.5" fill="#C45200"/>
+  <circle cx="764" cy="321" r="1.5" fill="#C45200"/>
+  <text x="390.667" y="318" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="8.8" text-anchor="middle" fill="#59636e">BODY_25 keypoints</text>
+  <rect x="297.333" y="334" width="242.667" height="9" rx="4.5" fill="#C45200" opacity="0.35"/>
+  <text x="300.833" y="341.6" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="8.6" font-weight="600" fill="#0d1117">p1</text>
+  <rect x="512" y="334" width="233.333" height="9" rx="4.5" fill="#C45200" opacity="0.35"/>
+  <text x="515.5" y="341.6" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="8.6" font-weight="600" fill="#0d1117">p2</text>
+  <rect x="278.667" y="389.5" width="12.5" height="16.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="297.333" y="380.5" width="12.5" height="25.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="316" y="377.5" width="12.5" height="28.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="334.667" y="388" width="12.5" height="18" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="353.333" y="400" width="12.5" height="6" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="372" y="404" width="12.5" height="2" rx="2.5" fill="#59636e" opacity="0.55"/>
+  <rect x="390.667" y="395.5" width="12.5" height="10.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="409.333" y="382" width="12.5" height="24" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="428" y="377.5" width="12.5" height="28.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="446.667" y="385" width="12.5" height="21" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="465.333" y="392.5" width="12.5" height="13.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="484" y="403" width="12.5" height="3" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="502.667" y="388" width="12.5" height="18" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="521.333" y="379" width="12.5" height="27" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="596" y="379" width="12.5" height="27" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="614.667" y="386.5" width="12.5" height="19.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="633.333" y="397" width="12.5" height="9" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="652" y="404" width="12.5" height="2" rx="2.5" fill="#59636e" opacity="0.55"/>
+  <rect x="670.667" y="394" width="12.5" height="12" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="689.333" y="380.5" width="12.5" height="25.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="708" y="377.5" width="12.5" height="28.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="726.667" y="388" width="12.5" height="18" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="745.333" y="398.5" width="12.5" height="7.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="764" y="404" width="12.5" height="2" rx="2.5" fill="#59636e" opacity="0.55"/>
+  <rect x="782.667" y="392.5" width="12.5" height="13.5" rx="2.5" fill="#1B87C4" opacity="0.9"/>
+  <rect x="540" y="375" width="56" height="31" rx="6" fill="none" stroke="#59636e" stroke-width="1.3" stroke-dasharray="3 3"/>
+  <text x="546" y="387" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="8.8" fill="#59636e">no_face</text>
+  <text x="264" y="373" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="8.8" fill="#59636e">one selected visible face</text>
+  <rect x="502.667" y="440" width="196" height="34" rx="8" fill="#A06A00" opacity="0.16"/>
+  <rect x="502.667" y="440" width="196" height="34" rx="8" fill="none" stroke="#A06A00" stroke-width="1.6" stroke-dasharray="5 4"/>
+  <text x="511.667" y="455" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0d1117">candidate</text>
+  <text x="511.667" y="468" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#3d444d">LLM span, not a validated detection</text>
+  <rect x="860" y="152" width="308" height="300" rx="12" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+  <text x="882" y="182" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="600" fill="#0d1117">one dataset directory</text>
+  <text x="882" y="202" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="10.5" fill="#59636e">&lt;video_id&gt;/</text>
+  <path d="M882 216 H1146" stroke="#d1d9e0" stroke-width="1"/>
+  <circle cx="886" cy="238" r="3.2" fill="#0072B2"/>
+  <text x="898" y="242" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#0d1117">Parquet tables</text>
+  <text x="898" y="257" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.2" fill="#59636e">typed and time-stamped, per video</text>
+  <circle cx="886" cy="278" r="3.2" fill="#0072B2"/>
+  <text x="898" y="282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#0d1117">raw tool output</text>
+  <text x="898" y="297" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.2" fill="#59636e">byte-identical, beside tables</text>
+  <circle cx="886" cy="318" r="3.2" fill="#0072B2"/>
+  <text x="898" y="322" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#0d1117">provenance + logs</text>
+  <text x="898" y="337" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.2" fill="#59636e">config, tools, processing</text>
+  <path d="M882 366 H1146" stroke="#d1d9e0" stroke-width="1"/>
+  <text x="882" y="392" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#0d1117">ELAN .eaf</text>
+  <text x="882" y="408" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9.4" fill="#59636e">elan/annotations.eaf</text>
+  <text x="882" y="426" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#59636e">derived export after finalization</text>
+  <path d="M824 302 H856" stroke="#59636e" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M856 302 l-9 -5.5 v11 z" fill="#59636e"/>
+  <text x="32" y="508" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#59636e">Synthetic illustration — invented values, no recording</text>
+  <text x="1168" y="508" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" text-anchor="end" fill="#59636e">Times are seconds from video start</text>
+</svg>

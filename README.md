@@ -1,8 +1,13 @@
 # Storytel Pipeline
 
-[![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg)](docs/getting-started.md#prerequisites)
-[![Runs on uv](https://img.shields.io/badge/runs%20on-uv-261230.svg)](https://docs.astral.sh/uv/)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/banner-dark.svg">
+    <img alt="Storytel Pipeline: video recordings to traceable, time-aligned multimodal datasets" src="docs/assets/brand/banner-light.svg" width="100%"></picture></p>
+
+<p align="center">
+  <a href="#license"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green.svg"></a> <a href="docs/getting-started.md#prerequisites"><img alt="Python 3.10–3.13" src="https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg"></a> <a href="https://docs.astral.sh/uv/"><img alt="Runs on uv" src="https://img.shields.io/badge/runs%20on-uv-261230.svg"></a><br>
+  <a href="#quickstart">Get started</a> · <a href="#what-it-does">Outputs</a> · <a href="docs/architecture.md">Architecture</a> · <a href="#citing">Cite</a></p>
 
 **Video recordings → traceable, time-aligned multimodal datasets.**
 
@@ -13,29 +18,24 @@ artifacts each tool emitted, a log and provenance, times in seconds from video s
 
 ## What it does
 
-| Layer | Tools and results |
-|---|---|
-| Speech | WhisperX transcription/alignment; pyannote turns; optional Nemotron comparison |
-| Language | English segment translations; spaCy source/English tokens and sentences |
-| Acoustics | Praat/Parselmouth pitch, intensity, formants and segment statistics |
-| Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks |
-| Speakers | Optional TalkNet visible-face activity and audio–visual agreement |
-| Stories | Transcript-bound LLM narrative candidates, not validated detections |
-| Inspection | ELAN `.eaf` files written with pympi-ling, HTML preview, corpus-specific bundle helper |
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/modalities-dark.svg">
+    <img alt="Synthetic illustration: six labelled lanes — speech, language, acoustics, vision, speakers and stories — share one axis in seconds from video start and feed one dataset directory of Parquet tables, raw output, provenance and an ELAN export." src="docs/assets/brand/modalities-light.svg" width="100%"></picture></p>
 
-```mermaid
-flowchart LR
-    video["one input video"] --> meta["metadata<br/>ffprobe, frame index"]
-    meta --> audio["audio<br/>ffmpeg, WAV"] --> speech["speech, language, acoustics<br/>WhisperX, pyannote, spaCy, Praat"]
-    meta --> vision["pose and people<br/>OpenPose, YOLO: metadata only"]
-    meta & audio --> faces["visible faces<br/>optional TalkNet"]
-    speech & faces --> fusion["audio-visual agreement<br/>diarizer turns + TalkNet frames"]
-    vision & speech & faces & fusion --> data["dataset directory<br/>tables, raw artifacts, logs"]
-    data -.-> elan["ELAN `.eaf`<br/>conditional export, after finalization"]
-```
+| Layer | Tools and results | Output |
+|---|---|---|
+| Speech | WhisperX transcription/alignment; pyannote turns; optional Nemotron comparison | `speech/words.parquet`, `speech/speaker_turns.parquet` |
+| Language | English segment translations; spaCy source/English tokens and sentences | `translation/segments_en.parquet`, `linguistic/source/tokens.parquet`, `linguistic/english/tokens.parquet` |
+| Acoustics | Praat/Parselmouth pitch, intensity, formants and segment statistics | `acoustic/frame_features.parquet` |
+| Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks | `pose/body.parquet`, `persons/tracks.parquet` |
+| Speakers | Optional TalkNet visible-face activity and audio–visual agreement | `speaker/active_speaker_frames.parquet` |
+| Stories | Transcript-bound LLM narrative candidates, not validated detections | `stories/stories.parquet` |
+| Inspection | ELAN `.eaf` files written with pympi-ling, HTML preview, corpus-specific bundle | `elan/annotations.eaf` |
 
-Execution is sequential — one video, one stage at a time — and heavy tools live in separate
-`uv` environments the root sync does not install: [what runs by default](docs/getting-started.md#what-runs-by-default).
+Execution is sequential — one video, one stage at a time — and heavy tools live in separate `uv`
+environments the root sync does not install: [what runs by default](docs/getting-started.md#what-runs-by-default).
+The stage graph and its dependencies are in [Architecture](docs/architecture.md).
 
 ## Quickstart
 
@@ -56,9 +56,9 @@ uv run multimodal-pipeline run -c config/config.local.yaml --video clip.mp4 --to
 uv run multimodal-pipeline run -c config/config.local.yaml   # the full configured stage list
 ```
 
-Keep existing configuration and credentials instead of overwriting them; translation and
-stories send transcript text out, so they can cost money. One video becomes one
-[dataset directory](docs/datasets.md#directory-layout) under `output.directory`:
+Keep existing configuration and credentials instead of overwriting them; translation and stories send transcript text out, so they can cost money.
+
+<details><summary>What one video becomes: one <a href="docs/datasets.md#directory-layout">dataset directory</a> under <code>output.directory</code></summary>
 
 ```text
 <video_id>/
@@ -66,6 +66,7 @@ stories send transcript text out, so they can cost money. One video becomes one
 ├── source/ audio/ speech/ translation/ linguistic/ acoustic/ pose/ persons/ speaker/ stories/
 └── elan/ logs/ provenance/      ELAN summary, pipeline logs, config/tools/processing records
 ```
+</details>
 
 ## Documentation
 
@@ -83,8 +84,7 @@ stories send transcript text out, so they can cost money. One video becomes one
 ## Status, scope and limitations
 
 - Live work and deferrals: the [ODD tracker](odd/tasks/multimodal-video-pipeline.md).
-- `.github/workflows/unit.yml` covers the unit suite on Linux with ffmpeg only: no GPU
-  models, OpenPose, live endpoints or accuracy, and no hosted run is claimed here.
+- `.github/workflows/unit.yml` covers the unit suite on Linux with ffmpeg only: no GPU models, OpenPose, live endpoints or accuracy, and no hosted run is claimed here.
 - Stories are LLM candidates, track IDs are not unique-human counts, and one video runs at a time (no server or queue).
 
 ## Citing
@@ -99,21 +99,20 @@ Metadata: [CITATION.cff](CITATION.cff), which GitHub's **Cite this repository** 
 
 ## Author and acknowledgements
 
-Author and maintainer: **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)); read
-[Development](docs/development.md) first, then file defects on the
-[issue tracker](https://github.com/RaulKite/storytell-pipeline/issues).
+Author and maintainer: **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)); read [Development](docs/development.md)
+first, then file defects on the [issue tracker](https://github.com/RaulKite/storytell-pipeline/issues).
 
 Developed for [STORYTEL](https://storytel.uni-koeln.de/), which studies spontaneous
 storytelling in face-to-face conversation through words, voice and bodily movement.
 
-The pipeline drives WhisperX, [pyannote.audio](https://github.com/pyannote/pyannote-audio),
-NVIDIA Nemotron, [spaCy](https://spacy.io/), [Praat](https://www.fon.hum.uva.nl/praat/) via
-Parselmouth, [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose),
-[Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and
-[ELAN](https://archive.mpi.nl/tla/elan) rather than reimplementing them; their licences and
-terms stay with their authors. This is attribution, not endorsement.
+<details><summary>Tools this pipeline drives</summary>
+
+WhisperX, [pyannote.audio](https://github.com/pyannote/pyannote-audio), NVIDIA Nemotron, [spaCy](https://spacy.io/),
+[Praat](https://www.fon.hum.uva.nl/praat/) via Parselmouth, [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose),
+[Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and [ELAN](https://archive.mpi.nl/tla/elan) are driven
+rather than reimplemented; their licences and terms stay with their authors. This is attribution, not endorsement.
+</details>
 
 ## License
 
-[MIT](LICENSE) covers this repository, not third-party media, model weights or tools, and
-not the recordings you process with it.
+[MIT](LICENSE) covers this repository, not third-party media, model weights or tools, and not the recordings you process with it.
