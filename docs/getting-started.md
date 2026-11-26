@@ -28,26 +28,36 @@ what a fresh clone gets for free.
 | `whisperx` | on | its environment | `speech/segments.parquet`, `speech/words.parquet` | [Modalities](modalities.md#speech-and-language) |
 | `diarization` | on | `HF_TOKEN`, its environment | `speech/speaker_turns.parquet` | [Modalities](modalities.md#speech-and-language) |
 | `diarization_nemotron` | **off** | its environment, model download | `speech/speaker_turns_nemotron.parquet` | [Modalities](modalities.md#speech-and-language) |
-| `speaker_assignment` | conditional | a diarization result | rewrites the transcript tables with `speaker_id` | [Modalities](modalities.md#speech-and-language) |
+| `speaker_assignment` | conditional | pyannote turns and a transcript | rewrites the transcript tables with `speaker_id` | [Modalities](modalities.md#speech-and-language) |
 | `translation` | on | endpoint, key, model | `translation/segments_en.parquet` | [Modalities](modalities.md#speech-and-language) |
-| `spacy_source` | on | its environment, a language model | `linguistic/source/tokens.parquet`, `linguistic/source/sentences.parquet` | [Configuration](configuration.md#language-policy) |
-| `spacy_english` | conditional | an English translation, its environment | `linguistic/english/tokens.parquet`, `linguistic/english/sentences.parquet` | [Configuration](configuration.md#language-policy) |
+| `spacy_source` | on | its environment; a trained model is optional | `linguistic/source/tokens.parquet`, `linguistic/source/sentences.parquet` | [Configuration](configuration.md#language-policy) |
+| `spacy_english` | on, if `spacy.process_english` | an English translation, its environment | `linguistic/english/tokens.parquet`, `linguistic/english/sentences.parquet` | [Configuration](configuration.md#language-policy) |
 | `acoustic` | on | its environment | `acoustic/frame_features.parquet`, `acoustic/segment_features.parquet` | [Modalities](modalities.md#acoustics) |
 | `openpose` | on | OpenPose binary and models under `openpose.root` | `pose/body.parquet`, `pose/hands.parquet`, `pose/face.parquet` | [Modalities](modalities.md#pose-coordinates) |
 | `pose_normalized` | on | OpenPose body output | `pose/normalized.parquet` | [Modalities](modalities.md#pose-coordinates) |
 | `activespeaker` | **off** | TalkNet-ASD checkout at `activespeaker.talknet_root`, its environment | `speaker/active_speaker_frames.parquet`, `speaker/active_speaker_tracks.parquet` | [Modalities](modalities.md#active-speaker-evidence) |
-| `persons` | **off** | its environment, weights unless `persons.weights_dir` is set | `persons/frames.parquet`, `persons/tracks.parquet` | [Modalities](modalities.md#person-tracks) |
-| `speaker_fusion` | on | active-speaker frames and one diarizer | `speaker/fusion_pyannote.parquet`, `speaker/fusion_nemotron.parquet` | [Modalities](modalities.md#audiovisual-agreement) |
+| `persons` | **off** | its environment; a checkpoint under `persons.weights_dir`, or the worker downloads one | `persons/frames.parquet`, `persons/tracks.parquet` | [Modalities](modalities.md#person-tracks) |
+| `speaker_fusion` | on | TalkNet frames and a turn table from an enabled diarizer | `speaker/fusion_pyannote.parquet`, `speaker/fusion_nemotron.parquet` | [Modalities](modalities.md#audiovisual-agreement) |
 | `stories` | on | endpoint, key, model | `stories/stories.parquet` | [Modalities](modalities.md#story-candidates) |
 | `finalization` | always | — | `manifest.json`, `provenance/` | [Datasets](datasets.md#read-a-dataset) |
 | `elan` | on | a transcript (words or segments) | `elan/annotations.eaf` | [ELAN export](elan.md) |
 
-- `always` — no enable flag; it runs for every video.
+- `always` — no enable flag of its own: nothing in configuration turns it off, though a
+  stage range, a reused record or a failed upstream can still keep it from executing.
 - `on` / `off` — the `enabled` value in
   [`config/config.example.yaml`](../config/config.example.yaml).
-- `conditional` — it has no flag of its own and runs when the input it reads exists.
+- `conditional` — no flag of its own; it runs when the input it reads exists.
+  `speaker_assignment` wants pyannote's turns specifically, so a Nemotron-only corpus
+  leaves it skipped.
 - `on` is not a promise: `translation` and `stories` ship with a placeholder endpoint, so
   they skip until you configure them, and `diarization` skips without `HF_TOKEN`.
+- A trained spaCy model is an optimisation, not a prerequisite: with no model for the
+  detected language the worker falls back to a blank pipeline and records it, so tokens and
+  sentence boundaries arrive with empty lemmas, POS and dependencies. `speaker_fusion` also
+  needs faces: without TalkNet frames it skips rather than writing an empty table, and an
+  engine whose turn table was never produced is skipped one engine at a time. An explicit
+  `persons.weights_dir` is a promise about a file — if the checkpoint is absent the stage
+  skips rather than downloading one; unset, the worker fetches it on first use.
 
 Three outputs are opt-in inside an enabled stage: `openpose.write_images`,
 `openpose.write_video` and `activespeaker.write_video`. All default to off, none is needed
@@ -90,7 +100,7 @@ Step 2, one `uv sync` per environment whose stage you enable. Root sync does not
 these, and the numbers are what an enabled stage pulls in:
 
 ```mermaid
-flowchart TD
+flowchart LR
     root["uv sync --python 3.12<br/>CLI, Parquet, HTTP stages, ELAN writer,<br/>metadata, audio, speaker_assignment,<br/>speaker_fusion, pose_normalized, finalization"]
     root --> e1["environments/whisperx → whisperx"]
     root --> e2["environments/diarization → diarization"]
@@ -124,14 +134,21 @@ For the isolation rationale, see [Why seven environments](architecture.md#why-se
 OpenPose is not installed by `uv`. Its default root is `/opt/openpose`; configure
 the root or explicit executable/model paths to match your installation. TalkNet is
 also external to this repository. Neither checkout is created by the root sync.
-Each GPU environment pins one CUDA wheel train (cu124, cu126 or cu128); the comment
-above its dependency list names the driver and card it was verified against. A wheel
-train newer than your driver installs, then reports no CUDA device, so read that
-comment before syncing a machine that is not the one the pins were measured on.
-A missing environment is a skip with a reason for `diarization_nemotron` and `persons`,
-which check for it before running; every other worker stage fails on first use with the
-`uv` error. `inspect-environment` warns about missing project directories before a batch
-starts.
+
+GPU compatibility is per environment, not a global rule: each one pins its own CUDA
+wheel train and records above its dependency list the driver and card that combination
+was measured on. Read that comment rather than comparing numbers — the Nemotron
+environment's cu128 wheels, for instance, were measured working on a driver reporting
+CUDA 12.5. A wheel train your driver cannot serve installs without complaint and then
+reports no CUDA device, so the recorded measurement is the only useful evidence for a
+machine that is not the one the pins were measured on.
+
+A missing environment directory and an existing one that was never synced are
+different failures. `uv` syncs an existing project on first use, so a checkout that was
+never synced costs time, not a failure. A *missing* directory is refused before `uv` is
+called: a skip with a reason for `diarization_nemotron` and `persons`, which check first,
+and a stage failure naming the path for every other worker stage.
+`inspect-environment` warns about missing project directories before a batch starts.
 
 ## Configure
 
@@ -148,41 +165,41 @@ $EDITOR .env
 `output.directory` to real local paths. Put secrets in `.env`; it is read
 automatically, with explicitly exported environment variables taking precedence.
 [`.env.example`](../.env.example) lists the names — `HF_TOKEN` for pyannote, and
-`LITELLM_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_MODEL` for the endpoint. A YAML value
-written as a literal is not replaced by defining the variable; reference it as
-`${VAR}` or edit the value.
+`LITELLM_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_MODEL` for the endpoint. Defining a
+variable does not replace a literal YAML value; reference it as `${VAR}` or edit it.
 
 The example enables WhisperX, pyannote, spaCy, acoustics, OpenPose, pose normalization,
-speaker fusion, translation, stories and ELAN. Nemotron, TalkNet and YOLO are optional
-and disabled in the example. Disable any tool you have not installed. Missing
-`HF_TOKEN` skips pyannote; a missing enabled OpenPose binary is an error, not an
-optional skip.
+speaker fusion, translation, stories and ELAN; Nemotron, TalkNet and YOLO are optional and
+disabled. Disable any tool you have not installed. Missing `HF_TOKEN` skips pyannote, while
+a missing enabled OpenPose binary is an error, not an optional skip.
 
 Translation and stories are enabled in the example but their endpoint host is a
-placeholder. Set each section's `base_url`, `api_key` and `model` deliberately, or
-set `enabled: false`. Their `provider: mock` exercises the request/validation path
-offline; its text is test data, not a real translation or story analysis.
-See [Configuration](configuration.md) for interpolation and policy settings.
+placeholder: set each section's `base_url`, `api_key` and `model` deliberately, or set
+`enabled: false`. Their `provider: mock` exercises the request/validation path offline
+with test data, not a real translation or story analysis. See
+[Configuration](configuration.md) for interpolation and policy settings.
 
 ## Check and run
 
 ```bash
 uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
-uv run multimodal-pipeline process-video -c config/config.local.yaml path/to/clip.mp4
-uv run multimodal-pipeline status -c config/config.local.yaml --plan
-uv run multimodal-pipeline validate -c config/config.local.yaml --json
+uv run multimodal-pipeline process-video -c config/config.local.yaml data/input_videos/clip.mp4
+uv run multimodal-pipeline status -c config/config.local.yaml --video-id clip --plan
+uv run multimodal-pipeline validate -c config/config.local.yaml --video data/input_videos/clip.mp4
 ```
 
-Replace `path/to/clip.mp4` with your file. `inspect-environment` prints JSON and
+Put your clip in `input.directory`. `--video` and `--video-id` scope the commands that
+follow, which otherwise rediscover the configured directory and can report a different
+clip; `status` cannot see a file outside it at all. `inspect-environment` prints JSON and
 warnings; it is a prerequisite inventory, **not** an inference or credential test.
 Typical warnings include `HF_TOKEN is not set: diarization will be skipped`,
 `translation endpoint is not configured: translation will be skipped`, and
 `stories endpoint is not configured: stories will be skipped`.
 An environment directory existing does not prove all of its packages/models work.
 
-`process-video` writes to `<output.directory>/<video_id>/`. Open `manifest.json`
-for artifact paths, `status.json` for per-stage outcomes, and `logs/<stage>.log`
-for failures. A zero-row table can be a valid result; a skipped stage is different.
+`process-video` writes to `<output.directory>/<video_id>/`: `manifest.json` has artifact
+paths, `status.json` the per-stage outcomes, `logs/<stage>.log` the failures. A zero-row
+table can be a valid result; a skipped stage is different.
 
 For a whole input directory, use `run`; see the [CLI reference](cli.md), which also
 walks through one video end to end. To understand the resulting files, go to

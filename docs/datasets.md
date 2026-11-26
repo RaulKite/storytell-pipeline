@@ -39,34 +39,31 @@ Commands use repository-relative paths: run them from the repository root.
 ```
 
 This is the possible layout, not a promise that every file exists in every run.
-`manifest.artifacts` maps logical artifact names to **dataset-relative paths**;
-`artifacts_not_generated` declares absent outputs. Artifact totals vary with
-configuration, available prerequisites and input. Do not hardcode a corpus count.
+`manifest.artifacts` maps logical names to **dataset-relative paths** and
+`artifacts_not_generated` declares absent outputs; never hardcode a corpus count.
 
-Set `activespeaker.write_video: true` to retain TalkNet's native annotated video
-with audio as `speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest).
-It is opt-in and requires ASD recomputation. Turning it off preserves an existing
-video; manifest presence reports files on disk, not the current toggle.
+Set `activespeaker.write_video: true` to retain TalkNet's native annotated video with
+audio as `speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest). It is
+opt-in, requires ASD recomputation, and preserves an existing video when turned off;
+manifest presence reports files on disk, not the current toggle.
 
 Set `openpose.write_video: true` to produce `pose/skeletons.mp4`
 (`pose_skeleton_video` in the manifest), independently of `write_images`. It retains
-OpenPose's native rendering and muxes source audio when available. Enabling it reruns
-OpenPose; disabling it deletes nothing. Publication is atomic for the video, not a
-transaction across all pose outputs. Native preview timing can lose trailing frames;
-use `source/frame_index.parquet` and pose tables for measured source-frame timing.
-Validation allows at most three missing trailing preview frames against current raw
-JSON counts. With video enabled, native output, normalization, mux and validation are
-staged before previous pose outputs are replaced. `extra_args` cannot override native
-video flags in this mode; upstream shell-based MP4 paths must be safe.
+OpenPose's native rendering, muxes source audio when available, reruns OpenPose when
+enabled and deletes nothing when disabled. Publication is atomic for the video, not a
+transaction across all pose outputs: native output, normalization, mux and validation are
+staged before previous pose outputs are replaced, and `extra_args` cannot override native
+video flags. Native preview timing can lose trailing frames (validation allows at most
+three against current raw JSON counts), so use `source/frame_index.parquet` and the pose
+tables for measured source-frame timing.
 
-Each dataset folder receives an English `explanation.md` on run/resume, including
-reused outputs. These are contract guides, not evidence that a module produced data;
-they are excluded from directory-artifact counts and model fingerprints. Unmarked
-hand-written guides are preserved; generator-marked guides can be refreshed.
+Each dataset folder receives an English `explanation.md` on run/resume, including reused
+outputs: contract guides, not evidence that a module produced data, excluded from artifact
+counts and model fingerprints. Unmarked hand-written guides are preserved.
 
-Raw outputs remain beside normalized tables. Provenance is stored in sidecars and
-the provenance directory rather than injected into original raw bytes. The config
-snapshot masks secrets, but logs/tool provenance can still contain machine paths.
+Raw outputs remain beside normalized tables, with provenance in sidecars and the
+provenance directory rather than injected into raw bytes. The config snapshot masks
+secrets, but logs and tool provenance can still contain machine paths.
 
 ## Table reference
 
@@ -103,80 +100,87 @@ Presence is determined by the manifest, not this inventory.
 
 ### How the tables join
 
+Two families of tables share no key, so they are drawn apart. Speech, text and acoustics:
+
 ```mermaid
 flowchart TB
-    fi["source/frame_index.parquet<br/>frame_number, pts_seconds"]
-    seg["speech/segments.parquet<br/>segment_id, speaker_id<br/>start_time, end_time"]
-    words["speech/words.parquet<br/>word_id, segment_id, speaker_id"]
-    tr["speech/speaker_turns.parquet<br/>turn_id, speaker_id"]
-    trn["speech/speaker_turns_nemotron.parquet<br/>turn_id, speaker_id"]
+    seg["speech/segments.parquet<br/>segment_id, speaker_id,<br/>start_time, end_time"]
+    words["speech/words.parquet<br/>word_id, segment_id"]
     en["translation/segments_en.parquet<br/>segment_id, speaker_id"]
-    tok["linguistic/source/tokens.parquet<br/>segment_id, sentence_id, token_id"]
+    tok["linguistic/source/tokens.parquet<br/>token_id, segment_id,<br/>sentence_id"]
     acseg["acoustic/segment_features.parquet<br/>segment_id, start_time, end_time"]
     acfr["acoustic/frame_features.parquet<br/>timestamp only, Praat grid"]
-    body["pose/body.parquet<br/>frame_number, timestamp"]
-    norm["pose/normalized.parquet<br/>frame_number, timestamp"]
-    asd["speaker/active_speaker_frames.parquet<br/>track_id, frame_number,<br/>timestamp, source_timestamp"]
-    asdt["speaker/active_speaker_tracks.parquet<br/>track_id"]
-    pf["persons/frames.parquet<br/>person_id, frame_number, timestamp"]
-    pt["persons/tracks.parquet<br/>person_id"]
-    fus["speaker/fusion_pyannote.parquet<br/>turn_id, face_track_id, agreement"]
-    st["stories/stories.parquet<br/>story_id, parent_id,<br/>evidence segment ids as JSON"]
-    seg -- "segment_id" --> words
-    seg -- "segment_id" --> en
-    seg -- "segment_id" --> tok
-    words -- "segment_id" --> tok
-    seg -- "segment_id" --> acseg
-    tr -- "turn_id" --> fus
-    trn -- "turn_id" --> fus
-    asd -- "face_track_id = track_id" --> fus
-    asd -- "track_id" --> asdt
-    pf -- "person_id" --> pt
-    body -. "re-expressed, same rows" .-> norm
-    fi -. "pts_seconds is the source clock" .-> body
-    fi -. "pts_seconds is the source clock" .-> asd
-    asd -. "join here, never on frame_number" .-> body
-    tr -. "interval overlap, no id column" .-> seg
+    st["stories/stories.parquet<br/>story_id, parent_id,<br/>evidence_segment_ids"]
+    seg -- "segment_id" --> words & en & acseg
+    words -. "segment_id only:<br/>grouped at segment grain" .-> tok
     acfr -. "no key: interval overlap only" .-> acseg
-    st -. "segment ids inside the evidence JSON" .-> seg
+    st -. "decoded evidence_segment_ids<br/>to segment_id" .-> seg
 ```
 
-Solid edges are id joins; dotted edges are time-only relationships that must be stated
-explicitly. These are conventions the files carry, not declared foreign keys — nothing on
-disk enforces them. `face_track_id` names a TalkNet `track_id`, never a diarizer
-`speaker_id` or a YOLO `person_id`: separate namespaces, even when the digits match.
+Then turns, clocks, pose, persons and agreement, with some filenames shortened; the table
+above gives every full dataset-relative path:
+
+```mermaid
+flowchart TB
+    fi["source/frame_index.parquet<br/>frame_number,<br/>pts_seconds"]
+    body["pose/body.parquet<br/>frame_number,<br/>detection_index, keypoint_id"]
+    norm["pose/normalized.parquet<br/>the same three keys"]
+    asd["active_speaker_frames.parquet<br/>track_id, frame_number,<br/>timestamp, source_timestamp"]
+    asdt["active_speaker_tracks.parquet<br/>track_id"]
+    pf["persons/frames.parquet<br/>person_id, frame_number,<br/>timestamp"]
+    pt["persons/tracks.parquet<br/>person_id"]
+    fusP["fusion_pyannote.parquet<br/>pyannote turn_id,<br/>face_track_id, agreement"]
+    fusN["fusion_nemotron.parquet<br/>Nemotron turn_id,<br/>face_track_id, agreement"]
+    tr["speech/speaker_turns.parquet<br/>pyannote turn_id,<br/>speaker_id"]
+    trn["speaker_turns_nemotron.parquet<br/>Nemotron turn_id,<br/>speaker_id"]
+    body -- "same three keys, within a video" --> norm
+    asd --> asdt
+    pf --> pt
+    tr --> fusP
+    trn --> fusN
+    asd -- "face_track_id" --> fusP & fusN
+    fi -. "source clock" .-> body & asd
+    asd -. "source_timestamp" .-> body
+```
+
+Solid edges are id joins; dotted edges are relationships to state explicitly — interval
+overlap, a shared clock, or an id that agrees only at a coarser grain. Neither is a
+declared foreign key, though `finalization` checks two: a translation row citing a missing
+`segment_id`, and a transcript `speaker_id` absent from pyannote's turns.
+
+The families meet through overlap and one shared id: a turn table against the transcript,
+TalkNet's frames against the turns (what the fused tables measure), and pyannote's labels
+in the transcript's `speaker_id` column. Each diarizer numbers its own turns from one, so
+`turn000001` means something only inside the file that wrote it — hence one fused file per
+engine. `face_track_id` names a TalkNet `track_id`, never a diarizer `speaker_id`.
 
 ## Speaker timing example
 
-Speaker-turn intervals and word-timing markers are separate records. This synthetic
-example illustrates `speaker_turns` alongside `speech_words`, not measured accuracy
-or data from a recording. See [Consumer rules](#consumer-rules) before joining them.
+Speaker-turn intervals and word-timing markers are separate records: a synthetic
+example of `speaker_turns` beside `speech_words`, not measured accuracy. See
+[Consumer rules](#consumer-rules) before joining them.
 
 ![Synthetic schema demo: speaker turns and word timings](assets/speaker_turn_strip.png)
 
 ## Read a dataset
 
-Run the following with `uv run python` in the root environment. Replace the dataset path
-with one your configuration produced; there is no required local demo dataset.
+Run this with `uv run python` in the root environment, on a dataset your configuration
+produced; there is no required local demo dataset.
 
 ```python
 import json
 from pathlib import Path
 import pyarrow.parquet as pq
-
 dataset = Path("data/processed/pipeline_demo")
 manifest = json.loads((dataset / "manifest.json").read_text())
 status = json.loads((dataset / "status.json").read_text())
-
 print("source:", manifest["source"])
 print("not generated:", manifest["artifacts_not_generated"])
 for name, stage in status["stages"].items():
     print(name, stage["status"])
 
-def read(name):
-    relative = manifest["artifacts"].get(name)
-    if relative is None:
-        raise KeyError(f"Artifact not produced: {name}")
+def read(name):  # KeyError names the artifact this run did not produce
+    relative = manifest["artifacts"][name]
     return pq.read_table(dataset / relative)
 
 words = read("speech_words")
@@ -184,9 +188,9 @@ print(words.schema)               # field types and metadata
 print(words.slice(0, 5).to_pylist())
 ```
 
-Use Arrow directly for large tables. For pandas analysis, add pandas to your analysis
-environment and call `read("speech_words").to_pandas()`. Group within a single video
-before joining; IDs from two datasets need not be globally unique.
+Use Arrow directly for large tables; for pandas call `read("speech_words").to_pandas()`
+after adding pandas to your analysis environment. Group within one video before joining:
+IDs from two datasets need not be globally unique.
 
 ## Consumer rules
 
@@ -202,17 +206,15 @@ before joining; IDs from two datasets need not be globally unique.
 | Missing vs zero | Null is not a measured zero; inspect alignment, basis, face and model-capability status fields |
 | Imputed vs measured | `score_imputed` means carried evidence, not a fresh TalkNet measurement |
 
-For pose/ASD comparisons, join on `source_timestamp`, never on `frame_number`:
-the TalkNet index counts re-encoded frames. Map pose's source `timestamp` to that
-column, preserving the possibility that several working-grid rows map to one source
-frame. Do not assume a one-to-one frame join, even when both columns are integers.
-For interval/instant joins, state your boundary rule explicitly (usually
+For pose/ASD comparisons, join on `source_timestamp`, never on `frame_number`: the
+TalkNet index counts re-encoded frames, and several working-grid rows can map to one
+source frame. For interval/instant joins state your boundary rule explicitly (usually
 `start_time <= timestamp < end_time`) and inspect overlapping diarizer turns.
 
-Translation joins transcript segments by `segment_id`, not word position. English
-tokens are not one-to-one source tokens, and their times can be approximate or segment
-context. Speaker assignment rewrites transcript tables with pyannote labels; it does
-not rename the original WhisperX raw output.
+Translation joins transcript segments by `segment_id`, not word position: English
+tokens are not one-to-one source tokens and their times can be approximate. Speaker
+assignment rewrites the transcript tables with pyannote labels, not the WhisperX raw
+output.
 
 Read [Modalities](modalities.md) before interpreting confidence, person counts or
 story candidates. Read [ELAN export](elan.md) for what an annotation summary leaves out.

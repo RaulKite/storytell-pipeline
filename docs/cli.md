@@ -21,9 +21,9 @@ Commands use repository-relative paths: run them from the repository root.
 |---|---|
 | `run` | Process the discovered input videos sequentially |
 | `resume` | Continue using validated previous stage results |
-| `retry-failed` | Force failed stages, invalidating dependent results |
+| `retry-failed` | Force the stages downstream of a failed one; that stage reruns anyway |
 | `process-video <file>` | Process a single explicit path |
-| `status` | Inspect stage outcomes; `--plan` explains reuse, `--json` supports scripts |
+| `status` | Inspect stage outcomes; `--plan` estimates reuse, `--json` supports scripts |
 | `validate` | Check existing artifacts without processing; optional `--json` |
 | `inspect-environment` | Tools/models/GPU inventory as JSON, always; no flag needed |
 
@@ -41,6 +41,10 @@ uv run multimodal-pipeline validate -c config/config.local.yaml --json
 `validate` gets the output directory from config; it has no `-o` flag.
 JSON command output goes to stdout, human tables/messages to stderr.
 `inspect-environment` does not accept `--json` because JSON is unconditional.
+
+Every command that processes or validates accepts `--video <path>`. `status` takes
+`--video-id <id>` instead and can only report videos discovered under `input.directory`,
+so a file processed from elsewhere is invisible to it.
 
 ## Stage controls
 
@@ -70,7 +74,8 @@ reusable**. Check `status --plan` before assuming an inexpensive refresh.
 
 ## Worked example: one video, end to end
 
-One clip, from an unconfigured machine to an ELAN file.
+One clip, from an unconfigured machine to an ELAN file. Keep the clip inside
+`input.directory` from the start: that is the only list the follow-up commands agree on.
 
 ```mermaid
 sequenceDiagram
@@ -83,18 +88,19 @@ sequenceDiagram
     Op->>CLI: inspect-environment -c CONFIG
     CLI->>Cfg: load, interpolate, validate
     CLI-->>Op: JSON tool and GPU inventory, plus warnings
-    Op->>CLI: process-video clip.mp4
+    Op->>CLI: process-video -c CONFIG IN/clip.mp4
     loop every stage in STAGE_ORDER
         CLI->>State: read the reuse decision
         CLI->>Disk: run the stage, write raw output and Parquet
         CLI->>State: record status, hashes and row counts
+        CLI->>Disk: explanation.md guides (runner, before and after the loop)
     end
-    CLI->>Disk: manifest, provenance and explanation.md guides
+    CLI->>Disk: finalization writes manifest and provenance
     CLI-->>Op: per-stage table, dataset path, exit 2 if partial
-    Op->>CLI: status --plan
+    Op->>CLI: status -c CONFIG --video-id clip --plan
     CLI->>State: compare recorded fingerprints and sequences
-    CLI-->>Op: run or keep, with the reason
-    Op->>CLI: validate --json
+    CLI-->>Op: a decision and a reason per stage
+    Op->>CLI: validate -c CONFIG --video IN/clip.mp4 --json
     CLI-->>Op: exit 0, or exit 1 naming the broken stage
 ```
 
@@ -107,35 +113,55 @@ uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
 Read `environment_warnings` before spending an hour on a batch: it names a missing
 credential, an unconfigured endpoint, a missing OpenPose binary and a missing `uv` project.
 
-**Process the clip.** The file is a positional argument, not `--video`:
+**Process the clip.** Copy it into `input.directory` — `data/input_videos/` in these
+examples — and pass that path; the file is a positional argument, not `--video`:
 
 ```bash
-uv run multimodal-pipeline process-video -c config/config.local.yaml path/to/clip.mp4
+cp path/to/clip.mp4 data/input_videos/
+uv run multimodal-pipeline process-video -c config/config.local.yaml data/input_videos/clip.mp4
 ```
 
-The dataset lands in `<output.directory>/<video_id>/`. The run prints one line per stage
-and exits `2` when the video ended `partial` or `failed`.
+`process-video` would accept a file anywhere, but nothing else would find it later:
+every other command rebuilds the video list from the configuration. Either keep the clip
+in `input.directory`, or scope the follow-up commands with `--video <path>` and accept
+that `status` cannot report a file outside it.
+
+The dataset lands in `<output.directory>/<video_id>/`; the run prints that path, one
+line per stage, and exits `2` when the video ended `partial` or `failed`.
 
 **Ask why a stage would run again:**
 
 ```bash
-uv run multimodal-pipeline status -c config/config.local.yaml --plan
+uv run multimodal-pipeline status -c config/config.local.yaml --video-id clip --plan
 ```
 
-Each stage prints as `run ` or `keep` with its reason (`configuration changed`,
-`upstream dependency changed`, `outputs changed`, `validation failed`). `status` and `run`
-share the decision, so the plan is what the next run does.
+Each stage is listed with its reason — `configuration changed`, `upstream dependency
+changed`, `outputs changed`, `validation failed`, `valid previous result`, `disabled: …`.
+Trust the reason text over the one-word decision beside it: the reason says what to do
+about the stage.
 
-**Resume, or retry only what broke:**
+Treat the plan as an estimate from the dataset as it stands, not a forecast: some stage
+fingerprints read artifacts already on disk, so asking for a plan on a clip that was
+never processed can exit with `StageError: audio stage requires metadata.json` instead of
+printing a table. After a real run the same pass is what a following `run` decides.
+
+**Resume, or retry what broke:**
 
 ```bash
-uv run multimodal-pipeline resume -c config/config.local.yaml
-uv run multimodal-pipeline retry-failed -c config/config.local.yaml
+uv run multimodal-pipeline resume -c config/config.local.yaml --video data/input_videos/clip.mp4
+uv run multimodal-pipeline retry-failed -c config/config.local.yaml --video data/input_videos/clip.mp4
 ```
 
-`resume` is `run` again: every stage whose five reuse conditions still hold is reused.
-`retry-failed` forces the failed stages and their dependants, and says so instead of
-running when no stage failed.
+`resume` is `run` again: every stage whose five reuse conditions still hold is reused,
+and nothing is forced.
+
+`retry-failed` reads `status.json`, forces every stage **downstream** of a failed one and
+prints that list before processing. The failed stage is not on the list: it reruns
+because a failed record never satisfies the reuse test. Two consequences worth knowing:
+a failure in `elan`, the one stage nothing depends on, yields an empty forced list and
+the command falls back to the full stage order; and with no failed stage in the selected
+videos it exits `0` without processing. It also accepts no stage controls — the forced
+set is the whole selection.
 
 **Refresh one end of the pipeline:**
 
@@ -157,11 +183,15 @@ Each completed stage's own validation runs again and its recorded Parquet row co
 compared. Exit `1` means an artifact is missing, changed shape or is semantically invalid;
 skipped stages are reported as skipped, not failed.
 
-**Open the result in ELAN.** Open `elan/annotations.eaf` with ELAN and keep the dataset
-directory intact, so the relative media link still resolves. Without ELAN at hand:
+**Open the result in ELAN.** An `.eaf` needs an audio stream in the source and a
+successful transcription: without audio there are no words to align, and `elan` skips
+with a reason when neither `speech/words.parquet` nor `speech/segments.parquet` exists.
+Open `elan/annotations.eaf` under the dataset path the run printed, and keep that
+directory intact so the relative media link still resolves. Without ELAN at hand, the
+same file rendered as HTML:
 
 ```bash
-uv run python scripts/make_elan_view.py data/processed/pipeline_demo/elan/annotations.eaf /tmp/view.html
+uv run python scripts/make_elan_view.py data/processed/clip/elan/annotations.eaf /tmp/view.html
 ```
 
 The preview shows tiers and bars and never plays the video; see
@@ -173,8 +203,9 @@ Stage columns use numeric indices, with stage names and state marks in the legen
 Long video IDs are printed separately rather than truncated. `ov` is overall status.
 
 Marks: `c=completed`, `F=failed`, `P=partial`, `.=pending`, `r=running`, `s=skipped`.
-Use `--plan` to distinguish configuration changes, missing outputs, validation
-failures and explicit skips. `status.json` remains the machine-readable resume record.
+Use `--plan` for the per-stage reason that separates a configuration change, a missing
+output, a failed validation and an explicit skip; the reason text is what to read.
+`status.json` remains the machine-readable resume record.
 
 ## Exit codes
 

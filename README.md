@@ -34,11 +34,13 @@ Stages can be disabled, and missing optional prerequisites have recorded reasons
 flowchart LR
     video["one input video"] --> meta["metadata and audio<br/>ffprobe, ffmpeg"]
     meta --> speech["speech and language<br/>WhisperX, pyannote, translation, spaCy, Praat"]
-    meta --> vision["vision<br/>OpenPose, YOLO persons, TalkNet"]
-    speech --> fusion["audio-visual agreement"]
-    vision --> fusion
+    meta --> vision["vision<br/>OpenPose, YOLO persons"]
+    meta --> faces["visible faces<br/>optional TalkNet"]
+    speech --> fusion["audio-visual agreement<br/>diarizer turns against face frames"]
+    faces --> fusion
     speech --> data["dataset directory<br/>raw output, Parquet, logs, provenance"]
     vision --> data
+    faces --> data
     fusion --> data
     data --> eaf["elan/annotations.eaf summary"]
 ```

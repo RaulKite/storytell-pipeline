@@ -31,12 +31,12 @@ flowchart TB
     binary --> out
     out --> fin["finalization<br/>manifest, provenance, cross-modal checks"]
     fin --> eaf["elan stage<br/>elan/annotations.eaf"]
-    fin --> summary["explanation.md guides<br/>written by the runner"]
+    runner --> guides["explanation.md guides<br/>written before and after the stage loop"]
     cli --> report["batch_report.json<br/>the last batch's outcome"]
 ```
 
-The three columns are a boundary: a heavy model lives in a declared `uv` project and a
-worker, so the orchestrator imports no torch, pyannote, spaCy or Parselmouth.
+The columns are a boundary: a heavy model lives in a declared `uv` project and a worker,
+so the orchestrator imports no torch, pyannote, spaCy or Parselmouth.
 
 | Responsibility | Source |
 |---|---|
@@ -48,7 +48,6 @@ worker, so the orchestrator imports no torch, pyannote, spaCy or Parselmouth.
 | Tool launch and provenance | [`uv_worker.py`](../src/multimodal_pipeline/uv_worker.py), [`subprocess_utils.py`](../src/multimodal_pipeline/subprocess_utils.py), [`provenance.py`](../src/multimodal_pipeline/provenance.py) |
 | Export and summaries | [`manifest.py`](../src/multimodal_pipeline/manifest.py), [`elan.py`](../src/multimodal_pipeline/elan.py), [`report.py`](../src/multimodal_pipeline/report.py) |
 
-The orchestrator does not import `torch`, `pyannote`, `spacy` or `parselmouth`.
 Workers communicate through files and subprocess results, not shared model objects.
 
 ## Stage dependencies
@@ -67,20 +66,21 @@ flowchart TD
     activespeaker --> speaker_fusion
     speaker_assignment --> translation & spacy_source & acoustic & stories
     translation --> spacy_english
-    subgraph producers["every other stage above"]
+    subgraph deps["finalization depends on every stage above"]
         direction LR
-        whisperx; diarization; diarization_nemotron; speaker_assignment; translation
-        spacy_source; spacy_english; acoustic; openpose; pose_normalized
-        activespeaker; persons; speaker_fusion; stories
+        metadata; audio; whisperx; diarization; diarization_nemotron
+        speaker_assignment; translation; spacy_source; spacy_english
+        acoustic; openpose; pose_normalized; activespeaker; persons
+        speaker_fusion; stories
     end
-    producers --> finalization
+    deps --> finalization
     finalization --> elan
     classDef optional stroke-dasharray: 6 4,color:#666
     class diarization_nemotron,activespeaker,persons optional
 ```
 
 Dashed nodes are disabled in `config/config.example.yaml` and need an extra install or
-checkout; that is a shipping default, not an unimplemented feature. See the
+checkout: a shipping default, not an unimplemented feature. See the
 [stage status matrix](getting-started.md#what-runs-by-default) for prerequisites.
 
 | Stage | Direct dependencies | Work |
@@ -106,44 +106,44 @@ checkout; that is a shipping default, not an unimplemented feature. See the
 
 ## Execution and failure handling
 
-One video and one stage run at a time to keep GPU memory use predictable. A failed
-stage blocks its dependants, not unrelated branches: a transcription failure does
-not prevent `openpose` or `persons` from processing video frames.
+One video and one stage run at a time to keep GPU memory predictable, and a failed stage
+blocks its dependants, not unrelated branches: a transcription failure does not stop
+`openpose` or `persons` from reading frames.
 
 Every stage goes through the same decision, in `VideoRunner._run_stage`:
 
 ```mermaid
 flowchart TD
     visit(["each stage, in STAGE_ORDER"]) --> range{"in the selected range?"}
-    range -- no --> outside["skipped: outside requested stage range"]
-    range -- yes --> poison{"failed stage in its dependency chain?"}
-    poison -- yes --> blocked["skipped: upstream stage failed"]
-    poison -- no --> able{"enabled, and its optional inputs present?"}
-    able -- no --> disabled["skipped: recorded reason"]
-    able -- yes --> reuse{"forced, or five-part reuse test passed?"}
-    reuse -- "reusable" --> kept["completed: valid previous result reused"]
-    reuse -- "no" --> running["running: prepare, execute, validate"]
-    running -- "validate raises" --> failed["failed: error, log file, stderr tail"]
-    running -- "validate passes" --> done["completed: hashes, row counts, sequence"]
+    range -- no --> outside["record untouched"]
+    range -- yes --> poison{"failed upstream?"}
+    poison -- yes --> blocked["skipped: upstream failed"]
+    poison -- no --> able{"enabled?"}
+    able -- no --> disabled["skipped: reason"]
+    able -- yes --> reuse{"reuse?"}
+    reuse -- yes --> kept["completed: reused"]
+    reuse -- "forced, or test failed" --> running["running: prepare, execute"]
+    running -- "raises" --> failed["failed"]
+    running -- "validate passes" --> done["completed"]
 ```
 
-`skipped` and `failed` are different records on purpose: a skip names a reason the
-operator chose or a prerequisite that is absent, a failure names an error. A zero-row
-table is neither — it is a completed analysis that found nothing. Beyond the flow above,
-a dependant's skip reason names the failed upstream, a broken required tool fails with its
-own error (only explicitly optional checks, such as Nemotron's missing environment
-directory, become skips), and a batch continues to the next video unless
-`execution.stop_on_video_error` is enabled.
+`skipped` and `failed` are different records on purpose: a skip names a chosen reason or
+an absent prerequisite, a failure an error, a zero-row table neither. Unstated details: an
+unselected stage keeps a `completed` record rather than becoming skipped, a forced stage
+resets its record and skips the reuse test, and an exception in `prepare` or `execute`
+fails the stage before validation is reached. Beyond the flow, a broken required tool
+fails with its own error (only explicitly optional checks, such as Nemotron's missing
+environment directory, become skips), and `execution.stop_on_video_error` stops the batch
+only on a video whose overall result is `failed`, not on a `partial` one.
 
-`finalization` excludes `elan` from its dependencies to avoid a cycle. The runner's
-closing summary refresh includes the export after it has run; a manifest read
-mid-run is not the final inventory. Finalization itself can be blocked by a producer
-failure, and consequently block ELAN: an unrelated branch surviving does not mean
-that every summary stage will complete.
+`finalization` excludes `elan` from its dependencies to avoid a cycle, and the runner's
+closing summary refresh includes the export after it has run: a manifest read mid-run is
+not the final inventory. A producer failure can still block finalization, and with it
+ELAN — an unrelated branch surviving does not mean every summary stage completes.
 
 ## Resume, reuse and invalidation
 
-`status.json` is the resume record. Reuse requires all of the following:
+`status.json` is the resume record. Reuse requires all five:
 
 1. Recorded status is `completed`.
 2. The stage's configuration/tool/source fingerprint is unchanged.
@@ -155,11 +155,13 @@ that every summary stage will complete.
 numbers, rather than filesystem mtimes, detect fast upstream reruns. Fingerprints
 exclude a stage's own generated bookkeeping, so finalization does not invalidate itself.
 
-Stages can reuse retained raw output for normalization when their tool-request
-identity still matches. Request identity and normalization identity are separate:
-a schema/transform edit need not rerun an expensive model, while a changed model or
-request must not reuse an incompatible raw result. Stage selection still includes
-prerequisites; see [CLI controls](cli.md#stage-controls).
+Stages can reuse retained raw output for normalization when their tool-request identity
+still matches. Request identity and normalization identity are separate: a schema or
+transform edit need not rerun an expensive model, while a changed model or request must
+not reuse an incompatible raw result. Stage selection is not uniform:
+`--only-stage` expands to that stage's dependency chain, while `--from-stage` and
+`--to-stage` only slice `STAGE_ORDER` and add no prerequisite. See
+[CLI controls](cli.md#stage-controls).
 
 ## Design decisions
 
@@ -182,10 +184,10 @@ identification, retraining, subtitles, transliteration and gaze estimation.
 
 ## Why seven environments
 
-Heavy tools have incompatible torch/CUDA and dependency requirements. Each has an
+Heavy tools have incompatible torch/CUDA and dependency requirements, so each has an
 independent `uv` project under [`environments/`](../environments), launched by
-`uv run --project environments/<name> python workers/<name>_worker.py` (worker
-filenames are configured, not inferred from the environment name).
+`uv run --project environments/<name> python workers/<name>_worker.py` (worker filenames
+are configured, not inferred from the environment name).
 
 ```mermaid
 flowchart LR
@@ -213,6 +215,6 @@ A stage with no worker is pure Python over Parquet or HTTP: a re-read, not a mod
 | `activespeaker` | torch 2.5.1: TalkNet's checkpoints use `torch.load()` without `weights_only=` |
 | `persons` | Ultralytics detection/tracking and its own torch stack |
 
-Exact pins and their failure rationale belong in each `pyproject.toml` and lockfile, not
-a version list here: read those comments before upgrading. See [Development](development.md)
-for checks and [Configuration](configuration.md) for the settings that select these tools.
+Exact pins and their failure rationale belong in each `pyproject.toml`, not a version list
+here: read those comments before upgrading. See [Development](development.md) and
+[Configuration](configuration.md).
