@@ -637,6 +637,34 @@ class TestGmcWarningCounter:
         assert payload["_document"]["gmc_failure_reason"]
 
 
+class TestArgparseDoesNotAcceptAbbreviations:
+    """The stage refuses ``--output-video`` in extra_args; argparse used to accept ``--output-v``.
+
+    A prefix is the same flag to argparse, so a guard that compares whole flag names is only as
+    strong as the parser's abbreviation rule. Both sides are closed here.
+    """
+
+    @pytest.mark.parametrize("flag", ["--output-v", "--output-vid", "--ffm", "--ffp"])
+    def test_an_abbreviated_flag_is_not_accepted(self, worker, flag):
+        # Every required argument is supplied, so the *only* reason this can exit is the
+        # abbreviation itself: a missing-argument error would make this test pass for the
+        # wrong reason and keep passing after the parser went back to accepting prefixes.
+        required = ["--video", "v.mp4", "--frame-index", "f.parquet",
+                    "--output-json", "o.json", "--result-path", "r.json"]
+        with pytest.raises(SystemExit):
+            worker.parse_args(required + [flag, "/tmp/x.mp4"])
+
+    def test_the_exact_flags_still_parse(self, worker):
+        parsed = worker.parse_args([
+            "--video", "v.mp4", "--frame-index", "f.parquet",
+            "--output-json", "o.json", "--result-path", "r.json",
+            "--output-video", "tracks.mp4", "--ffmpeg", "ffmpeg",
+            "--ffprobe", "ffprobe"])
+        assert parsed.output_video == Path("tracks.mp4")
+        assert parsed.ffmpeg == "ffmpeg"
+        assert parsed.ffprobe == "ffprobe"
+
+
 class TestArgumentValidation:
     @pytest.mark.parametrize("value", ["0", "1.0", "-0.1"])
     def test_a_confidence_outside_the_open_interval_is_refused(self, worker, tmp_path, clip,

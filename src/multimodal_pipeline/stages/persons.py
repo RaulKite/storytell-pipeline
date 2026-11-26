@@ -318,17 +318,30 @@ class PersonsStage(WorkerStage):
         ctx.input("frame_index")
 
     def refuse_owned_flags_in_extra_args(self, ctx: StageContext) -> None:
-        """Refuse the render flags in ``persons.extra_args``, naming each one."""
-        offenders = sorted({arg.split("=", 1)[0] for arg in ctx.config.persons.extra_args
-                            if arg.split("=", 1)[0] in set(self.PIPELINE_OWNED_FLAGS)})
+        """Refuse the render flags in ``persons.extra_args``, naming each one.
+
+        Abbreviations count as the flag. argparse expands any unambiguous prefix, so
+        ``--output-v`` reached ``--output-video`` past a guard that compared whole names; the
+        worker parser now sets ``allow_abbrev=False``, and this rejects prefixes too rather
+        than trusting one side of the boundary to hold.
+        """
+        offenders: dict[str, str] = {}
+        for arg in ctx.config.persons.extra_args:
+            spelled = arg.split("=", 1)[0]
+            for owned in self.PIPELINE_OWNED_FLAGS:
+                if spelled == owned or (len(spelled) > 2 and owned.startswith(spelled)):
+                    offenders[owned] = spelled
         if not offenders:
             return
+        named = ", ".join(owned if owned == spelled else f"{owned} (as {spelled})"
+                          for owned, spelled in sorted(offenders.items()))
         raise StageError(
-            "persons.extra_args cannot override " + ", ".join(offenders)
+            "persons.extra_args cannot override " + named
             + ": the stage owns the preview destination, the ffmpeg that encodes it and the "
               "ffprobe that validates it. A destination from extra_args would be a file this "
               "stage never publishes (or the very file it validates), and a different ffmpeg "
-              "would leave validate() certifying a render it did not build. Remove the flag; "
+              "would leave validate() certifying a render it did not build. An abbreviation "
+              "is the same flag to argparse, so it is refused as one. Remove it; "
               "persons.write_video is the switch.")
 
     def worker_argv(self, ctx: StageContext, raw_path: Path, request_digest: str) -> list[str]:

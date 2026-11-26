@@ -1049,6 +1049,23 @@ class TestRenderFlagsArePipelineOwned:
         with pytest.raises(StageError, match=rf"persons\.extra_args.*{re.escape(flag)}"):
             PersonsStage().execute(context)
 
+    @pytest.mark.parametrize("flag,owned", [
+        ("--output-v", "--output-video"),
+        ("--output-vid", "--output-video"),
+        ("--ffm", "--ffmpeg"),
+        ("--ffp", "--ffprobe"),
+        ("--ff", "--ffprobe"),
+    ])
+    def test_an_abbreviation_of_an_owned_flag_is_refused_too(self, context, flag, owned):
+        """argparse expands any unambiguous prefix, so ``--output-v`` reaches the same flag.
+
+        The worker parser now sets ``allow_abbrev=False``; this is the other side of the same
+        boundary, because a guard that only knows whole names is a guard one keystroke wide.
+        """
+        context.config.persons.extra_args = [flag, "/tmp/not-yours.mp4"]
+        with pytest.raises(StageError, match=rf"persons\.extra_args.*{re.escape(owned)}"):
+            PersonsStage().prepare(context)
+
     def test_the_refusal_arrives_before_any_worker_could_start(self, context):
         context.config.persons.write_video = True
         context.config.persons.extra_args = ["--ffprobe", "/bin/false"]

@@ -999,7 +999,11 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # ``allow_abbrev=False`` because argparse otherwise accepts any unambiguous prefix, so
+    # ``--output-v`` reached ``--output-video`` and bypassed the stage's refusal of that flag
+    # in ``persons.extra_args`` -- the guard compares whole flag names. Exact spelling only,
+    # for the flags this stage owns and for everything else.
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--frame-index", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
