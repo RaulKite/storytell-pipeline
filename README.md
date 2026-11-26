@@ -91,13 +91,13 @@ Keep existing configuration and credentials instead of overwriting them; transla
 
 ## Citing
 
-Metadata: [CITATION.cff](CITATION.cff), which GitHub's **Cite this repository** button reads.
+If you use this pipeline, please cite the STORYTEL article it accompanies. [CITATION.cff](CITATION.cff)
+declares it as the preferred citation, so GitHub's **Cite this repository** button exports it as APA or BibTeX.
 
-```bibtex
-@misc{storytel_pipeline,
-  author = {Sánchez, Raúl}, title = {Storytel Pipeline}, version = {0.1.0},
-  url    = {https://github.com/RaulKite/storytell-pipeline}}
-```
+> Bonifazi, A., Al-qaoud, J., Alcaraz Carrión, D., Crosilla, G., Debreslioska, S., Del Rosario Illan Castillo, M., Eide, Ø., Frings, M., Garibyan, A., Gipper, S., Grice, M., Iabdounane, Y., Pagán Cánovas, C., Patel, M., Rau, F., Sánchez Sánchez, R., Somrani Achouri, M., Turner, M., Uhrig, P., Vitali, F., & Yu, M. (2026).
+> Enabling AI to find multimodal signals of storytelling cross-culturally: A multi-step approach.
+> In *Companion Publication of the 28th International Conference on Multimodal Interaction (ICMI Companion ’26)* (pp. 370–374). ACM.
+> https://doi.org/10.1145/3776591.3836646
 
 ## Acknowledgements
 

@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use Storytel Pipeline in your research, please cite it as below."
+message: "If you use Storytel Pipeline in your research, please cite the article in preferred-citation."
 title: Storytel Pipeline
 type: software
 version: "0.1.0"
@@ -9,3 +9,82 @@ authors:
   - given-names: Raúl
     family-names: Sánchez
     email: raul@um.es
+    orcid: https://orcid.org/0009-0003-4100-9255
+preferred-citation:
+  type: conference-paper
+  title: "Enabling AI to Find Multimodal Signals of Storytelling Cross-Culturally: A Multi-Step Approach"
+  authors:
+    - given-names: "Anna"
+      family-names: "Bonifazi"
+      orcid: https://orcid.org/0000-0002-7200-2684
+    - given-names: "Juman"
+      family-names: "Al-qaoud"
+      orcid: https://orcid.org/0000-0002-9768-4749
+    - given-names: "Daniel"
+      family-names: "Alcaraz Carrión"
+      orcid: https://orcid.org/0000-0001-5325-431X
+    - given-names: "Giorgia"
+      family-names: "Crosilla"
+      orcid: https://orcid.org/0009-0008-8464-1636
+    - given-names: "Sandra"
+      family-names: "Debreslioska"
+      orcid: https://orcid.org/0000-0002-1186-853X
+    - given-names: "Maria"
+      family-names: "Del Rosario Illan Castillo"
+      orcid: https://orcid.org/0000-0002-7467-3510
+    - given-names: "Øyvind"
+      family-names: "Eide"
+      orcid: https://orcid.org/0000-0002-7766-6287
+    - given-names: "Madeleine"
+      family-names: "Frings"
+      orcid: https://orcid.org/0000-0003-3662-482X
+    - given-names: "Armine"
+      family-names: "Garibyan"
+      orcid: https://orcid.org/0009-0000-6477-4492
+    - given-names: "Sonja"
+      family-names: "Gipper"
+      orcid: https://orcid.org/0000-0003-0972-1683
+    - given-names: "Martine"
+      family-names: "Grice"
+      orcid: https://orcid.org/0000-0003-4973-4059
+    - given-names: "Yassine"
+      family-names: "Iabdounane"
+      orcid: https://orcid.org/0009-0002-8953-2873
+    - given-names: "Cristóbal"
+      family-names: "Pagán Cánovas"
+      orcid: https://orcid.org/0000-0003-2341-0128
+    - given-names: "Malin"
+      family-names: "Patel"
+      orcid: https://orcid.org/0009-0005-1576-8674
+    - given-names: "Felix"
+      family-names: "Rau"
+      orcid: https://orcid.org/0000-0003-4167-0601
+    - given-names: "Raúl"
+      family-names: "Sánchez Sánchez"
+      orcid: https://orcid.org/0009-0003-4100-9255
+    - given-names: "Mariem"
+      family-names: "Somrani Achouri"
+      orcid: https://orcid.org/0000-0002-1784-3835
+    - given-names: "Mark"
+      family-names: "Turner"
+      orcid: https://orcid.org/0000-0002-2089-5978
+    - given-names: "Peter"
+      family-names: "Uhrig"
+      orcid: https://orcid.org/0000-0003-1237-7414
+    - given-names: "Fabio"
+      family-names: "Vitali"
+      orcid: https://orcid.org/0000-0002-7562-5203
+    - given-names: "Mengyuan"
+      family-names: "Yu"
+      orcid: https://orcid.org/0009-0001-3927-2412
+  collection-title: "Companion Publication of the 28th International Conference on Multimodal Interaction (ICMI Companion '26)"
+  conference:
+    name: "ICMI Companion '26: Companion of the International Conference on Multimodal Interaction"
+  publisher:
+    name: ACM
+  year: 2026
+  month: 10
+  start: 370
+  end: 374
+  doi: 10.1145/3776591.3836646
+  url: https://doi.org/10.1145/3776591.3836646
