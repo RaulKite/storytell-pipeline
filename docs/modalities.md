@@ -168,13 +168,14 @@ unshown segment id, a non-verbatim or unresolved quote, an enum value outside th
 vocabularies, a duplicate id, a story outside its event, inconsistent `story_ids`, a
 missing `story_evidence` explanation (or one made only of segment ids), or
 `evidence_segment_ids` that are empty or outside the story's span. The retry is a repair:
-the same prompt, the rejected answer and the list of problems. Transport failures are
-retried unchanged. `story_evidence` holds the model's explanations of why the stretch is
+the same prompt, the rejected answer (omitted above `stories.repair_max_answer_chars`)
+and a bounded list of problems; a repair the endpoint refuses for size (HTTP 400/413) is
+resent as the plain question. Transport failures are retried unchanged. `story_evidence` holds the model's explanations of why the stretch is
 a story; `evidence_segment_ids` names the segments they rest on.
 
 Each segment is shown as `segment_id`/`start`/`end`, its own `text:` (the only place
 quotes come from) and its `speakers:` runs, e.g. `[speaker_0] words … [unknown] words`.
-`stories.speaker_source` is `nemotron` (the only diarizer, default) or `none`. Nemotron's
+`stories.speaker_source` is `nemotron` (default; the only diarizer stories read) or `none`. Nemotron's
 turns overlap, so a word gets a label only when one speaker's merged turns cover at least
 `stories.speaker_min_coverage` of it and no other covers `stories.speaker_max_competing`;
 otherwise it is `unknown`. Without Nemotron turns everything is `unknown`, recorded as
@@ -192,8 +193,9 @@ counted **once**, with the number of stories it took with it counted separately
 that touches a context segment is dropped and counted the same way, so absence is not a
 recall result; references to the *visible* context segments are evidence, not a reason
 to reject the answer. Raw responses make claims auditable: the
-raw window holds the endpoint's exact bytes, every rejected attempt is kept under
-`stories/raw/rejected/` with a unique name and the credential redacted, and the cache
+raw window holds the model's message text exactly as returned (not the HTTP envelope),
+every rejected attempt with message text is kept under `stories/raw/rejected/` with a
+unique name and credentials redacted (an empty message leaves no file), and the cache
 (keyed by the rendered prompt and posted request body) restores those exact bytes on
 reuse. `stories_summary.json` lists every window's raw file, empty windows included;
 `validate()` re-parses and re-validates each one against the current transcript and

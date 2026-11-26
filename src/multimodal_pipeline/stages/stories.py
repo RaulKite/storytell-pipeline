@@ -329,7 +329,9 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s\"',;]+")
 _AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^\s\"',;]+")
 _JSON_CREDENTIAL_RE = re.compile(
     r"(?i)\"(authorization|api[_-]?key|x-api-key|access[_-]?token|secret|token)\""
-    r"\s*:\s*\"[^\"]*\""
+    # The value runs to the closing quote, skipping escaped quotes (``\"``), or to the end
+    # of the text when the quote never closes, so a value cannot leak past an escape.
+    r"\s*:\s*\"(?:[^\"\\]|\\.)*(?:\"|\\?$)"
 )
 
 #: Bounds on a repair message. It is a *second* request carrying the rejected answer and
@@ -392,6 +394,8 @@ def _normalise_quote(quote: str) -> str:
 def _token_ranges(text: str) -> list[tuple[int, int, int]]:
     """Each word token of ``text`` as ``(core_start, core_end, token_end)``.
 
+    (The raw token start, leading punctuation included, is :func:`_token_starts`.)
+
     Three positions rather than two, because the two ways an alignment row names its
     characters are different and both are legitimate: the *core* is the punctuation-stripped
     token (what a quote has to cover), and ``token_end`` is where the raw token ends,
@@ -411,6 +415,25 @@ def _token_ranges(text: str) -> list[tuple[int, int, int]]:
         if end > start:
             ranges.append((start, end, token_end))
     return ranges
+
+
+def _token_starts(text: str) -> list[int]:
+    """Where each token of :func:`_token_ranges` starts *with* its leading punctuation.
+
+    An aligner that ran on the original text reports ``¿go?`` as ``[3, 7)``: the offset
+    starts at the ``¿``, not at the core, and must still anchor that token.
+    """
+    starts: list[int] = []
+    for match in _TOKEN_RE.finditer(text):
+        token_start, token_end = match.start(), match.end()
+        start, end = token_start, token_end
+        while start < end and text[start] in _EDGE_CHARACTERS:
+            start += 1
+        while end > start and text[end - 1] in _EDGE_CHARACTERS:
+            end -= 1
+        if end > start:
+            starts.append(token_start)
+    return starts
 
 
 def _token_cores(text: str) -> list[tuple[int, int]]:
@@ -682,10 +705,14 @@ def align_token_times(text: str,
     word_keys = [_squash(str(word.get("word") or "")) for word in word_list]
     kept = [index for index, key in enumerate(word_keys) if key]
     kept_keys = [word_keys[index] for index in kept]
-    groups = _offset_groups(text, [word_list[index] for index in kept], kept_keys,
-                            {core_start: (index, core_end, token_end)
-                             for index, (core_start, core_end, token_end)
-                             in enumerate(ranges)})
+    anchors: dict[int, tuple[int, int, int]] = {}
+    for index, ((core_start, core_end, token_end), token_start) in enumerate(
+            zip(ranges, _token_starts(text))):
+        # Keyed by both starts: an offset may begin at the core or at the token's leading
+        # punctuation, and either names this token.
+        anchors.setdefault(token_start, (index, core_end, token_end))
+        anchors.setdefault(core_start, (index, core_end, token_end))
+    groups = _offset_groups(text, [word_list[index] for index in kept], kept_keys, anchors)
     # (token index, token count, word positions) in "kept" space; the end sentinel aligns
     # whatever is left after the last anchor.
     plan: list[tuple[int, int, list[int]]] = []
@@ -990,8 +1017,8 @@ def feedback_message(problems: Sequence[str]) -> str:
                      f"for length; fix the ones above first)")
     listed = "\n".join(lines)
     if len(listed) > _REPAIR_MAX_PROBLEM_CHARS:
-        listed = (listed[:_REPAIR_MAX_PROBLEM_CHARS].rstrip()
-                  + "\n- (further problem text omitted for length)")
+        notice = "\n- (further problem text omitted for length)"
+        listed = listed[:_REPAIR_MAX_PROBLEM_CHARS - len(notice)].rstrip() + notice
     return ("Your previous answer was rejected by the pipeline's validation. Fix every "
             "problem listed below and return the corrected answer as one complete JSON "
             "object with the same contract as before: include every storytelling event, "
@@ -1880,6 +1907,17 @@ def _row_disagreements(table: str, raw_name: str, index: int,
             problems.append(f"stories/{table}.parquet disagrees with stories/raw/{raw_name} "
                             f"in further columns; the first ones are listed above")
             break
+    if not problems:
+        # Every column can agree as a multiset while values moved between rows (two
+        # stories that swapped start times), so the rows are compared whole as well. Row
+        # order stays irrelevant: the multiset is of complete rows.
+        def whole(row: Mapping[str, Any]) -> tuple[Any, ...]:
+            return tuple(_cell(row.get(column)) for column in columns)
+
+        if Counter(whole(row) for row in on_disk) != Counter(whole(row) for row in expected):
+            problems.append(f"stories/{table}.parquet and stories/raw/{raw_name} disagree about "
+                            f"window {index}: every column holds the same values, but they "
+                            f"sit in different rows (values moved between rows)")
     return problems
 
 
@@ -2086,9 +2124,11 @@ class StoriesClient:
             raise StoriesTransportError(f"transport error: {exc}") from exc
         if response.status_code == 429 or response.status_code >= 500:
             raise StoriesTransportError(
-                f"HTTP {response.status_code}: {self.redact(response.text[:300])}")
+                f"HTTP {response.status_code}: {self.redact(response.text)[:300]}")
         if response.status_code >= 400:
-            excerpt = self.redact(response.text[:400])
+            # Redacted *before* truncation: cutting first can split a credential so that the
+            # pattern no longer recognises the half that survives.
+            excerpt = self.redact(response.text)[:400]
             if repair and response.status_code in (400, 413):
                 raise _RepairRejectedError(
                     f"HTTP {response.status_code} on the repair: {excerpt}")
@@ -2101,7 +2141,7 @@ class StoriesClient:
             return response.json()
         except ValueError as exc:
             raise StoriesTransportError(
-                f"non-JSON response body: {self.redact(response.text[:200])}") from exc
+                f"non-JSON response body: {self.redact(response.text)[:200]}") from exc
 
     def redact(self, text: str) -> str:
         """The same text with credentials taken out of it.

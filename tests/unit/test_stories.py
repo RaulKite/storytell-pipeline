@@ -982,6 +982,17 @@ class TestBoundaryTimes:
         # The anchor is what moved it: by order the 3.2 row belongs to the first "go".
         assert entries[0]["start_time"] is None
 
+    def test_an_offset_may_start_at_the_leading_punctuation(self) -> None:
+        """``¿go?`` at [3, 7) names the second token although its core starts at 4."""
+        words = [
+            {"segment_id": "seg000001", "word": "go", "start_time": 3.2, "end_time": 3.4,
+             "character_start": 3, "character_end": 7},
+            {"segment_id": "seg000001", "word": "go", "start_time": 3.0, "end_time": 3.2},
+        ]
+        entries = align_token_times("go ¿go?", words)
+        assert entries[1]["start_time"] == pytest.approx(3.2)
+        assert entries[0]["start_time"] is None
+
     def test_beyond_the_alignment_budget_nothing_is_placed_positionally(
             self, monkeypatch) -> None:
         """Above the cell budget the interior is unaligned, not guessed at by position.
@@ -2320,6 +2331,19 @@ class TestValidate:
             StoriesStage().validate(context)
         assert "start_time" in str(excinfo.value), str(excinfo.value)
 
+    def test_values_swapped_between_rows_are_caught(self) -> None:
+        """Each column keeps its multiset when two rows swap a value; the rows do not."""
+        expected = [{"story_id": "w0-S1", "start_time": 3.0},
+                    {"story_id": "w0-S2", "start_time": 4.25}]
+        swapped = [{"story_id": "w0-S1", "start_time": 4.25},
+                   {"story_id": "w0-S2", "start_time": 3.0}]
+        problems = stories_module._row_disagreements("stories", "window_0.json", 0,
+                                                     expected, swapped)
+        assert problems and "different rows" in problems[0]
+        # Reordering whole rows is not a disagreement.
+        assert stories_module._row_disagreements("stories", "window_0.json", 0, expected,
+                                                 list(reversed(expected))) == []
+
     def test_two_windows_filed_under_each_others_request_keys_are_caught(self, context) -> None:
         """The rows are scoped by the request_key they carry, not by their window index.
 
@@ -2615,6 +2639,12 @@ class TestClients:
         assert len(huge) < stories_module._REPAIR_MAX_PROBLEM_CHARS + 1_000
         assert "return the corrected answer" in huge
 
+    def test_the_truncation_notice_fits_inside_the_cap(self) -> None:
+        message = feedback_message(["x" * 10_000])
+        listed = message.split("Problems:\n", 1)[1]
+        assert len(listed) <= stories_module._REPAIR_MAX_PROBLEM_CHARS
+        assert listed.endswith("(further problem text omitted for length)")
+
     @pytest.mark.parametrize("status", [400, 413])
     def test_a_repair_the_endpoint_refuses_for_length_falls_back_to_the_plain_body(
             self, endpoint, status: int) -> None:
@@ -2735,6 +2765,28 @@ class TestClients:
         assert "sk-other-999" not in message
         assert "t-other-123" not in message
         assert "[redacted]" in message
+
+    def test_a_credential_cut_by_the_excerpt_or_escaped_is_still_redacted(
+            self, endpoint) -> None:
+        """Redaction runs on the whole body before the excerpt is cut.
+
+        Cutting first split a JSON credential at the 400-character mark, and the half that
+        survived no longer matched the pattern; a value with an escaped quote stopped the
+        pattern early and left its tail visible.
+        """
+        padding = "x" * 380
+        echoed = ('{"error": "' + padding + '", "api_key": "sk-cut-ABCDEFGHIJKLMNOP", '
+                  '"token": "esc\\"aped-TAILSECRET"}')
+        server, _state = endpoint([(401, echoed)])
+        client = stories_client(server, max_retries=0)
+        with pytest.raises(StageError, match="HTTP 401") as excinfo:
+            client.detect(request_for())
+        message = str(excinfo.value) + str(excinfo.value.details)
+        assert "sk-cut-" not in message
+        assert "ABCDEFGH" not in message
+        client2 = stories_client(server, max_retries=0)
+        assert "TAILSECRET" not in client2.redact('{"token": "esc\\"aped-TAILSECRET"}')
+        assert "unterminated" not in client2.redact('{"api_key": "unterminated-value')
 
     def test_the_api_key_never_appears_in_a_failure_report(self) -> None:
         client = StoriesClient(base_url="http://127.0.0.1:1/v1", api_key="sk-secret-123456",
