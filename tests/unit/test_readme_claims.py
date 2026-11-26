@@ -50,14 +50,6 @@ def documented_tables(text: str) -> dict[str, str]:
     return dict(rows)
 
 
-def test_license_matches_the_project() -> None:
-    text = (ROOT / "LICENSE").read_text(encoding="utf-8")
-    assert text.startswith("MIT License")
-    assert re.search(r"^Copyright \(c\) \d{4} .+", text, re.MULTILINE)
-    assert PYPROJECT["project"]["license"]["text"] == "MIT"
-    assert "Not yet declared" not in DOCUMENTATION
-
-
 def test_console_script_is_the_documented_entry_point() -> None:
     assert PYPROJECT["project"]["scripts"]["multimodal-pipeline"] == "multimodal_pipeline.cli:app_main"
 

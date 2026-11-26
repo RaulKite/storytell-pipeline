@@ -6,7 +6,7 @@
     <img alt="" src="docs/assets/brand/banner-light.svg" width="100%"></picture></p>
 
 <p align="center">
-  <a href="#license"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green.svg"></a> <a href="docs/getting-started.md#prerequisites"><img alt="Python 3.10–3.13" src="https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg"></a> <a href="https://docs.astral.sh/uv/"><img alt="Runs on uv" src="https://img.shields.io/badge/runs%20on-uv-261230.svg"></a><br>
+  <a href="docs/getting-started.md#prerequisites"><img alt="Python 3.10–3.13" src="https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg"></a> <a href="https://docs.astral.sh/uv/"><img alt="Runs on uv" src="https://img.shields.io/badge/runs%20on-uv-261230.svg"></a><br>
   <a href="#quickstart">Get started</a> · <a href="#what-it-does">Outputs</a> · <a href="docs/architecture.md">Architecture</a> · <a href="#citing">Cite</a></p>
 
 **Video recordings → traceable, time-aligned multimodal datasets.**
@@ -110,10 +110,6 @@ WhisperX, [pyannote.audio](https://github.com/pyannote/pyannote-audio), NVIDIA N
 [Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and [ELAN](https://archive.mpi.nl/tla/elan) are driven
 rather than reimplemented; their licences and terms stay with their authors. This is attribution, not endorsement.
 </details>
-
-## License
-
-[MIT](LICENSE) covers this repository, not third-party media, model weights or tools, and not the recordings you process with it.
 
 ---
 

@@ -143,9 +143,6 @@ class TestLandingPage:
         extra = sorted(linked - set(GUIDES))
         assert not extra, f"the README links a guide outside this test's allowlist: {extra}"
 
-    def test_the_readme_links_the_license(self) -> None:
-        assert re.search(r"\]\(\.?/?LICENSE\)", body(README)), "the License line lost its link"
-
 
 class TestGuidesExistAndAreNavigable:
     @pytest.mark.parametrize("name", GUIDES)

@@ -82,7 +82,7 @@ jobs:
           print("uv projects present:", {k: v["exists"] for k, v in tools["uv_projects"].items()})
           PY
 
-      # Fails if the README's checkable claims (license, environment count, CLI flags,
+      # Fails if the README's checkable claims (environment count, CLI flags,
       # artifact names) have drifted from the tree.
       - name: README claims match the tree
         run: uv run --with pytest pytest tests/unit/test_readme_claims.py -q -p no:randomly
