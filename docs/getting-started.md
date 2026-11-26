@@ -124,9 +124,10 @@ Each GPU environment pins one CUDA wheel train (cu124, cu126 or cu128); the comm
 above its dependency list names the driver and card it was verified against. A wheel
 train newer than your driver installs, then reports no CUDA device, so read that
 comment before syncing a machine that is not the one the pins were measured on.
-A missing environment for an opt-in stage is a skip naming the expected path; for a
-required stage it fails on first use. `inspect-environment` warns about missing project
-directories before a batch starts.
+A missing environment is a skip with a reason for `diarization_nemotron` and `persons`,
+which check for it before running; every other worker stage fails on first use with the
+`uv` error. `inspect-environment` warns about missing project directories before a batch
+starts.
 
 ## Configure
 
