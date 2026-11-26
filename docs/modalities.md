@@ -74,6 +74,8 @@ value. Unscored rows retain null scores rather than becoming zero-confidence fac
 The dense table follows a 25 FPS **working grid**, not source frames. Use the
 [dataset clock rules](datasets.md#consumer-rules) before joining it to pose.
 
+![Synthetic schema demo: measured, carried and missing face activity](assets/active_speaker_strip.png)
+
 `activespeaker.write_video` optionally retains the native 25 FPS AVI with audio:
 all tracked-face boxes and native smoothed scores (green at score ≥ 0, red otherwise).
 These overlays are not the normalized table's scene-clipped smoothing, configurable
@@ -114,6 +116,8 @@ perpendicular in image coordinates. The origin becomes `(0, 0)` and basis joint
 
 `basis_state` distinguishes missing joints, a degenerate basis and non-finite math;
 `value_status` describes each keypoint. Missing coordinates remain null, not zeros.
+
+![Synthetic schema demo: BODY_25 keypoints with missing detections](assets/pose_skeleton_strip.png)
 Reference fixtures from R's `multimolang::dfMaker` are committed under
 [`tests/fixtures/pose_normalized/`](../tests/fixtures/pose_normalized).
 
