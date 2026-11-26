@@ -394,6 +394,25 @@ def draw_tracks(frame: Any, detections: Sequence[tuple[int, Sequence[float], flo
     return frame
 
 
+def staging_path(destination: Path, *, tag: str, suffix: str = ".mp4") -> Path:
+    """A reserved, unique scratch name beside ``destination``.
+
+    ``tempfile.mkstemp`` is the whole point: the old predictable ``.<stem>.partial.mp4`` sat
+    exactly where an input can be. A source clip actually named ``.tracks.partial.mp4`` beside
+    the destination was overwritten by the encoder before tracking finished, and the operator
+    lost the input to a run that reported success. A name the kernel hands out cannot already
+    belong to a file this run reads.
+
+    The file is left in place, empty, so the name stays reserved until ffmpeg overwrites it
+    (``-y``) or :meth:`TrackVideoWriter.abort` removes it.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle, name = tempfile.mkstemp(dir=destination.parent,
+                                    prefix=f".{destination.stem}-{tag}-", suffix=suffix)
+    os.close(handle)
+    return Path(name)
+
+
 class TrackVideoWriter:
     """Pipe drawn BGR frames into ffmpeg as rawvideo and publish one CFR preview.
 
@@ -428,11 +447,18 @@ class TrackVideoWriter:
         # an mp4 suffix: writing to ``tracks.mp4.partial`` fails at muxer initialisation with
         # "Unable to choose an output format" (measured against the real binary, and invisible
         # to a fake that only reads argv).
-        self._partial = destination.parent / f".{destination.stem}.partial.mp4"
-        self._muxed = destination.parent / f".{destination.stem}.muxed.mp4"
+        # Both scratch names are allocated, not composed: see ``staging_path``. The first is
+        # the video-only encode, the second what the mux pass writes before publication.
+        self._partial = staging_path(destination, tag="video")
+        self._muxed = staging_path(destination, tag="muxed")
         self._log: Path | None = None
 
     # ------------------------------------------------------------------ internals
+
+    def staging_destinations(self) -> dict[str, Path]:
+        """The scratch paths this writer owns, named for :func:`output_aliases`."""
+        return {"--output-video (encoder staging)": self._partial,
+                "--output-video (mux staging)": self._muxed}
 
     def _argv(self, width: int, height: int) -> list[str]:
         """The encoder for the frames alone: no audio input at all.
@@ -581,6 +607,10 @@ class TrackVideoWriter:
             except Exception:  # noqa: BLE001 - teardown must not mask the run's outcome
                 pass
         self._cleanup_log()
+        self._discard_staging()
+
+    def _discard_staging(self) -> None:
+        """Remove whichever of the two reserved scratch names is still on disk."""
         for leftover in (self._partial, self._muxed):
             try:
                 leftover.unlink()
@@ -651,10 +681,9 @@ class TrackVideoWriter:
             # in this stage measures.
             self._mux_audio()
             os.replace(self._muxed, self.destination)
-            try:
-                self._partial.unlink()
-            except OSError:
-                pass
+        # The staging name that was never written to (the mux one in the silent case, both in
+        # the ordinary case) is empty and reserved; leaving it would litter the dataset tree.
+        self._discard_staging()
         return {
             "fps": round(self.fps, 6),
             "fps_source": self.fps_source,
@@ -1043,34 +1072,50 @@ class OutputAlias(NamedTuple):
     @property
     def other_kind(self) -> str:
         """"input" or "output": ``--output-json`` is not an input, and the refusal should not say it is."""
-        return "input" if self.in_flag in ("--video", "--frame-index") else "output"
+        return "input" if self.in_flag in INPUT_FLAGS else "output"
 
 
-def output_aliases(args: argparse.Namespace) -> list[OutputAlias]:
-    """Every pair among the inputs and outputs that resolves to one file.
+#: The flags that name something this run only reads.
+INPUT_FLAGS = ("--video", "--frame-index")
+
+
+def output_aliases(args: argparse.Namespace,
+                   staging: Mapping[str, Path] | None = None) -> list[OutputAlias]:
+    """Every pair among this run's paths that resolves to one file.
 
     Checked at the boundary rather than in the stage because the stage assembles these paths
     itself and nothing upstream would notice a mistake: an artifact is written with
     ``os.replace()``, so an output that names an input silently swaps the operator's video or
     frame index for JSON after a full tracking run and reports success.
+
+    ``staging`` carries the encoder's temporary destinations for the same reason. They are
+    allocated with :func:`staging_path`, which cannot hand out a name that already exists, so a
+    collision there is impossible by construction rather than by this check — the check is here
+    so the invariant is stated and tested instead of assumed.
     """
-    inputs = {"--video": args.video, "--frame-index": args.frame_index}
-    outputs = {"--output-json": args.output_json, "--result-path": args.result_path}
+    paths: dict[str, Path] = {
+        "--video": args.video,
+        "--frame-index": args.frame_index,
+        "--output-json": args.output_json,
+        "--result-path": args.result_path,
+    }
     if getattr(args, "output_video", None) is not None:
         # ffmpeg truncates and rewrites whatever it is told to write, and it does that *during*
         # the tracking pass. Without this entry an --output-video naming the source video would
         # destroy the operator's clip and still report a successful run.
-        outputs["--output-video"] = args.output_video
+        paths["--output-video"] = args.output_video
+    if staging:
+        paths.update(staging)
     found: list[OutputAlias] = []
-    for out_flag, out in outputs.items():
-        for in_flag, source in inputs.items():
-            if _same_path(out, source):
-                found.append(OutputAlias(out_flag, in_flag, out, source))
-    flags = list(outputs)
+    flags = list(paths)
     for index, first in enumerate(flags):
         for second in flags[index + 1:]:
-            if _same_path(outputs[second], outputs[first]):
-                found.append(OutputAlias(second, first, outputs[second], outputs[first]))
+            if not _same_path(paths[first], paths[second]):
+                continue
+            # Orient the pair so the writing side is reported as the offender, whatever order
+            # the dict happened to list the two in.
+            other, out = ((second, first) if second in INPUT_FLAGS else (first, second))
+            found.append(OutputAlias(out, other, paths[out], paths[other]))
     return found
 
 
@@ -1100,13 +1145,18 @@ def validate(args: argparse.Namespace) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     # The result contract is written in a ``finally`` block, so a refusal would itself be
-    # delivered by overwriting whatever --result-path names. If that is an input, honouring
-    # the contract *is* the data loss: say so on stderr, write nothing anywhere, exit non-zero
+    # delivered by overwriting whatever --result-path names. If that collides with any path
+    # this run reads *or writes*, honouring the contract is the data loss: measured, with
+    # --output-video and --result-path at one path, the run refused and then wrote its error
+    # JSON over the previous render. So answer on stderr, write nothing anywhere, exit non-zero
     # (the stage then fails on its own missing-result check rather than on a video-shaped JSON).
-    if any(a.out_flag == "--result-path" and a.in_flag in ("--video", "--frame-index")
-           for a in output_aliases(args)):
+    blocking = [a for a in output_aliases(args)
+                if "--result-path" in (a.out_flag, a.in_flag)]
+    if blocking:
+        other = [flag for a in blocking for flag in (a.out_flag, a.in_flag)
+                 if flag != "--result-path"]
         log(f"refusing to run: --result-path names {args.result_path}, which this run also "
-            f"reads as an input; no file was written")
+            f"uses as {' and '.join(sorted(set(other)))}; no file was written")
         return 1
     payload: dict[str, Any] = {"status": "error", "stage": "persons"}
     try:
@@ -1114,6 +1164,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         classes = parse_classes(args.classes)
         frame_index = load_frame_index(args.frame_index)
         writer = make_render_writer(args, frame_index) if args.output_video else None
+        if writer is not None:
+            # Second pass of the same guard, now that the encoder's scratch paths exist. They
+            # are kernel-allocated and cannot collide, so this can only fire if that ever
+            # stops being true -- which is exactly the day the old predictable name would
+            # quietly come back.
+            collisions = output_aliases(args, staging=writer.staging_destinations())
+            if collisions:
+                # No cleanup on this branch: ``abort()`` unlinks the staging paths, and the
+                # only way to get here is that one of them names something else this run uses.
+                # Deleting it would destroy the very file the guard exists to protect.
+                raise WorkerFailure(
+                    "; ".join(f"{a.out_flag} points at the {a.in_flag} {a.other_kind} "
+                              f"({a.out_path})" for a in collisions)
+                    + " -- refusing to let the render overwrite a path this run uses")
         document, rows = track_video(
             video=args.video, model_name=args.model, weights_dir=args.weights_dir,
             device=args.device, tracker=args.tracker, conf=args.conf, classes=classes,

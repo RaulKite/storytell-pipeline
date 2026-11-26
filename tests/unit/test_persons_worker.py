@@ -723,17 +723,35 @@ class TestOutputPathsMustNotAliasInputs:
 
     def test_the_two_outputs_naming_one_file_are_refused(self, worker, tmp_path, clip,
                                                         frame_index_file):
-        """Otherwise the second write silently erases the tracking document."""
+        """Otherwise the second write silently erases the tracking document.
+
+        With ``--result-path`` on one side the refusal cannot even be delivered through the
+        result contract: writing it *is* the overwrite. So nothing is written anywhere and the
+        run exits non-zero, which is what the stage reports as a missing result.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        shared = tmp_path / "raw" / "one.json"
+        code = worker.main([
+            "--video", str(clip), "--frame-index", str(frame_index_file),
+            "--output-json", str(shared), "--result-path", str(shared),
+            "--video-id", "vid_a", "--device", "cpu",
+        ])
+        assert code == 1
+        # The review asked for this specifically: --output-json is not an input, and a refusal
+        # that calls it one teaches the reader to distrust the message on the cases that matter.
+        assert not shared.exists()
+        assert FakeModel.last_kwargs is None
+
+    def test_two_outputs_naming_one_file_without_the_result_path_are_refused(
+            self, worker, tmp_path, clip, frame_index_file):
+        """The non-``--result-path`` case still answers through the result contract."""
         FakeModel.results = [FakeResult(0, [1])]
         shared = tmp_path / "raw" / "one.json"
         payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
-                             out=shared, result=shared)
+                             out=shared, extra=["--output-video", str(shared)])
         assert payload["status"] == "error"
-        assert "--output-json" in payload["error"]
-        # The review asked for this specifically: --output-json is not an input, and a refusal
-        # that calls it one teaches the reader to distrust the message on the cases that matter.
-        assert "--output-json output" in payload["error"]
-        assert "--output-json input" not in payload["error"]
+        assert "--output-video points at the --output-json output" in payload["error"]
+        assert FakeModel.last_kwargs is None
 
     def test_an_unresolvable_path_does_not_crash_the_guard(self, worker, tmp_path, clip,
                                                           frame_index_file):
@@ -948,6 +966,19 @@ def read_call(log: Path) -> dict[str, Any]:
 
 def read_calls(log: Path) -> list[dict[str, Any]]:
     return json.loads(log.read_text(encoding="utf-8"))
+
+
+def scratch_files(directory: Path) -> list[Path]:
+    """Encoder scratch a finished or failed run must not leave behind.
+
+    Both the staging destinations and the ffmpeg stderr log are dot-files beginning with the
+    destination's stem, so one glob covers the whole family.
+    """
+    if not directory.is_dir():
+        return []
+    return sorted(path for path in directory.iterdir()
+                  if path.name.startswith(".tracks") or path.name.startswith(".video")
+                  or path.name.startswith(".muxed"))
 
 
 def _slice_index(argv: list[str], needle: list[str]) -> int:
@@ -1244,8 +1275,11 @@ class TestEncoderCommand:
                              extra=render_args(tmp_path, ffmpeg=ffmpeg, dest=awkward))
         assert payload["status"] == "ok", payload.get("error")
         argv = read_call(log)["argv"]
-        assert argv[-1] == str(awkward.parent / f".{awkward.stem}.partial.mp4")
-        assert (tmp_path / "raw" / "who's track; rm -rf / .mp4").is_file()
+        staging = Path(argv[-1])
+        assert staging.parent == awkward.parent, "the encoder staged outside the destination"
+        assert staging.name != awkward.name
+        assert staging.suffix == ".mp4", "ffmpeg picks the muxer from the suffix"
+        assert awkward.is_file()
 
     def test_a_frame_that_cannot_be_read_is_refused(self, worker, tmp_path, clip,
                                                    frame_index_file, fake_cv2):
@@ -1274,7 +1308,7 @@ class TestEncoderCommand:
         assert "ffmpeg" in payload["error"]
         assert payload["_document"] is None
         assert not dest.exists()
-        assert not (dest.parent / f".{dest.stem}.partial.mp4").exists()
+        assert not scratch_files(dest.parent)
 
     def test_an_empty_output_is_refused(self, worker, tmp_path, clip, frame_index_file,
                                        fake_cv2):
@@ -1304,7 +1338,7 @@ class TestEncoderCommand:
                              extra=render_args(tmp_path, dest=dest))
         assert payload["status"] == "ok", payload.get("error")
         assert dest.read_bytes() == b"fake-mp4"
-        assert not list(dest.parent.glob("*.partial.mp4"))
+        assert not scratch_files(dest.parent), "an encoder scratch file was left behind"
 
 
 class TestRenderOutputCannotAliasAnInput:
@@ -1369,6 +1403,96 @@ class TestFrameSizeAndEncoderGrid:
         assert payload["status"] == "ok", payload.get("error")
         assert payload["_document"]["render"]["encoded_width"] == 64
         assert payload["_document"]["render"]["encoded_height"] == 48
+
+
+class TestPathsThisRunUsesArePairwiseDistinct:
+    """The reviewer's second data-loss finding, both halves of it.
+
+    Measured: ``--output-video`` and ``--result-path`` at one path made the worker refuse the
+    collision and *then* deliver that refusal by writing its error JSON over the previous
+    render. And the encoder's scratch name was a fixed ``.<stem>.partial.mp4``, so a source
+    clip that happened to be called that was overwritten before tracking finished.
+    """
+
+    def test_output_video_and_result_path_at_one_file_write_nothing(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1])]
+        shared = tmp_path / "raw" / "tracks.mp4"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_bytes(b"an earlier render the operator still wants")
+        code = worker.main([
+            "--video", str(clip), "--frame-index", str(frame_index_file),
+            "--output-json", str(tmp_path / "raw" / "yolo_track.json"),
+            "--result-path", str(shared),
+            "--video-id", "vid_a", "--device", "cpu",
+            *render_args(tmp_path, dest=shared),
+        ])
+        assert code == 1
+        assert shared.read_bytes() == b"an earlier render the operator still wants", \
+            "the refusal was delivered by overwriting the file it refused to write"
+        assert not (tmp_path / "raw" / "yolo_track.json").exists(), "tracking ran"
+        assert FakeModel.last_kwargs is None
+
+    def test_output_video_and_output_json_at_one_file_write_nothing(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1])]
+        shared = tmp_path / "raw" / "shared.json"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             out=shared,
+                             extra=render_args(tmp_path, dest=shared))
+        assert payload["status"] == "error"
+        assert "--output-video" in payload["error"]
+        assert FakeModel.last_kwargs is None
+        assert not shared.exists(), "one of the two writers ran anyway"
+
+    def test_a_source_named_like_the_old_scratch_path_survives_the_render(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2):
+        """The encoder stages under a kernel-allocated name, not a predictable one.
+
+        Before, a destination ``tracks.mp4`` staged to ``.tracks.partial.mp4``; an operator's
+        clip with that name was truncated by ffmpeg during the tracking pass, and the run
+        reported success with the input gone.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        directory = tmp_path / "source-and-output"
+        directory.mkdir()
+        clip = directory / ".tracks.partial.mp4"
+        clip.write_bytes(b"the operator's clip")
+        probe = write_fake_ffprobe(tmp_path)
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=["--output-video", str(directory / "tracks.mp4"),
+                                    "--ffmpeg", str(ffmpeg), "--ffprobe", str(probe)])
+        assert payload["status"] == "ok", payload.get("error")
+        assert clip.read_bytes() == b"the operator's clip", "the source clip was overwritten"
+        assert (directory / "tracks.mp4").read_bytes() == b"fake-mp4"
+        assert Path(read_call(log)["argv"][-1]) != clip
+
+    def test_a_staging_path_that_names_an_input_is_refused(self, worker, tmp_path, clip,
+                                                          frame_index_file, fake_cv2,
+                                                          monkeypatch):
+        """The uniqueness guarantee is checked, not assumed.
+
+        ``mkstemp`` cannot hand out an existing name, so forcing one is the only way to see
+        this branch -- and if that ever stops being true, the run must refuse rather than
+        truncate the operator's clip.
+        """
+        FakeModel.results = [FakeResult(0, [1])]
+        monkeypatch.setattr(worker, "staging_path", lambda destination, **kw: clip)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "error"
+        assert "encoder staging" in payload["error"]
+        assert clip.read_bytes() == b"\x00"
+        assert FakeModel.last_kwargs is None
+
+    def test_the_staging_names_are_distinct_from_each_other(self, worker, tmp_path):
+        writer = worker.TrackVideoWriter(ffmpeg="ffmpeg", destination=tmp_path / "tracks.mp4",
+                                         fps=25.0, audio_source=None)
+        assert not worker._same_path(writer._partial, writer._muxed)
+        assert not worker._same_path(writer._partial, writer.destination)
+        writer.abort()
+        assert not scratch_files(tmp_path)
 
 
 requires_ffmpeg = pytest.mark.skipif(
