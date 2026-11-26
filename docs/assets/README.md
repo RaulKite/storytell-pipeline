@@ -9,7 +9,8 @@ They contain no recording frames and make no accuracy claim.
 | `active_speaker_strip.png` | Measured, carried and missing face activity |
 | `pose_skeleton_strip.png` | BODY_25 keypoints and missing detections |
 
-Back to [Datasets](../datasets.md) or the [overview](../../README.md).
+Back to [Datasets](../datasets.md), [Modalities](../modalities.md) or the
+[overview](../../README.md).
 
 ## Regenerate
 

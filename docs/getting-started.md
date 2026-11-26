@@ -120,6 +120,10 @@ For the isolation rationale, see [Why seven environments](architecture.md#why-se
 OpenPose is not installed by `uv`. Its default root is `/opt/openpose`; configure
 the root or explicit executable/model paths to match your installation. TalkNet is
 also external to this repository. Neither checkout is created by the root sync.
+Each GPU environment pins one CUDA wheel train (cu124, cu126 or cu128); the comment
+above its dependency list names the driver and card it was verified against. A wheel
+train newer than your driver installs, then reports no CUDA device, so read that
+comment before syncing a machine that is not the one the pins were measured on.
 A missing environment for an opt-in stage is a skip naming the expected path; for a
 required stage it fails on first use. `inspect-environment` warns about missing project
 directories before a batch starts.
@@ -138,6 +142,10 @@ $EDITOR .env
 **Keep existing files rather than overwriting them.** Set `input.directory` and
 `output.directory` to real local paths. Put secrets in `.env`; it is read
 automatically, with explicitly exported environment variables taking precedence.
+[`.env.example`](../.env.example) lists the names — `HF_TOKEN` for pyannote, and
+`LITELLM_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_MODEL` for the endpoint. A YAML value
+written as a literal is not replaced by defining the variable; reference it as
+`${VAR}` or edit the value.
 
 The example enables WhisperX, pyannote, spaCy, acoustics, OpenPose, pose normalization,
 speaker fusion, translation, stories and ELAN. Nemotron, TalkNet and YOLO are optional
