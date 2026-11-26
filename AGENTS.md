@@ -59,10 +59,14 @@ valid worktree is available — a routing fallback is acceptable, a stalled laun
 
 ## Hard constraints
 
-- The orchestrator never imports `torch`, `pyannote`, `spacy`, or `parselmouth`. Heavy
-  tools live in `environments/*` uv projects and are reached through
+- The orchestrator never imports `torch`, `spacy`, or `parselmouth`. Heavy tools live in
+  `environments/*` uv projects and are reached through
   `uv run --project <env> python workers/<name>_worker.py`. This is what keeps one
   pinned torch build from breaking another stage.
+- Nemotron (`diarization_nemotron`) is the only diarizer. There is no pyannote engine and
+  no diarization × TalkNet fusion stage: `speaker_assignment` labels the transcript from
+  `speech/speaker_turns_nemotron.parquet`. A config still carrying a `diarization:` or
+  `speaker_fusion:` section is rejected on purpose; delete the section, do not re-add it.
 - Credentials come from `.env` at the repo root (gitignored). `config/config.local.yaml`
   is gitignored too. Never move a secret into YAML, a fixture, a test, or a commit
   message.

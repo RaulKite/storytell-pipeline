@@ -31,7 +31,7 @@ Commands use repository-relative paths: run them from the repository root.
 ├── acoustic/           frame and segment features + raw JSONL
 ├── pose/               body, hands, face, normalized + raw/ and optional raw_images/
 ├── persons/            detections, tracks + raw/yolo_track.json
-├── speaker/            active-speaker evidence, fusion + raw/
+├── speaker/            active-speaker evidence + raw/
 ├── stories/            candidates + raw responses/cache
 ├── elan/               annotations.eaf
 ├── logs/               pipeline.log + <stage>.log
@@ -77,8 +77,7 @@ Presence is determined by the manifest, not this inventory.
 | `frame_index` | `source/frame_index.parquet` | Source frame number → PTS seconds |
 | `speech_segments` | `speech/segments.parquet` | Transcript segments, language and assigned speaker |
 | `speech_words` | `speech/words.parquet` | Words, alignment state and confidence |
-| `speaker_turns` | `speech/speaker_turns.parquet` | pyannote intervals |
-| `speaker_turns_nemotron` | `speech/speaker_turns_nemotron.parquet` | Independent Nemotron intervals |
+| `speaker_turns_nemotron` | `speech/speaker_turns_nemotron.parquet` | Nemotron speaker intervals and their measured overlap |
 | `translation_segments` | `translation/segments_en.parquet` | English text keyed by transcript segment |
 | `spacy_source_tokens` | `linguistic/source/tokens.parquet` | Source token annotations and timing state |
 | `spacy_source_sentences` | `linguistic/source/sentences.parquet` | Source sentence annotations |
@@ -94,14 +93,12 @@ Presence is determined by the manifest, not this inventory.
 | `active_speaker_tracks` | `speaker/active_speaker_tracks.parquet` | TalkNet face-track summaries |
 | `person_frames` | `persons/frames.parquet` | YOLO detections and body-track IDs |
 | `person_tracks` | `persons/tracks.parquet` | Body-track summaries and sighting gaps |
-| `speaker_fusion_pyannote` | `speaker/fusion_pyannote.parquet` | pyannote turn × face evidence agreement |
-| `speaker_fusion_nemotron` | `speaker/fusion_nemotron.parquet` | Nemotron turn × face evidence agreement |
 | `stories` | `stories/stories.parquet` | LLM candidates with transcript evidence and request identity |
 
 ### How the tables join
 
 The tables fall into two families joined mostly by time, so they are drawn apart; the one
-shared id between them is pyannote's `speaker_id`, explained below. Speech, text and acoustics:
+shared id between them is Nemotron's `speaker_id`, explained below. Speech, text and acoustics:
 
 ```mermaid
 flowchart TB
@@ -118,7 +115,7 @@ flowchart TB
     st -. "decoded evidence_segment_ids<br/>to segment_id" .-> seg
 ```
 
-Then turns, clocks, pose, persons and agreement (filenames shortened; see the table above):
+Then turns, clocks, pose and persons (filenames shortened; see the table above):
 
 ```mermaid
 flowchart TB
@@ -129,35 +126,27 @@ flowchart TB
     asdt["active_speaker_tracks.parquet<br/>track_id"]
     pf["persons/frames.parquet<br/>person_id, frame_number,<br/>timestamp"]
     pt["persons/tracks.parquet<br/>person_id"]
-    fusP["fusion_pyannote.parquet<br/>pyannote turn_id,<br/>face_track_id, agreement"]
-    fusN["fusion_nemotron.parquet<br/>Nemotron turn_id,<br/>face_track_id, agreement"]
-    tr["speech/speaker_turns.parquet<br/>pyannote turn_id,<br/>speaker_id"]
-    trn["speaker_turns_nemotron.parquet<br/>Nemotron turn_id,<br/>speaker_id"]
+    trn["speech/speaker_turns_nemotron.parquet<br/>turn_id,<br/>speaker_id"]
     body -- "same three keys, within a video" --> norm
     asd --> asdt
     pf --> pt
-    tr --> fusP
-    trn --> fusN
-    asd -- "track_id = face_track_id<br/>(identity only)" --> fusP & fusN
     fi -. "source clock" .-> body & asd
     asd -. "source_timestamp" .-> body
 ```
 
 Solid edges are id joins; dotted ones are overlap, a shared clock or a coarser-grain id.
 None is a declared foreign key; `finalization` checks only that translation rows cite an
-existing `segment_id` and that transcript `speaker_id`s appear in pyannote's turns.
+existing `segment_id` and that transcript `speaker_id`s appear in the diarizer's turns.
 
-The families meet through overlap and one shared id: a turn table against the transcript,
-TalkNet's frames against the turns (what the fused tables measure), and pyannote's labels
-in the transcript's `speaker_id` column. Each diarizer numbers its own turns from one, so
-`turn000001` means something only inside the file that wrote it — hence one fused file per
-engine. `face_track_id` names a TalkNet `track_id`, never a diarizer `speaker_id`; that id
-alone also returns frames outside the turn, while agreement uses working-grid `timestamp`s
-inside it, both endpoints included.
+The families meet through overlap and one shared id: the turn table overlaps the
+transcript, and the diarizer's labels land in the transcript's `speaker_id` column. Turns
+are numbered from one inside the file that wrote them, so `turn000001` means something only
+there. Nemotron's `speaker_id` (`speaker_0`) is its own namespace: it is never a TalkNet
+`track_id` and never a YOLO `person_id`, even when the digits coincide.
 
 ## Speaker timing example
 
-A synthetic example of `speaker_turns` beside `speech_words` — separate records, not
+A synthetic example of `speaker_turns_nemotron` beside `speech_words` — separate records, not
 measured accuracy. See [Consumer rules](#consumer-rules) before joining them.
 
 ![Synthetic schema demo: speaker turns and word timings](assets/speaker_turn_strip.png)
@@ -200,8 +189,8 @@ IDs from two datasets need not be globally unique.
 | Source clock | `frame_index.pts_seconds` maps source frames; metadata logs a fallback if packet timing cannot be read |
 | Acoustic clock | Praat's configured time step, not video-frame numbers; audio duration can differ slightly from container duration |
 | TalkNet clock | One row per 25 FPS working-grid frame, **not** per source frame; `timestamp` is grid time and `source_timestamp` maps to the nearest source PTS |
-| Track namespaces | Each diarizer's `speaker_id`, YOLO `person_id` and TalkNet `track_id` are independent |
-| Explicit face link | Fusion `face_track_id` refers to TalkNet `track_id` in the same dataset, not to a diarizer speaker |
+| Track namespaces | Nemotron's `speaker_id`, YOLO's `person_id` and TalkNet's `track_id` are independent: equal digits name different things |
+| No voice-to-face link | Nothing in a dataset equates a speaker with a face track; compare them by time overlap and report the disagreement |
 | Empty vs absent | Zero rows with a schema can mean a completed analysis found nothing; absence needs a stage/manifest reason |
 | Missing vs zero | Null is not a measured zero; inspect alignment, basis, face and model-capability status fields |
 | Imputed vs measured | `score_imputed` means carried evidence, not a fresh TalkNet measurement |
@@ -209,11 +198,13 @@ IDs from two datasets need not be globally unique.
 For pose/ASD comparisons, join on `source_timestamp`, never on `frame_number`: the
 TalkNet index counts re-encoded frames, and several working-grid rows can map to one
 source frame. For interval/instant joins state your boundary rule explicitly (usually
-`start_time <= timestamp < end_time`) and inspect overlapping diarizer turns.
+`start_time <= timestamp < end_time`), and read `overlap_s` before assuming one speaker per
+instant: Nemotron's channels overlap, and the assignment rule is max overlap, not
+exclusivity.
 
 Translation joins transcript segments by `segment_id`, not word position: English
 tokens are not one-to-one source tokens and their times can be approximate. Speaker
-assignment rewrites the transcript tables with pyannote labels, not the WhisperX raw
+assignment rewrites the transcript tables with Nemotron labels, not the WhisperX raw
 output.
 
 Read [Modalities](modalities.md) before interpreting confidence, person counts or

@@ -25,11 +25,11 @@ tool output and stage caches, a log and provenance, times in seconds from video 
 
 | Layer | Tools and results | Output |
 |---|---|---|
-| Speech | WhisperX transcription/alignment; pyannote turns; optional Nemotron comparison | `speech/words.parquet`, `speech/speaker_turns.parquet` |
+| Speech | WhisperX transcription/alignment; Nemotron speaker diarization | `speech/words.parquet`, `speech/speaker_turns_nemotron.parquet` |
 | Language | English segment translations; spaCy source/English tokens and sentences | `translation/segments_en.parquet`, `linguistic/source/tokens.parquet`, `linguistic/english/tokens.parquet` |
 | Acoustics | Praat/Parselmouth pitch, intensity, formants and segment statistics | `acoustic/frame_features.parquet` |
 | Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks | `pose/body.parquet`, `persons/tracks.parquet` |
-| Speakers | Optional TalkNet visible-face activity and audio–visual agreement | `speaker/active_speaker_frames.parquet` |
+| Speakers | Optional TalkNet visible-face activity — a separate, visual signal | `speaker/active_speaker_frames.parquet` |
 | Stories | Transcript-bound LLM narrative candidates, not validated detections | `stories/stories.parquet` |
 | Inspection | ELAN `.eaf` files written with pympi-ling (requires a transcript), HTML preview, corpus-specific bundle | `elan/annotations.eaf` |
 
@@ -42,7 +42,7 @@ Heavy tools live in `uv` environments the root sync does not install ([what runs
 ## Quickstart
 
 Root sync installs the CLI, Parquet and the stages that need no model. `config.example.yaml`
-enables CUDA WhisperX, pyannote diarization and OpenPose, whose worker environments it does
+enables CUDA WhisperX, Nemotron diarization and OpenPose, whose worker environments it does
 **not** install — sync each enabled one the way [Install](docs/getting-started.md#install)
 shows (`cd environments/<name> && uv sync --python 3.12`). OpenPose, TalkNet, `HF_TOKEN` and
 an LLM endpoint are further [prerequisites](docs/getting-started.md#prerequisites).
@@ -105,7 +105,7 @@ Developed for [STORYTEL](https://storytel.uni-koeln.de/), which studies spontane
 
 <details><summary>Tools this pipeline drives</summary>
 
-WhisperX, [pyannote.audio](https://github.com/pyannote/pyannote-audio), NVIDIA Nemotron, [spaCy](https://spacy.io/),
+WhisperX, NVIDIA Nemotron, [spaCy](https://spacy.io/),
 [Praat](https://www.fon.hum.uva.nl/praat/) via Parselmouth, [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose),
 [Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and [ELAN](https://archive.mpi.nl/tla/elan) are driven
 rather than reimplemented; their licences and terms stay with their authors. This is attribution, not endorsement.

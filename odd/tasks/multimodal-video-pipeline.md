@@ -11,31 +11,47 @@ Completed plans, probes and review receipts remain in Git history, not live auth
 
 | Stage | State | Current contract |
 |---|---|---|
-| `speaker_fusion` | built | Agreement tables beside diarization; transcript labels unchanged |
 | `persons` | built | Optional detections/tracks; IDs are not unique-human counts |
 | `stories` | built | Transcript-bound candidates, including legitimate empty answers |
 | `pose_normalized` | built | Separate body-centred table; measured pixels preserved |
 | `openpose` | built | Measured landmarks, opt-in skeleton JPGs and native MP4 |
 | `activespeaker` | built | Dense selected-face tables and opt-in native annotated AVI with audio |
-| `elan` | built | Up to 15 flat summary tiers, explicit omissions and nonoverlap |
+| `elan` | built | Up to 12 flat summary tiers, explicit omissions and nonoverlap |
 
 ## Open and deferred work
 
-- [ ] **Operator:** check the current 15-tier export in ELAN on a laptop/desktop.
+- [ ] **Operator:** check the current 12-tier export in ELAN on a laptop/desktop.
   Check labels and media playback; a headless preview cannot close usability.
 - [ ] **Deferred:** committed non-English synthetic fixture and e2e coverage.
   Historical Spanish live-run evidence is not a reproducible CI fixture.
-- [ ] **Deferred, behavior decision required:** different transcript-assignment diarizer.
-  It currently uses pyannote; changing it would redefine existing labels.
 - [ ] **Verification not established here:** observe hosted CI. Its unit-test workflow
   does not certify GPU tools, corpus accuracy, desktop ELAN or an actual hosted run.
 - [ ] **Deferred:** a new ASD renderer over normalized selected-face labels. Native
   TalkNet overlays intentionally remain a distinct interpretation, not that renderer.
 
+## Diarization: Nemotron only
+
+**Decision:** Nemotron (`diarization_nemotron`) is the only diarizer and it is enabled by
+default. The pyannote engine and the diarization × TalkNet fusion stage are removed from the
+code, the config schema, the artifact registry and the ELAN tiers. Assumption: the fusion
+mixes did not inform a labelling, and a second engine in the DAG bought a comparison nobody
+acted on while doubling artifacts, tiers and speaker-id namespaces.
+
+**Consequences:** `speaker_assignment` labels the transcript from
+`speech/speaker_turns_nemotron.parquet` by maximum overlap (no exclusive timeline to prefer;
+`overlap_s` stays in the table). Transcript `speaker_id` is now Nemotron's `speaker_0`
+namespace, so re-running an old output directory relabels the transcript — nothing on disk
+is deleted. The artifact keeps its `_nemotron` name: renaming it would leave every existing
+directory with a populated old table beside an empty new one. A config still carrying
+`diarization:` or `speaker_fusion:` fails with an instruction naming the replacement;
+`config/config.local.yaml` has both and needs that edit. `HF_TOKEN` stays optional.
+Alternative not taken: ship fusion disabled for one release — rejected because the code
+would keep carrying two id namespaces.
+
 ## Local full-output profile
 
 **Decision:** the ignored `config/config.local.yaml` enables every implemented output
-family: both diarizers/fusions, linguistic variants, normalized pose, ELAN, OpenPose
+family: the Nemotron diarizer, linguistic variants, normalized pose, ELAN, OpenPose
 body/hands/face JPGs, `openpose.write_video` and `activespeaker.write_video`. Example spaCy routing
 is explicit, but YAML does not install missing models. Credentials remain in `.env`.
 Assumption: “full” means artifact families, not maximum dimensions. Skeleton JPGs
@@ -68,31 +84,16 @@ three trailing frames (seven observed raw/preview counts: 126/125, 124/121, 240/
 canonical paths and refusing video overrides protect upstream's shell. Publication after
 validation is not a cross-artifact filesystem transaction. Disabling deletes nothing.
 
-**Corpus decision:** add missing visuals only, retain three existing MP4s. Initial
-publication halted on two rerun JSON mismatches; isolated rechecks matched all seven.
-Assumption: new previews must have matching raw measurements before installation.
-Seven clips now have skeleton MP4/native ASD AVI; 1343 JPGs and 261 guides were added.
-No inputs, native measurement raw bytes or Parquet tables changed. Fourteen prior ASD
-raw/sidecar versions live in `speaker/raw/history/`; only sidecars/bookkeeping/logs changed.
-The local profile uses the existing repository-local TalkNet mirror and its checkpoints,
-not operator scripts or missing `/tmp` weights. Assumption: reuse observed matching native
-results rather than execute external tools again; all seven ASD logs confirm no model run.
-
 ## Verification and recovery
 
-- Stable unit/e2e: **2126 passed, 12 skipped**; focused current surfaces: **136 passed**.
-  Independent review found and rechecked failed-mux data loss, lexical symlink shell
-  injection, video-only provenance, truncation and false ownership of human notes.
-  Named regressions and sensitivity mutations observed RED then GREEN; not mock-only
-  codec evidence. AST/compile and `git diff --check` pass.
-- Real seven-clip OpenPose/TalkNet previews decode with video/audio. A genuinely audio-less
-  native source also passed with video only; its first concurrent run failed GPU OOM,
-  then passed in isolation. Offline build failed: missing hatchling; ruff unavailable.
-- Corpus validation initially failed seven stale ASD request sidecars. Genuine matching
-  results/sidecars were installed with version archives, then ASD normalization reused raw
-  in seven logs (no model run). Final validate: **7/7 OK**, exit 0. All **205 Parquet**
-  tables remain semantically and byte-identical; input/native raw hashes unchanged.
-  This does not establish accuracy, desktop ELAN or regenerate changed spaCy settings.
+- Stable unit/e2e: **1981 passed, 21 skipped, 4 failed**; the four failures are the
+  `test_elan` corpus tests, which need local corpus datasets and fail identically on
+  `master` (no corpus on this machine). Independent review earlier found and
+  rechecked failed-mux data loss, lexical symlink shell injection, video-only provenance,
+  truncation and false ownership of human notes; named regressions and sensitivity
+  mutations observed RED then GREEN, not mock-only codec evidence.
+- Earlier corpus validation reached **7/7 OK** after stale ASD sidecars were replaced; this
+  change does not establish accuracy, desktop ELAN or a regenerated corpus.
 - Review workload is split by work unit (ASD preservation, skeleton preview, output guides),
   not file type. The guide unit is large because readable contract prose and behavior tests
   are retained, not compressed. Native RDD remains ON; only observed current authority
@@ -108,7 +109,7 @@ results rather than execute external tools again; all seven ASD logs confirm no 
   durations; person tables cannot prove sampled-frame coverage.
 - Story candidates lack validated ground truth; temperature zero is not service
   determinism. Retained bytes/cache support auditing, not accuracy claims.
-- Historical review advisories (fusion, pose assembly, persons and figure errors)
+- Historical review advisories (pose assembly, persons and figure errors)
   without finding detail remain unconfirmed, not invented fixes.
 - Derived source fingerprints can lose readable-module coverage when another module
   is unreadable. Mixed annotation keys fail loudly rather than being coerced.

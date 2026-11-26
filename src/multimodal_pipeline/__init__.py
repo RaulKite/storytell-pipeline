@@ -2,7 +2,7 @@
 
 Turns a directory of video recordings into one self-contained multimodal
 dataset directory per video: media metadata, audio, WhisperX transcription
-with word alignment, Pyannote diarization, speaker-assigned transcript,
+with word alignment, Nemotron diarization, speaker-assigned transcript,
 English translation, spaCy linguistics, Parselmouth acoustics and OpenPose
 keypoints, normalised to Parquet on a single video timeline.
 """

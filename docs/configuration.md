@@ -47,8 +47,7 @@ The same applies independently to the `stories` section.
 | `input`, `output` | Directory, recursive discovery and accepted extensions; dataset root |
 | `execution` | Sequential mode, GPU index, stop-on-video-error policy |
 | `whisperx` | Model, language, device, compute type, batching and VAD |
-| `diarization` | pyannote pipeline, speaker constraints, exclusive alignment preference |
-| `diarization_nemotron` | Optional second engine, threshold and up to eight speaker channels |
+| `diarization_nemotron` | Speaker diarization on by default: model, threshold, up to eight channels |
 | `translation`, `stories` | Independent endpoint/model, prompt version, retries, context and cache |
 | `spacy` | Source/English models, fallback and language-reliability policy |
 | `acoustic` | Frame step, pitch range, formant ceiling, pause policy and chunk size |
@@ -56,7 +55,6 @@ The same applies independently to the `stories` section.
 | `pose_normalized` | Origin and basis keypoints; changing them changes coordinates |
 | `activespeaker` | TalkNet checkout/weights, device, threshold, smoothing and switch hysteresis |
 | `persons` | Model/weights, tracker, confidence, classes and input image size |
-| `speaker_fusion` | Selected engines, minimum face frames and active ratio |
 | `elan` | Enable/disable derived annotation export |
 | `logging` | Level, console output and progress refresh interval |
 
@@ -90,9 +88,10 @@ none of those capabilities. Installing/removing models invalidates linguistic re
 
 ## Secrets and external requests
 
-Use [`.env.example`](../.env.example) for the variable names. pyannote reads the
-variable named by `diarization.hf_token_env` (normally `HF_TOKEN`). API keys belong
-in `.env` and YAML interpolation, not committed literals.
+Use [`.env.example`](../.env.example) for the variable names. The diarizer reads the
+variable named by `diarization_nemotron.hf_token_env` (normally `HF_TOKEN`), which is a
+rate-limit convenience: the checkpoint is not gated, so a missing token skips nothing. API
+keys belong in `.env` and YAML interpolation, not committed literals.
 
 Credential-like fields are masked as `***masked***` in pipeline bookkeeping.
 That is not a guarantee that every artifact is safe to publish: raw responses,
@@ -107,10 +106,11 @@ responses; retained responses and cache keys are the reproducibility evidence.
 
 | Symptom | Check / remedy |
 |---|---|
-| Missing `HF_TOKEN` | Add the credential and accept pyannote model terms; diarization otherwise skips |
+| Missing `HF_TOKEN` | Nothing is disabled: the Nemotron checkpoint is not gated and downloads anonymously, only slower |
+| Config still has `diarization:` or `speaker_fusion:` | Those sections were removed; delete them. Nemotron (`diarization_nemotron:`) is the only diarizer |
 | Endpoint not configured | Replace the placeholder in that stage's YAML; supply key/model, use mock or disable |
 | `uv project not found` | Restore/correct the configured project directory, then sync it; sync cannot create a missing project definition |
-| `libnvrtc.so.13` | Check the diarization torchcodec pin and re-sync; see environment comments |
+| `libnvrtc.so.13` | Check the `diarization_nemotron` torch pin and re-sync; see the environment's comments |
 | OpenPose binary not found | Fix `openpose.root` or executable/model paths; inspect the environment report |
 | TalkNet root missing / no `run_talknet.py` | Point at a valid TalkNet-ASD checkout |
 | TalkNet `weights_only` / unpickling error | Preserve the torch 2.5.1 compatibility pin and re-sync its environment |

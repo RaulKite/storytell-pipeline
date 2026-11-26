@@ -1,7 +1,7 @@
 [project]
 name = "multimodal-pipeline"
 version = "0.1.0"
-description = "Sequential multimodal video-processing pipeline (WhisperX, Pyannote, LiteLLM, spaCy, Parselmouth, OpenPose)"
+description = "Sequential multimodal video-processing pipeline (WhisperX, Nemotron diarization, LiteLLM, spaCy, Parselmouth, OpenPose)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 authors = [{ name = "Raúl Sánchez", email = "raul@um.es" }]

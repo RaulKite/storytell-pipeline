@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Nemotron 3 Diarization worker — runs inside ``environments/diarization_nemotron`` only.
 
-A *second, independent* diarizer that runs next to pyannote so the operator can compare
-two engines on the same corpus. Nothing here reads or rewrites a pyannote artifact.
+The pipeline's only diarizer: it reads the extracted audio and writes its own raw
+document plus, through the stage, ``speech/speaker_turns_nemotron.parquet``. Nothing here
+reads or rewrites a transcript table.
 
 Route chosen by measurement, not preference: ``nemo-toolkit`` could not load this
 checkpoint at all (NeMo 3.0.0's encoder rejects ``self_attention_model='rope'``), so this
@@ -58,10 +59,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--video-id", default=None)
     parser.add_argument("--model", default="nvidia/Nemotron-3-Diarization")
     parser.add_argument("--device", default="cuda")
-    #: Mirrors ``diarization_nemotron.fallback_to_cpu``. Without it the worker behaves like
-    #: the pyannote worker (silently degrades cuda -> cpu); with ``--no-cpu-fallback`` a
-    #: machine that cannot see a GPU fails loudly instead of producing a result that took
-    #: ten times longer and nobody noticed.
+    #: Mirrors ``diarization_nemotron.fallback_to_cpu``. With the default the worker
+    #: degrades cuda -> cpu and records why; with ``--no-cpu-fallback`` a machine that
+    #: cannot see a GPU fails loudly instead of producing a result that took ten times
+    #: longer and nobody noticed.
     parser.add_argument("--cpu-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-speakers", type=int, default=8)
     # Two thresholds exist and they are not the same knob. ``--threshold`` is the frame
@@ -81,9 +82,8 @@ def resolve_device(*, requested: str, cpu_fallback: bool, cuda_available: bool) 
 
     A pure function so the policy is testable without torch, without a GPU and without
     mocking ``torch.cuda`` — a mock of the thing under test would make the fallback branch
-    green whatever it did. The pyannote worker only ever degrades cuda→cpu, which is right
-    there because diarization is mandatory; here the second engine is optional, so an
-    operator may prefer a fast failure to an hour-long batch that quietly crawled on CPU.
+    green whatever it did. A silent CPU fallback is worth being able to forbid: an operator
+    may prefer a fast failure to an hour-long batch that quietly crawled on CPU.
 
     Returns ``(device, fallback_reason)``; reason is None unless a degradation happened.
     """

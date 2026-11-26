@@ -78,7 +78,7 @@ def segment(index: int, *, text: str | None = None, speaker: str = "SPEAKER_00",
         "confidence": 0.9,
         "speaker_overlap_seconds": 0.0,
         "speaker_overlap_ratio": 0.0,
-        "speaker_assignment_method": "pyannote",
+        "speaker_assignment_method": "max_overlap",
     }
 
 

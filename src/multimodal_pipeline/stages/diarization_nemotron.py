@@ -77,9 +77,9 @@ class DiarizationNemotronStage(WorkerStage):
             path = ctx.input("audio")
         except StageError:
             return None
-        # Distinct scratch key from DiarizationStage: both stages read the same file, but
-        # sharing one cache entry would make the second stage's digest depend on which
-        # stage happened to run first in this process.
+        # A key of this stage's own: the whisperx and acoustic stages read the same file
+        # too, and sharing one cache entry would make this digest depend on which stage
+        # happened to run first in this process.
         cached = ctx.scratch.get("audio_sha256_nemotron")
         if cached:
             return cached

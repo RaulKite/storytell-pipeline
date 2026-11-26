@@ -11,7 +11,6 @@ Back to the overview: [Storytel Pipeline](../README.md).
 - [Speech and language](#speech-and-language)
 - [Acoustics](#acoustics)
 - [Active-speaker evidence](#active-speaker-evidence)
-- [Audio–visual agreement](#audiovisual-agreement)
 - [Pose coordinates](#pose-coordinates)
 - [Person tracks](#person-tracks)
 - [Story candidates](#story-candidates)
@@ -19,19 +18,22 @@ Back to the overview: [Storytel Pipeline](../README.md).
 ## Speech and language
 
 WhisperX produces segments, words and alignment states. `speaker_assignment` applies
-pyannote speaker labels to the normalized transcript; original WhisperX bytes remain
+Nemotron speaker labels to the normalized transcript; original WhisperX bytes remain
 in `speech/raw/`. Word confidence and segment confidence are not interchangeable:
 segment scores can be negative because they are log-probability-derived.
 
-pyannote and Nemotron analyze the same audio independently. Transcript assignment
-uses **pyannote only**. The default pyannote alignment timeline is exclusive;
-Nemotron supports overlap, with `diarization_type` and `overlap_s` recording that
-semantics. Nemotron uses a whole-clip offline route with at most eight channels;
-its threshold controls which frame probabilities become intervals.
+Nemotron is the only diarizer (`diarization_nemotron`). It writes
+`speech/speaker_turns_nemotron.parquet`, whose `speaker_id` values (`speaker_0`) are its
+own arrival-ordered namespace. Its channels overlap, so a turn records
+`diarization_type: overlapping` and the seconds it overlaps another speaker in `overlap_s`.
+It uses a whole-clip offline route with at most eight channels; its threshold controls
+which frame probabilities become intervals.
 
-Compare engines by time overlap, never matching speaker digits. A second channel
-is not proof of a second real person. Enabling Nemotron does not relabel existing
-transcript rows; choosing it for assignment would be a separate behavior change.
+Assignment is by maximum overlap, aggregated per speaker: a transcript interval that two
+speakers talk over goes to whoever covers most of it, with a deterministic tie break, and
+the runner-up is recorded in `runner_up_speaker_id`. There is no exclusive timeline to
+prefer. A channel is not proof of a distinct real person: two channels can be one voice
+bleeding, and an off-screen speaker can own a channel no face matches.
 
 English translation is **segment-level translation**, not transliteration or
 interlinear glossing. Source and English spaCy annotations are separate. Their
@@ -80,28 +82,6 @@ The dense table follows a 25 FPS **working grid**, not source frames. Use the
 all tracked-face boxes and native smoothed scores (green at score ≥ 0, red otherwise).
 These overlays are not the normalized table's scene-clipped smoothing, configurable
 threshold and selected-face hysteresis. An unscored overlay is not evidence of silence.
-
-## Audio–visual agreement
-
-`speaker_fusion` adds evidence beside each selected diarizer's turns; it does not
-replace diarization or transcript speaker labels. Each engine has its own fusion
-file. Fusion `face_track_id` links to TalkNet's track, not a voice identity.
-
-| `agreement` | Reading |
-|---|---|
-| `face_matched` | A track clears minimum active-frame and active-ratio requirements |
-| `face_partial` | A best track exists but misses a requirement |
-| `no_face_visible` | Measured rows in the turn contain no located face |
-| `face_never_active` | Located face evidence contains no active frame |
-| `no_frames_measured` | No ASD row covers the turn; not a claim of absence |
-
-Read `agreement_detail` and counts before the verdict. The invariant is
-`face_active_frames <= face_frames_in_turn <= frames_in_turn`; the winning track's
-active ratio is not a share of the entire audio interval. Face presence can include
-unscored evidence, so inspect score/reason fields before concluding a face was
-measured inactive. Missing selected-engine input can skip that engine; no fusible
-engine or no ASD input skips the stage. An actually failed producer can also block
-it through the DAG; absence and failure are different.
 
 ## Pose coordinates
 
