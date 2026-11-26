@@ -7,6 +7,13 @@ every section is quoted word for word except the two adapted here — "Using Whi
 `transcript_quote` instead of `time_seconds` (the pipeline computes times) plus
 `evidence_segment_ids`. `tests/unit/test_stories.py` fails if prompt and document drift.
 
+**One deliberate deviation from her speaker rule, and only that one.** Her limitation
+section allows "the speaker the transcript itself clearly identifies". The validator cannot
+check such a claim — the answer would name a human it has no evidence of — so it accepts
+only a label the rendered prompt actually showed, or `"unknown"`. A speaker her rule would
+allow is recorded in `notes` instead. Her text below is unchanged and still the criterion;
+this paragraph is the pipeline's deviation from it, stated where a reader compares the two.
+
 Your goal is to mark the boundaries of each storytelling event and, separately, the boundaries of each story told within it. A story is the “what” being represented; a storytelling event is the conversational activity of launching and telling it.
 
 ## Important limitation: speaker attribution

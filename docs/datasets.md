@@ -32,7 +32,7 @@ Commands use repository-relative paths: run them from the repository root.
 ├── pose/               body, hands, face, normalized + raw/ and optional raw_images/
 ├── persons/            detections, tracks + raw/yolo_track.json
 ├── speaker/            active-speaker evidence, fusion + raw/
-├── stories/            events, stories, uncertain spans + raw responses, rejected attempts, cache
+├── stories/            events, stories, uncertain spans + raw responses, summary, rejected attempts, cache
 ├── elan/               annotations.eaf
 ├── logs/               pipeline.log + <stage>.log
 └── provenance/         config.json, tools.json, processing.json

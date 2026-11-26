@@ -347,10 +347,12 @@ DIR_GUIDES: dict[str, Guide] = {
     )),
     "stories/raw": Guide("Preserved story responses (optional)", RAW_NOTES + (
         "One file per window, named by window and request identity, plus a cache, a "
-        "`rejected/` directory holding each attempt the validator refused (with its "
-        "reason) and `stories_summary.json`; the summary's window count is what the tables "
-        "are validated against, because an empty window has no rows to count, and every "
-        "`request_key` in the tables must still have its window file.",
+        "`rejected/` directory holding each attempt the validator refused (with its reason, "
+        "a unique name and the API key redacted) and `stories_summary.json`, which lists "
+        "every window's raw file. `validate` reads those files back: each response is parsed "
+        "and re-validated against the current transcript, and must yield the event and story "
+        "ids the tables attribute to its window, because existing on disk is not evidence "
+        "that the answer still says what the row does.",
     )),
     "elan": Guide("ELAN export", (
         "`annotations.eaf` is built from the tables and rewrites nothing. It is a "

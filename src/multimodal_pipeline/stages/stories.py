@@ -25,12 +25,14 @@ Four properties carry the design:
 * **No time is invented anywhere.** The model cites a ``segment_id`` and copies a verbatim
   ``transcript_quote``; this module locates that quote inside the cited segment's text and
   maps its **edge words** to word times through ``speech/words.parquet``. A quote that is
-  not there is a validation breach, and so is a quote that occurs more than once in the
-  cited segment: neither says where the boundary is, and both are retried. The quote has to
-  cover whole words (a one-letter quote cannot match inside ``Ahora``), the alignment
-  accepts the split and merged tokens a different tokenizer produces (``can`` + ``'t`` for
-  ``can't``), and an edge word with no exact alignment falls back to the segment's own
-  boundary, labelled ``segment``, rather than borrowing a neighbour's time.
+  not there is a validation breach. A quote that occurs more than once is not a location
+  either, so the answer must say which occurrence it means (``occurrence``, 1 = first):
+  requiring the quote to be unique instead made a correct boundary inexpressible wherever
+  the segment repeats itself, and no retry could converge on one. The quote has to cover
+  whole words (a one-letter quote cannot match inside ``Ahora``), the alignment accepts the
+  split and merged tokens a different tokenizer produces (``can`` + ``'t`` for ``can't``),
+  and an edge word with no exact alignment falls back to the segment's own boundary,
+  labelled ``segment``, rather than borrowing a neighbour's time.
 * **Speaker labels are attributed, not guessed.** Labels come from automatic diarization —
   Nemotron by default, whose turns *overlap* — so a word is labelled only when one speaker
   dominates it, and ``unknown`` otherwise (``story_speakers``).
@@ -38,7 +40,9 @@ Four properties carry the design:
   request. When a window size is configured, an event whose boundary (or whose marked
   interruption) falls outside the window is dropped *and counted* as one gap, with the
   number of stories it took with it counted apart, never quietly kept — and never rejected
-  because a neighbouring window's stretch was visible as context.
+  because a neighbouring window's stretch was visible as context. A segment the prompt
+  never showed at all is a different thing: a quote out of it cannot have been copied from
+  what the model read, so that is a breach and the answer is retried.
 
 Nothing here imports a heavy tool: the stage is httpx, pyarrow and stdlib, reached over
 HTTP by the same OpenAI-compatible endpoint translation uses.
@@ -80,7 +84,7 @@ from ..story_speakers import (
     speaker_runs,
 )
 from .base import Stage, StageContext
-from .translation import extract_message_content
+from .translation import TranslationTransportError, extract_message_content
 
 #: Bumped whenever a table's columns change meaning. 2.0 was the event/story split (v1's
 #: `parent_id`, `title` and numeric `confidence` gone); 2.1 is `story_evidence` becoming the
@@ -118,6 +122,15 @@ _TOKEN_RE = re.compile(r"\S+")
 #: How many tokens (or words) one split or merged correspondence may span. Two covers
 #: ``can`` + ``'t``; four is slack for a tokenizer that broke a numeral into pieces.
 _MAX_SPLIT_OR_MERGE = 4
+
+#: A segment id as the answer types it; an "explanation" made only of these explains
+#: nothing about why the stretch is a story.
+_SEGMENT_ID_RE = re.compile(r"(?i)^seg\d+$")
+
+#: How many (token, word) cells one alignment may fill. The grid is bounded so a segment
+#: whose transcript and alignment have nothing in common cannot spend unbounded time on a
+#: correspondence that does not exist; above it, equal keys are placed positionally.
+_ALIGNMENT_CELL_LIMIT = 400_000
 
 PROMPTS: dict[str, str] = {
     # Prompt v2 is the domain expert's annotation prompt, kept word for word: goal,
@@ -203,15 +216,21 @@ PROMPTS: dict[str, str] = {
         "- Copy exact wording into transcript_quote from the `text:` line of the cited segment." "\n"
         "  Never invent words and never silently correct them: quotes are checked against the" "\n"
         "  transcript, and a quote that is not there rejects the whole answer." "\n"
-        "- Quote enough surrounding words that the quote occurs only ONCE in that segment. A quote" "\n"
-        "  that occurs twice does not say where the boundary is; extend a short, repeating quote" "\n"
-        "  with the words around it." "\n"
+        "- If your quote occurs more than once in the segment's text, add \"occurrence\": n" "\n"
+        "  (1 = first) to that boundary object, so it says which occurrence you mean. Without it a" "\n"
+        "  repeated quote does not say where the boundary is, and the answer is rejected. When the" "\n"
+        "  quote occurs once, `occurrence` is optional and must be 1 if you give it." "\n"
         "- A speaker you name must be one of the labels shown in square brackets in the" "\n"
         "  `speakers:` lines — in the segments you are answering about or in their context — or" "\n"
         "  \"unknown\"." "\n"
         "- Those labels come from automatic diarization, not from listening: they are arbitrary ids," "\n"
         "  they may be wrong, and a word the diarizer could not decide is labelled \"unknown\". Treat a" "\n"
         "  label as weak evidence about who is talking, and say so when a boundary depends on it." "\n"
+        "- If the transcript itself clearly says who is speaking, say that in `notes`, but keep" "\n"
+        "  `speaker` a label shown in square brackets or \"unknown\": those are the only values the" "\n"
+        "  pipeline can check against what it showed you." "\n"
+        "- `story_evidence` is the expert's list of explanations: short statements of what is" "\n"
+        "  represented, how it connects and where experience shows, never a list of segment ids." "\n"
         "- `story_evidence` is the expert's list of explanations. Add `evidence_segment_ids` for the" "\n"
         "  segments that carry that evidence: every story needs both lists non-empty, and every id" "\n"
         "  named there must lie inside the story's own start and end." "\n"
@@ -247,11 +266,13 @@ PROMPTS: dict[str, str] = {
         "\n"
         "Return valid JSON only:" "\n"
         "\n"
-        "{\"storytelling_events\": [{\"event_id\": \"SE1\", \"start\": {\"segment_id\": \"seg000001\", \"transcript_quote\": \"Exact opening words from the transcript\", \"speaker\": \"speaker_0\", \"boundary_type\": \"pre_telling\", \"reason\": \"Brief evidence for this boundary\"}, \"end\": {\"segment_id\": \"seg000004\", \"transcript_quote\": \"Exact closing words from the transcript\", \"speaker\": \"speaker_0\", \"boundary_type\": \"coda\", \"reason\": \"Brief evidence for this boundary\"}, \"story_ids\": [\"S1\"], \"tellers\": [\"speaker_0\"], \"interruptions_or_resumptions\": [{\"start_segment_id\": \"seg000002\", \"end_segment_id\": \"seg000003\", \"transcript_quote\": \"Exact words or span, if present\", \"description\": \"Briefly explain the interruption or later resumption\"}], \"confidence\": \"high\", \"notes\": \"Mention ambiguity or limitations, including unclear speaker attribution\"}], \"stories\": [{\"story_id\": \"S1\", \"event_id\": \"SE1\", \"start\": {\"segment_id\": \"seg000001\", \"transcript_quote\": \"Exact opening words from the transcript\", \"speaker\": \"speaker_0\", \"reason\": \"Brief evidence that the story world or experience begins here\"}, \"end\": {\"segment_id\": \"seg000003\", \"transcript_quote\": \"Exact closing words from the transcript\", \"speaker\": \"speaker_0\", \"reason\": \"Brief evidence that the represented events or experience end here\"}, \"tellers\": [\"speaker_0\"], \"summary\": \"One or two sentences describing the represented events or experience\", \"story_evidence\": [\"Represented event(s)\", \"Causal or experiential connection\", \"Embodiment, intentionality, or evaluation, if relevant\"], \"evidence_segment_ids\": [\"seg000001\", \"seg000002\"], \"confidence\": \"high\", \"notes\": \"Mention ambiguity, alternative plausible boundaries, or unclear speaker attribution\"}], \"uncertain_spans\": [{\"start_segment_id\": \"seg000002\", \"end_segment_id\": \"seg000003\", \"transcript_quote\": \"Exact words from the transcript\", \"issue\": \"What is uncertain and why\"}]}" "\n"
+        "{\"storytelling_events\": [{\"event_id\": \"SE1\", \"start\": {\"segment_id\": \"seg000001\", \"transcript_quote\": \"Exact opening words from the transcript\", \"occurrence\": 1, \"speaker\": \"speaker_0\", \"boundary_type\": \"pre_telling\", \"reason\": \"Brief evidence for this boundary\"}, \"end\": {\"segment_id\": \"seg000004\", \"transcript_quote\": \"Exact closing words from the transcript\", \"speaker\": \"speaker_0\", \"boundary_type\": \"coda\", \"reason\": \"Brief evidence for this boundary\"}, \"story_ids\": [\"S1\"], \"tellers\": [\"speaker_0\"], \"interruptions_or_resumptions\": [{\"start_segment_id\": \"seg000002\", \"end_segment_id\": \"seg000003\", \"transcript_quote\": \"Exact words or span, if present\", \"description\": \"Briefly explain the interruption or later resumption\"}], \"confidence\": \"high\", \"notes\": \"Mention ambiguity or limitations, including unclear speaker attribution\"}], \"stories\": [{\"story_id\": \"S1\", \"event_id\": \"SE1\", \"start\": {\"segment_id\": \"seg000001\", \"transcript_quote\": \"Exact opening words from the transcript\", \"speaker\": \"speaker_0\", \"reason\": \"Brief evidence that the story world or experience begins here\"}, \"end\": {\"segment_id\": \"seg000003\", \"transcript_quote\": \"Exact closing words from the transcript\", \"speaker\": \"speaker_0\", \"reason\": \"Brief evidence that the represented events or experience end here\"}, \"tellers\": [\"speaker_0\"], \"summary\": \"One or two sentences describing the represented events or experience\", \"story_evidence\": [\"Represented event(s)\", \"Causal or experiential connection\", \"Embodiment, intentionality, or evaluation, if relevant\"], \"evidence_segment_ids\": [\"seg000001\", \"seg000002\"], \"confidence\": \"high\", \"notes\": \"Mention ambiguity, alternative plausible boundaries, or unclear speaker attribution\"}], \"uncertain_spans\": [{\"start_segment_id\": \"seg000002\", \"end_segment_id\": \"seg000003\", \"transcript_quote\": \"Exact words from the transcript\", \"issue\": \"What is uncertain and why\"}]}" "\n"
         "\n"
         "The one change from her object: a boundary cites a `segment_id` and a verbatim" "\n"
         "`transcript_quote` instead of her numeric time field, because the pipeline computes the" "\n"
         "times itself, and every story carries `evidence_segment_ids` beside `story_evidence`." "\n"
+        "`occurrence` is optional: omit it when the quote occurs once in the cited segment's text," "\n"
+        "and give it when it occurs more than once, selecting which one (1 = first)." "\n"
         "\n"
         "Allowed boundary_type for a start: pre_telling, story_launch, uncertain." "\n"
         "Allowed boundary_type for an end: coda, listener_acknowledgment, activity_shift, uncertain." "\n"
@@ -284,16 +305,34 @@ class StoriesTransportError(RuntimeError):
     """Transient endpoint problem worth retrying."""
 
 
+#: What a credential is replaced with in retained text and log messages.
+REDACTED = "[redacted]"
+
+#: Header shapes a gateway can echo back when it rejects a request. Both are redacted
+#: because a provider that quotes the request in an error message can quote the
+#: credential along with it.
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s\"',;]+")
+_AUTHORIZATION_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^\s\"',;]+")
+
+
 # --------------------------------------------------------------- quotes and word times
 
 
 def _normalise_with_map(text: str) -> tuple[str, list[int]]:
-    """Casefolded, whitespace-collapsed text plus the source index of each character.
+    """Folded, whitespace-collapsed text plus the source index of each character.
 
     Only two things are normalised, and the brief allows exactly these: case, and runs of
     whitespace collapsing to one space. Every other character is kept, so a quote that
     paraphrases (drops a comma, changes a word) does not match — which is the point: the
     answer must be checkable against the transcript, not approximately related to it.
+
+    One character folds to **one** character always. ``str.casefold`` expands some
+    characters — ``ß`` becomes ``ss``, ``ﬀ`` becomes ``ff`` — and expanding one source
+    position into two output positions makes the index map lie about where a match started:
+    ``sa`` then matches inside ``ßa``, because the two ``s`` share one source index. A
+    character whose folded form is longer than itself is therefore kept as it is, which is
+    the exact-case fallback: ``Straße`` matches ``straße`` and no longer pretends to match
+    ``STRASSE``. Nothing in a Spanish or English transcript needs the expansion.
     """
     out: list[str] = []
     index: list[int] = []
@@ -304,9 +343,9 @@ def _normalise_with_map(text: str) -> tuple[str, list[int]]:
             out.append(" ")
             index.append(position)
             continue
-        for piece in char.casefold():
-            out.append(piece)
-            index.append(position)
+        folded = char.casefold()
+        out.append(folded if len(folded) == 1 else char)
+        index.append(position)
     return "".join(out), index
 
 
@@ -399,8 +438,9 @@ def _squash(token: str) -> str:
     return "".join(char for char in token.casefold() if char.isalnum())
 
 
-def _alignment_moves(token_keys: Sequence[str],
-                     word_keys: Sequence[str]) -> list[tuple[int, int, int, int]]:
+def _alignment_moves(token_keys: Sequence[str], word_keys: Sequence[str], *,
+                     token_offset: int = 0,
+                     word_offset: int = 0) -> list[tuple[int, int, int, int]]:
     """Ordered correspondence between text tokens and alignment words.
 
     Each move is ``(token_index, token_count, word_index, word_count)``: a run of text
@@ -416,50 +456,167 @@ def _alignment_moves(token_keys: Sequence[str],
     how a word the text does not contain (``twelve`` for ``12``) ends up with none. The
     best alignment is the one that covers the most words; ties keep the plainest shape,
     because a 1:1 match is always the intended reading of two equal keys.
+
+    It is a **bottom-up** dynamic program, not a recursion: the recursive version recursed
+    once per unmatched token and word, so a segment of a few thousand tokens raised
+    ``RecursionError`` instead of aligning. The common head and tail — where both sides are
+    equal word for word — are matched first, which is what keeps the grid small on the
+    normal case; a segment whose remaining grid would be enormous is placed positionally
+    (:data:`_ALIGNMENT_CELL_LIMIT`) rather than spending unbounded time on a correspondence
+    nothing can find.
     """
     tokens, words = list(token_keys), list(word_keys)
-    memo: dict[tuple[int, int], tuple[int, tuple[tuple[int, int, int, int], ...]]] = {}
+    head = 0
+    while (head < len(tokens) and head < len(words)
+           and tokens[head] and tokens[head] == words[head]):
+        head += 1
+    tail = 0
+    while (tail < len(tokens) - head and tail < len(words) - head
+           and tokens[-1 - tail] and tokens[-1 - tail] == words[-1 - tail]):
+        tail += 1
+    moves = [(token_offset + index, 1, word_offset + index, 1) for index in range(head)]
+    moves.extend(_core_alignment_moves(tokens[head:len(tokens) - tail],
+                                       words[head:len(words) - tail],
+                                       token_offset + head, word_offset + head))
+    stop_tokens, stop_words = len(tokens) - tail, len(words) - tail
+    moves.extend((token_offset + stop_tokens + index, 1, word_offset + stop_words + index, 1)
+                 for index in range(tail))
+    return moves
 
-    def solve(index: int, position: int) -> tuple[int, tuple[tuple[int, int, int, int], ...]]:
-        if index >= len(tokens) or position >= len(words):
-            return 0, ()
-        key = (index, position)
-        if key in memo:
-            return memo[key]
-        options: list[tuple[int, tuple[tuple[int, int, int, int], ...]]] = []
-        if tokens[index] and tokens[index] == words[position]:
-            score, rest = solve(index + 1, position + 1)
-            options.append((1 + score, ((index, 1, position, 1),) + rest))
-        for count in range(2, _MAX_SPLIT_OR_MERGE + 1):
-            if position + count > len(words):
-                break
-            joined = "".join(words[position:position + count])
-            if joined and joined == tokens[index]:
-                score, rest = solve(index + 1, position + count)
-                options.append((count + score, ((index, 1, position, count),) + rest))
-        for count in range(2, _MAX_SPLIT_OR_MERGE + 1):
-            if index + count > len(tokens):
-                break
-            joined = "".join(tokens[index:index + count])
-            if joined and joined == words[position]:
-                score, rest = solve(index + count, position + 1)
-                options.append((count + score, ((index, count, position, 1),) + rest))
-        options.append(solve(index + 1, position))
-        options.append(solve(index, position + 1))
-        memo[key] = max(options, key=lambda option: option[0])
-        return memo[key]
 
-    return list(solve(0, 0)[1])
+def _core_alignment_moves(tokens: Sequence[str], words: Sequence[str], token_offset: int,
+                          word_offset: int) -> list[tuple[int, int, int, int]]:
+    """The dynamic program over the part of a segment that is not already matched."""
+    count_tokens, count_words = len(tokens), len(words)
+    if not count_tokens or not count_words:
+        return []
+    if count_tokens * count_words > _ALIGNMENT_CELL_LIMIT:
+        # No correspondence worth finding inside this budget: keep the words that sit at the
+        # same position and leave the rest without a time, which is what "no exact
+        # alignment" already means.
+        return [(token_offset + index, 1, word_offset + index, 1)
+                for index in range(min(count_tokens, count_words))
+                if tokens[index] and tokens[index] == words[index]]
+    skip_token, skip_word, one_to_one = 0, 1, 2
+    words_to_token = 3
+    tokens_to_word = 3 + _MAX_SPLIT_OR_MERGE
+    decisions = [bytearray(count_words) for _ in range(count_tokens)]
+    # Rows of the score table, newest first: row i needs rows i+1 .. i+4 only.
+    later: list[list[int]] = [[0] * (count_words + 1)]
+    for index in range(count_tokens - 1, -1, -1):
+        token = tokens[index]
+        row = [0] * (count_words + 1)
+        for position in range(count_words - 1, -1, -1):
+            word = words[position]
+            best, code = 0, skip_token
+            if token and token == word:
+                best, code = 1 + later[0][position + 1], one_to_one
+            if token:
+                joined = word
+                for span in range(2, _MAX_SPLIT_OR_MERGE + 1):
+                    if position + span > count_words:
+                        break
+                    joined += words[position + span - 1]
+                    if joined == token:
+                        score = span + later[0][position + span]
+                        if score > best:
+                            best, code = score, words_to_token + span
+            if word:
+                joined = token
+                for span in range(2, _MAX_SPLIT_OR_MERGE + 1):
+                    if index + span > count_tokens:
+                        break
+                    joined += tokens[index + span - 1]
+                    if joined == word:
+                        score = span + later[span - 1][position + 1]
+                        if score > best:
+                            best, code = score, tokens_to_word + span
+            if later[0][position] > best:
+                best, code = later[0][position], skip_token
+            if row[position + 1] > best:
+                best, code = row[position + 1], skip_word
+            row[position] = best
+            decisions[index][position] = code
+        later.insert(0, row)
+        if len(later) > _MAX_SPLIT_OR_MERGE + 1:
+            later.pop()
+    moves: list[tuple[int, int, int, int]] = []
+    index = position = 0
+    while index < count_tokens and position < count_words:
+        code = decisions[index][position]
+        if code == skip_token:
+            index += 1
+        elif code == skip_word:
+            position += 1
+        elif code == one_to_one:
+            moves.append((token_offset + index, 1, word_offset + position, 1))
+            index += 1
+            position += 1
+        elif code < tokens_to_word:
+            span = code - words_to_token
+            moves.append((token_offset + index, 1, word_offset + position, span))
+            index += 1
+            position += span
+        else:
+            span = code - tokens_to_word
+            moves.append((token_offset + index, span, word_offset + position, 1))
+            index += span
+            position += 1
+    return moves
+
+
+def _offset_groups(text: str, words: Sequence[Mapping[str, Any]], keys: Sequence[str],
+                   cores_by_start: Mapping[int, int],
+                   cores_by_end: Mapping[int, int]) -> list[tuple[int, list[int]]]:
+    """Word→token anchors read from the alignment's own character offsets.
+
+    ``character_start``/``character_end`` are NULL in every corpus measured so far, which
+    is why placement did not depend on them. A present-but-wrong offset must not move a
+    boundary (all-zeros offsets are a real defect, not a hypothesis), so an offset is
+    honoured only when the slice it names is *exactly this word* after the permitted
+    normalisation **and** exactly one token. When that holds it says something the token
+    aligner cannot: two identical words are placed by their own offsets instead of by
+    order.
+
+    The result is a chain of ``(token_index, [word positions])`` groups in increasing
+    order; several words may anchor to one token (a contraction the aligner split), and a
+    group that would run backwards is dropped rather than used to place anything.
+    """
+    groups: list[tuple[int, list[int]]] = []
+    for position, (word, key) in enumerate(zip(words, keys)):
+        start, end = word.get("character_start"), word.get("character_end")
+        if isinstance(start, bool) or isinstance(end, bool):
+            continue
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        if not 0 <= start < end <= len(text) or _squash(text[start:end]) != key:
+            continue
+        token_index = cores_by_start.get(start)
+        if token_index is None or cores_by_end.get(end) != token_index:
+            continue
+        if groups and groups[-1][0] == token_index:
+            if position > groups[-1][1][-1]:
+                groups[-1][1].append(position)
+            continue
+        if groups and token_index <= groups[-1][0]:
+            continue
+        groups.append((token_index, [position]))
+    return groups
 
 
 def align_token_times(text: str,
                       words: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One entry per text token: its core range and the times of the words covering it.
 
-    ``speech/words.parquet`` carries ``character_start``/``character_end`` and on the corpus
-    this was checked against (``data/processed/*/speech/words.parquet``, eight datasets)
-    **every one of them is NULL**, so token placement does not depend on them: it is the
-    alignment of :func:`_alignment_moves` over the segment's own tokens.
+    Placement is the alignment of :func:`_alignment_moves` over the segment's own tokens,
+    with two refinements:
+
+    * a word whose ``character_start``/``character_end`` really slice it out of the text
+      anchors its own token (:func:`_offset_groups`), and only the stretches between
+      anchors are aligned;
+    * an alignment row that contains no word at all (a tokenizer that emitted a separate
+      ``¿``) takes part in nothing, because it can only ever be *near* a token and its
+      time is not that token's boundary.
 
     A token covered by exactly one word (or by the words one token was split into) takes
     that word's own start and end. A token that is part of a *merged* alignment word — one
@@ -476,23 +633,37 @@ def align_token_times(text: str,
     token_keys = [_squash(text[start:end]) for start, end in cores]
     word_list = list(words)
     word_keys = [_squash(str(word.get("word") or "")) for word in word_list]
-    for token_index, token_count, word_index, word_count in _alignment_moves(token_keys,
-                                                                             word_keys):
-        group = list(range(word_index, word_index + word_count))
+    kept = [index for index, key in enumerate(word_keys) if key]
+    kept_keys = [word_keys[index] for index in kept]
+    groups = _offset_groups(text, [word_list[index] for index in kept], kept_keys,
+                            {start: index for index, (start, _end) in enumerate(cores)},
+                            {end: index for index, (_start, end) in enumerate(cores)})
+    # (token index, token count, word positions) in "kept" space; the end sentinel aligns
+    # whatever is left after the last anchor.
+    plan: list[tuple[int, int, list[int]]] = []
+    token_from = word_from = 0
+    for token_index, word_positions in groups + [(len(cores), [len(kept)])]:
+        first_word = word_positions[0]
+        for move in _alignment_moves(token_keys[token_from:token_index],
+                                     kept_keys[word_from:first_word],
+                                     token_offset=token_from, word_offset=word_from):
+            move_token, move_tokens, move_word, move_words = move
+            plan.append((move_token, move_tokens,
+                         list(range(move_word, move_word + move_words))))
+        if token_index < len(cores):
+            plan.append((token_index, 1, list(range(first_word, word_positions[-1] + 1))))
+        token_from = token_index + 1
+        word_from = word_positions[-1] + 1
+    for token_index, token_count, positions in plan:
+        originals = [kept[position] for position in positions]
         for offset in range(token_count):
-            entries[token_index + offset]["word_indexes"] = group
-        if token_count > 1:
-            # One alignment word over several tokens: only its outer edges belong to a
-            # token, so only those tokens may claim a time.
-            word = word_list[word_index]
-            entries[token_index]["start_time"] = word.get("start_time")
-            entries[token_index + token_count - 1]["end_time"] = word.get("end_time")
-            continue
-        # One token, one word — or the several words it was split into. Both ends belong
-        # to that token, and both come from the word(s) that really cover it.
-        words_here = [word_list[index] for index in group]
-        entries[token_index]["start_time"] = words_here[0].get("start_time")
-        entries[token_index]["end_time"] = words_here[-1].get("end_time")
+            entries[token_index + offset]["word_indexes"] = list(originals)
+        # One token, one word — or the several words it was split into. Both ends come from
+        # the word(s) that really cover it. One word over several tokens only fills its own
+        # outer edges: the word's boundary is not the boundary of the tokens between them.
+        entries[token_index]["start_time"] = word_list[originals[0]].get("start_time")
+        entries[token_index + token_count - 1]["end_time"] = word_list[
+            originals[-1]].get("end_time")
     return entries
 
 
@@ -728,6 +899,51 @@ class StoriesRequest:
             "request_body": self.body(),
         }, length=24)
 
+    def followup_body(self, previous: str | None, problems: Sequence[str], *,
+                      model_fallback: str = "",
+                      extra_body_fallback: Mapping[str, Any] | None = None
+                      ) -> dict[str, Any]:
+        """A retry of the same question: the rejected answer, then what was wrong with it.
+
+        The prompt is untouched and the repaired request is not part of :meth:`key`, so the
+        answer is filed as the answer to the request that was asked, not to a conversation
+        that happened to converge. Resampling the identical prompt and hoping for a
+        different answer is not a plan; telling the model which checks it failed is.
+        """
+        body = self.body(model_fallback=model_fallback,
+                         extra_body_fallback=extra_body_fallback)
+        messages = list(body.get("messages") or [])
+        if previous:
+            messages.append({"role": "assistant", "content": previous})
+        messages.append({"role": "user", "content": feedback_message(problems)})
+        body["messages"] = messages
+        return body
+
+
+def feedback_message(problems: Sequence[str]) -> str:
+    """The repair instruction a rejected attempt earns on the next one.
+
+    It names the checks that failed, in the validator's own words, and asks for the whole
+    object again: a model that returns only the repaired fragment leaves the rest of the
+    answer missing, which is a different defect wearing the same shape.
+    """
+    lines = [f"- {problem}" for problem in problems if str(problem).strip()]
+    if not lines:
+        lines = ["- the previous answer could not be read as the required JSON object"]
+    return ("Your previous answer was rejected by the pipeline's validation. Fix every "
+            "problem listed below and return the corrected answer as one complete JSON "
+            "object with the same contract as before: include every storytelling event, "
+            "story and uncertain span you still claim, not only the parts you changed. "
+            "Return only the JSON object.\n\nProblems:\n" + "\n".join(lines))
+
+
+def _problems_from(error: Exception) -> list[str]:
+    """The validator's problems behind a rejection, as lines a model can act on."""
+    issues = getattr(error, "details", {}).get("issues")
+    if issues:
+        return [str(issue) for issue in issues]
+    return [f"{type(error).__name__}: {error}"]
+
 
 def _render(rows: Sequence[dict[str, Any]]) -> str:
     """Transcript lines the model can cite: id and boundaries, then text and speakers.
@@ -891,13 +1107,14 @@ def validate_response(payload: dict[str, Any], request: StoriesRequest, *,
     Two different refusals, because they mean different things:
 
     * a **breach** — an invented ``segment_id``, a quote that is not verbatim in the cited
-      segment, a quote that occurs more than once there, an enum value outside its
-      vocabulary, a duplicate id, a story whose event is not in the answer, inconsistent
-      ``event.story_ids``, a story outside its event's span, an end before its start, a
-      missing or blank ``story_evidence`` explanation, missing ``evidence_segment_ids`` or
-      evidence outside the story's own span, a reference to a segment the prompt did not
-      show — raises :class:`ValidationError`. The answer describes a transcript that does
-      not exist, so nothing in it can be trusted and the whole batch is retried;
+      segment, a repeated quote with no (or an impossible) ``occurrence``, an enum value
+      outside its vocabulary, a duplicate id, a story whose event is not in the answer,
+      inconsistent ``event.story_ids``, a story outside its event's span, an end before its
+      start, a missing or blank ``story_evidence`` explanation (or one that is only segment
+      ids), missing ``evidence_segment_ids`` or evidence outside the story's own span, a
+      reference to a real segment the prompt did not show — raises
+      :class:`ValidationError`. The answer describes a transcript that does not exist, so
+      nothing in it can be trusted and the whole batch is retried;
     * a **drop** is one event **group** — the event, its stories and its interruptions —
       anchored outside this window, plus any uncertain span that lies entirely outside. It
       is not this window's answer, another window may well make it, and it is returned so
@@ -1008,6 +1225,14 @@ def validate_response(payload: dict[str, Any], request: StoriesRequest, *,
         if invented:
             problems.append(f"{label}: evidence_segment_ids names segments that are not in "
                             f"this transcript: {invented[:5]}")
+        unseen = [item for item in evidence_ids
+                  if item in request.segments and item not in request.visible_ids]
+        if unseen:
+            # A real segment nobody was shown is not evidence the model saw: the prompt
+            # never carried its text, so the id came from somewhere other than this
+            # request. That is a breach, not a window drop.
+            problems.append(f"{label}: evidence_segment_ids names segments that were not "
+                            f"shown in this request: {unseen[:5]}")
         if start and end and evidence_ids:
             # The evidence has to be evidence *of this story*: an id outside the story's
             # own span describes a stretch the model did not mark as this story.
@@ -1081,6 +1306,12 @@ def validate_response(payload: dict[str, Any], request: StoriesRequest, *,
         range_ids = _segment_range(start_id, end_id, request, label, problems)
         if range_ids is None:
             continue
+        unseen = [segment_id for segment_id in (start_id, end_id)
+                  if segment_id not in request.visible_ids]
+        if unseen:
+            problems.append(f"{label}: names segments that were not shown in this request: "
+                            f"{unseen}")
+            continue
         quote = raw.get("transcript_quote")
         if not isinstance(quote, str) or not quote.strip():
             problems.append(f"{label}: transcript_quote is missing")
@@ -1152,12 +1383,15 @@ def validate_response(payload: dict[str, Any], request: StoriesRequest, *,
 
     kept_uncertain: list[dict[str, Any]] = []
     for span in uncertain:
+        # A span that touches a context segment is the neighbouring window's answer: kept
+        # here it would publish an interval reaching into another window's territory, so it
+        # is dropped and counted like every other cross-window claim.
         if (span["start_segment_id"] not in window_ids
-                and span["end_segment_id"] not in window_ids):
+                or span["end_segment_id"] not in window_ids):
             dropped.append({"kind": "uncertain_span",
                             "model_id": f"{span['start_segment_id']}.."
                                         f"{span['end_segment_id']}",
-                            "reason": "entirely outside this window"})
+                            "reason": "touches a context segment outside this window"})
             continue
         kept_uncertain.append(span)
 
@@ -1187,6 +1421,14 @@ def _resolve_boundary(raw: Any, request: StoriesRequest, label: str, role: str,
         problems.append(f"{label}: {role}.segment_id {segment_id!r} is not a segment of "
                         f"this transcript")
         return None
+    if segment_id not in request.visible_ids:
+        # Real segment, never shown: the prompt did not carry its text, so a quote out of it
+        # cannot have been copied from what the model read. A breach, not a window drop —
+        # a drop would quietly record the model citing text it never had.
+        problems.append(f"{label}: {role}.segment_id {segment_id} is a segment of this "
+                        f"transcript that was not shown in this request, so no quote from "
+                        f"it can support a boundary")
+        return None
     if not isinstance(quote, str) or not quote.strip():
         problems.append(f"{label}: {role}.transcript_quote is missing")
         return None
@@ -1200,19 +1442,52 @@ def _resolve_boundary(raw: Any, request: StoriesRequest, label: str, role: str,
         problems.append(f"{label}: {role}.transcript_quote is not verbatim in {segment_id}: "
                         f"{quote[:120]!r}")
         return None
-    if len(occurrences) > 1:
-        # Ambiguity is its own breach, with its own instruction: the quote is really in
-        # the cited segment, just not once, so the model can fix it by quoting more of the
-        # words around it. Calling this "not verbatim" would teach the retry nothing.
-        problems.append(
-            f"{label}: {role}.transcript_quote occurs {len(occurrences)} times in "
-            f"{segment_id}, so it does not say where the boundary is; quote more "
-            f"surrounding words so the quote is unique in that segment: {quote[:120]!r}")
+    span = _pick_occurrence(raw.get("occurrence"), occurrences, quote, segment_id,
+                            label, role, problems)
+    if span is None:
         return None
-    span = occurrences[0]
     when, precision = _boundary_time(segment, span, role)
     return {"segment_id": segment_id, "quote": quote, "speaker": speaker or UNKNOWN_SPEAKER,
             "reason": reason, "time": when, "precision": precision}
+
+
+def _pick_occurrence(raw: Any, occurrences: Sequence[tuple[int, int]], quote: str,
+                     segment_id: str, label: str, role: str,
+                     problems: list[str]) -> tuple[int, int] | None:
+    """Which word-aligned occurrence of the quote the boundary means.
+
+    A repeated quote is ambiguous only until the answer says which occurrence it means, and
+    ``occurrence`` is that answer (1 = first). Asking the model to quote *more* words was
+    the earlier rule and it could not be met: a segment whose text is ``no no`` has no
+    longer quote that is unique, so a correct boundary could not be expressed at all and the
+    retry could not converge. Selecting an occurrence always can be.
+
+    ``None`` means the answer did not say, or named an occurrence that does not exist — a
+    breach either way, reported with the count so the model can fix it.
+    """
+    count = len(occurrences)
+    if raw is None:
+        if count == 1:
+            return occurrences[0]
+        problems.append(
+            f"{label}: {role}.transcript_quote occurs {count} times in {segment_id}, so it "
+            f"does not say where the boundary is; add \"occurrence\": n (1 = first) to "
+            f"choose which one: {quote[:120]!r}")
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        problems.append(f"{label}: {role}.occurrence {raw!r} is not a whole number")
+        return None
+    if count == 1:
+        if raw != 1:
+            problems.append(f"{label}: {role}.occurrence is {raw}, but the quote occurs "
+                            f"once in {segment_id}, so the only occurrence is 1")
+            return None
+        return occurrences[0]
+    if raw < 1 or raw > count:
+        problems.append(f"{label}: {role}.occurrence {raw} is out of range: the quote "
+                        f"occurs {count} times in {segment_id} (1..{count})")
+        return None
+    return occurrences[raw - 1]
 
 
 def _boundary_type(raw: Any) -> str:
@@ -1251,7 +1526,9 @@ def _evidence_list(raw: Any, label: str, problems: list[str]) -> list[str]:
     where embodiment, intentionality or evaluation shows up. An empty list says nothing
     about why the stretch is a story, so it is a breach rather than an accepted blank, and
     so is a list of blanks. The segments carrying the evidence live in their own field
-    (``evidence_segment_ids``), where the range check can see them.
+    (``evidence_segment_ids``), where the range check can see them, so an "explanation"
+    that is only segment ids is a breach too: it says *where* to look and never *why*, and
+    it would satisfy the required-and-non-empty rule while explaining nothing.
     """
     if raw is None:
         problems.append(f"{label}: story_evidence is required: explain which events are "
@@ -1274,8 +1551,20 @@ def _evidence_list(raw: Any, label: str, problems: list[str]) -> list[str]:
         if not explanation:
             problems.append(f"{label}: story_evidence contains a blank explanation")
             continue
+        if _only_segment_ids(explanation):
+            problems.append(
+                f"{label}: story_evidence entry {explanation[:60]!r} is only segment ids; "
+                f"explain what the stretch represents and where its experience shows, and "
+                f"leave the ids to evidence_segment_ids")
+            continue
         items.append(explanation)
     return items
+
+
+def _only_segment_ids(explanation: str) -> bool:
+    """Is this "explanation" nothing but segment ids (``seg000001``, ``["seg000002"]``)?"""
+    pieces = [piece for piece in re.split(r"[^0-9A-Za-z_]+", explanation) if piece]
+    return bool(pieces) and all(_SEGMENT_ID_RE.match(piece) for piece in pieces)
 
 
 def _speaker_list(raw: Any, request: StoriesRequest, label: str, field_name: str,
@@ -1546,14 +1835,26 @@ class StoriesClient:
 
     def detect(self, request: StoriesRequest) -> StoriesVerdict:
         last_error: Exception | None = None
+        # The body of the next attempt. A rejected *answer* earns a repair: the same prompt,
+        # the rejected answer as an assistant message and the validator's problems as the
+        # follow-up question. A rejected *transport* keeps the body it already has.
+        body = request.body(model_fallback=self.model,
+                            extra_body_fallback=self.extra_body)
         for attempt in range(self.max_retries + 1):
             started = time.time()
             raw_text: str | None = None
+            feedback: list[str] | None = None
             try:
-                payload = self._post(request)
+                payload = self._post(body)
                 self.timings_ms.append(round((time.time() - started) * 1000, 1))
                 self._record_usage(payload)
-                raw_text = extract_message_content(payload)
+                try:
+                    raw_text = extract_message_content(payload)
+                except TranslationTransportError as exc:
+                    # No message content is the model's empty answer, not a broken network:
+                    # it enters the validation path (kept, retried with feedback) instead of
+                    # escaping as a transport failure after one attempt.
+                    raise ValueError(f"response carried no message content ({exc})") from exc
                 parsed = parse_stories_response(raw_text)
                 answer = validate_response(parsed, request)
                 return StoriesVerdict(content=raw_text, payload=parsed, answer=answer)
@@ -1567,12 +1868,17 @@ class StoriesClient:
                 # reader needs to judge a batch.
                 last_error = exc
                 self._record_rejection(request, attempt, raw_text, exc)
+                feedback = _problems_from(exc)
             if attempt < self.max_retries:
+                if feedback is not None:
+                    body = request.followup_body(raw_text, feedback,
+                                                 model_fallback=self.model,
+                                                 extra_body_fallback=self.extra_body)
                 delay = self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base)
                 self._sleep(delay)
         raise StageError(
             f"stories window {request.window_index} failed after {self.max_retries + 1} "
-            f"attempts: {last_error}",
+            f"attempts: {self.redact(str(last_error))}",
             details={"window_index": request.window_index,
                      "requested_ids": request.requested_ids,
                      "attempts": self.max_retries + 1},
@@ -1582,34 +1888,58 @@ class StoriesClient:
                           error: Exception) -> None:
         """Keep the text of a rejected answer, with the reason it was rejected.
 
-        ``raw/rejected/window_<i>_<key>_attempt<n>.txt``, so a batch's failed attempts are
-        as auditable as its accepted one. Only the response body is stored — never a
-        header — and a transport failure that produced no text is not stored here: it is
-        reported as a failure, not as a response.
+        ``raw/rejected/window_<i>_<key>_attempt<n>_<utc>.txt``, so a batch's failed attempts
+        are as auditable as its accepted one, and a second run of the same window appends to
+        the history instead of overwriting the first: the attempt number alone repeats
+        across runs, and an auditor who lost the earlier text cannot tell a retry that
+        failed from one that never happened. Only the response body is stored — never a
+        header — and the credential is redacted out of both the body and the reason,
+        because a gateway that echoes the request echoes what it was sent. A transport
+        failure that produced no text is not stored here: it is reported as a failure, not
+        as a response.
         """
         if self.rejected_dir is None or raw_text is None:
             return
-        path = (self.rejected_dir
-                / f"window_{request.window_index}_{request.key()}_attempt{attempt + 1}.txt")
-        reason = f"{type(error).__name__}: {error}"
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        reason = self.redact(f"{type(error).__name__}: {error}")
+        body = self.redact(raw_text)
         try:
+            path = self._unique_path(
+                self.rejected_dir /
+                f"window_{request.window_index}_{request.key()}_attempt{attempt + 1}_{stamp}.txt")
             atomic_write_text(
                 path,
                 f"# rejected answer (attempt {attempt + 1} of {self.max_retries + 1}) for "
                 f"window {request.window_index} of {request.video_id}\n"
                 f"# request_key: {request.key()}\n"
                 f"# reason: {reason}\n"
-                f"\n{raw_text}",
+                f"\n{body}",
             )
         except OSError:  # pragma: no cover - a full disk must not hide the real failure
             pass
 
-    def _post(self, request: StoriesRequest) -> dict[str, Any]:
-        # The body the cache key hashed and the body this posts are built by the same
-        # method: the client's own model/extra_body are only fallbacks for a request built
-        # without them, so the two cannot drift.
-        body = request.body(model_fallback=self.model,
-                            extra_body_fallback=self.extra_body)
+    @staticmethod
+    def _unique_path(path: Path) -> Path:
+        """A path that does not exist yet: ``name``, then ``name_2``, ``name_3``, …
+
+        Reserved by creating the file, so two attempts in the same second cannot pick the
+        same name and one of them silently disappear.
+        """
+        candidate = path
+        counter = 1
+        while True:
+            try:
+                with open(candidate, "x", encoding="utf-8"):
+                    pass
+                return candidate
+            except FileExistsError:
+                counter += 1
+                candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
+
+    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+        # The caller builds the body (the first attempt from the request, a retry from the
+        # request plus the rejected answer and the problems): the cache key hashes the
+        # request's own body, so a repair can never be mistaken for another question.
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
@@ -1632,6 +1962,20 @@ class StoriesClient:
             return response.json()
         except ValueError as exc:
             raise StoriesTransportError(f"non-JSON response body: {response.text[:200]}") from exc
+
+    def redact(self, text: str) -> str:
+        """The same text with the configured credential taken out of it.
+
+        Applied to every retained attempt and to the failure message, because both are
+        written to disk and to the stage log: a provider that echoes the request (or the
+        header it received) must not turn a rejected answer into a leaked API key.
+        """
+        cleaned = str(text)
+        if self.api_key:
+            cleaned = cleaned.replace(self.api_key, REDACTED)
+        cleaned = _BEARER_RE.sub(f"Bearer {REDACTED}", cleaned)
+        cleaned = _AUTHORIZATION_RE.sub(f"authorization: {REDACTED}", cleaned)
+        return cleaned
 
     def _record_usage(self, payload: dict[str, Any]) -> None:
         usage = payload.get("usage") or {}
@@ -1979,6 +2323,7 @@ class StoriesStage(Stage):
         drop_counts = {"events": 0, "stories": 0, "uncertain_spans": 0}
         reused = 0
         empty_windows = 0
+        raw_windows: list[dict[str, Any]] = []
         for request in requests:
             index = request.window_index
             verdict = self._load_cached(cache_dir / f"{request.key()}.json", request) \
@@ -2023,6 +2368,18 @@ class StoriesStage(Stage):
             events.extend(verdict.events)
             stories.extend(verdict.stories)
             uncertain.extend(verdict.uncertain_spans)
+            # Every window this run answered, by the file that holds its answer — empty
+            # windows included. The summary is what ``validate()`` walks, so a window left
+            # out of it is a window whose raw evidence is never read back, which is how a
+            # corrupt raw file used to pass validation.
+            raw_windows.append({
+                "window_index": index,
+                "request_key": request.key(),
+                "file": f"window_{index}_{request.key()}.json",
+                "requested_ids": request.requested_ids,
+                "context_ids": [str(row["segment_id"]) for row in request.context],
+                "empty": verdict.answer.empty,
+            })
             if verdict.answer.empty:
                 empty_windows += 1
                 ctx.log(f"window {index + 1}/{len(requests)}: no storytelling event, "
@@ -2068,6 +2425,10 @@ class StoriesStage(Stage):
             "speaker_max_competing": cfg.speaker_max_competing,
             "windows": len(requests),
             "empty_windows": empty_windows,
+            # The raw window files this answer consists of, each with the request key its
+            # rows carry. Empty windows are listed too: "nothing was found" is an answer
+            # that also has a response behind it.
+            "raw_windows": raw_windows,
             "batches_reused": reused,
             "requests_made": getattr(client, "request_count", 0),
             "request_timings_ms": getattr(client, "timings_ms", [])[-200:],
@@ -2124,22 +2485,28 @@ class StoriesStage(Stage):
     def _ensure_raw(raw_dir: Path, request: StoriesRequest, verdict: StoriesVerdict) -> None:
         """Guarantee the raw window file *is* the answer the tables will carry.
 
-        Three states, and the middle one is a defect this used to hide: absent (write it),
-        present and parsing to the same payload (leave the bytes alone — they are the
-        original), present and parsing to something else (rewrite from the cached content,
-        because a raw file that disagrees with its rows files the wrong evidence beside
-        them). A verdict with no content cannot be written at all and is not turned into a
+        Three states: absent (write it), present with exactly the cached bytes (leave them
+        alone — they are the original), present with anything else (rewrite from the cached
+        content, because a raw file that disagrees with its rows files the wrong evidence
+        beside them). The comparison is on **bytes**, not on the parsed payload: a
+        re-serialisation and a hand-edited response both parse to the accepted object and
+        neither is what the endpoint sent, so parsed equality left the wrong file in place.
+        A verdict with no content cannot be written at all and is not turned into a
         re-serialisation that only looks like what the endpoint sent.
         """
         path = raw_dir / f"window_{request.window_index}_{request.key()}.json"
         if not verdict.content:
             return
+        expected = verdict.content.encode("utf-8")
         if path.is_file():
             try:
-                if parse_stories_response(path.read_text(encoding="utf-8")) == verdict.payload:
+                if path.read_bytes() == expected:
                     return
-            except (OSError, ValueError):
+            except OSError:
                 pass
+        # Bytes, not the parsed payload: two answers can parse to the same object and one of
+        # them can still be text the endpoint never sent. The cache holds the exact bytes, so
+        # the raw file next to the rows has to be exactly those.
         atomic_write_text(path, verdict.content)
 
     @staticmethod
@@ -2290,20 +2657,11 @@ class StoriesStage(Stage):
             if int(summary.get(key) or 0) != len(rows):
                 problems.append(f"stories_summary.json says {summary.get(key)} {key}, the "
                                 f"table has {len(rows)}")
-        # Every row names the response it came from, so that response has to be there: a
-        # table whose provenance points at a missing file cannot be audited, and the raw
-        # window is the only place the model's own words survive.
-        raw_dir = ctx.artifact("stories_raw")
-        for name, rows in (("storytelling_events", events), ("stories", stories),
-                           ("uncertain_spans", uncertain)):
-            for row in rows:
-                referenced = (raw_dir / f"window_{row['window_index']}_"
-                                        f"{row['request_key']}.json")
-                if not referenced.is_file():
-                    problems.append(f"{name} row {row.get('event_id') or row.get('story_id') or row.get('start_segment_id')}"
-                                    f" names request {row['request_key']} but "
-                                    f"stories/raw/{referenced.name} is missing")
-                    break
+        # Every row names the response it came from, so that response has to be there *and*
+        # have to say what the row says: a table whose provenance points at a missing or
+        # edited file cannot be audited, and the raw window is the only place the model's
+        # own words survive.
+        problems.extend(self._raw_evidence_problems(ctx, summary, tables))
         windows = int(summary.get("windows") or 0)
         named = {int(row["window_index"]) for row in events + stories + uncertain}
         if windows and windows < len(named):
@@ -2313,6 +2671,108 @@ class StoriesStage(Stage):
         return {"storytelling_events": len(events), "stories": len(stories),
                 "uncertain_spans": len(uncertain), "windows": windows,
                 "empty_windows": max(windows - len(named), 0)}
+
+    def _raw_evidence_problems(self, ctx: StageContext, summary: Mapping[str, Any],
+                               tables: Mapping[str, list[dict[str, Any]]]) -> list[str]:
+        """Every window the summary lists, re-read and re-validated from disk.
+
+        The tables are a conclusion; ``stories/raw`` holds the evidence for it. Checking
+        only that a file exists accepts a truncated or hand-edited response, because nothing
+        ever reads it: a corrupt raw file next to a plausible row passed ``validate()``. So
+        each listed window is parsed and re-run through the same validator the run used,
+        against a request rebuilt from the current transcript, and the ids it yields must be
+        the rows the tables attribute to that window.
+        """
+        problems: list[str] = []
+        raw_dir = ctx.artifact("stories_raw")
+        listed = summary.get("raw_windows")
+        if not isinstance(listed, list) or not listed:
+            problems.append("stories_summary.json does not list the raw window files "
+                            "(`raw_windows`), so no response can be checked against the "
+                            "tables")
+            return problems
+        try:
+            rebuilt = {request.key(): request for request in self.build_requests(ctx)}
+        except (StageError, OSError, ValueError) as exc:
+            problems.append(f"the windows cannot be rebuilt to check the raw evidence: {exc}")
+            return problems
+        events = tables["storytelling_events"]
+        stories = tables["stories"]
+        uncertain = tables["uncertain_spans"]
+        seen: set[str] = set()
+        for entry in listed:
+            if not isinstance(entry, dict):
+                problems.append(f"stories_summary.json raw_windows contains {entry!r}, not an "
+                                f"object")
+                continue
+            key = str(entry.get("request_key") or "")
+            name = str(entry.get("file") or "")
+            index = int(entry.get("window_index") or 0)
+            if not key or not name:
+                problems.append("stories_summary.json lists a raw window without its file "
+                                "or request_key")
+                continue
+            if key in seen:
+                problems.append(f"stories_summary.json lists window {index} twice ({key})")
+                continue
+            seen.add(key)
+            path = raw_dir / name
+            if not path.is_file():
+                problems.append(f"stories/raw/{name} is missing, so the window it answers "
+                                f"cannot be audited")
+                continue
+            request = rebuilt.get(key)
+            if request is None:
+                problems.append(f"stories/raw/{name} names request {key}, which the current "
+                                f"transcript and configuration no longer produce")
+                continue
+            try:
+                payload = parse_stories_response(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                problems.append(f"stories/raw/{name} is not a parseable stories answer: {exc}")
+                continue
+            try:
+                answer = validate_response(payload, request)
+            except ValidationError as exc:
+                issues = "; ".join(str(item) for item in exc.details.get("issues") or [])
+                problems.append(f"stories/raw/{name} no longer passes the stories validation "
+                                f"against the current transcript: {issues[:300]}")
+                continue
+            for table_name, rows, field in (("storytelling_events", events, "event_id"),
+                                            ("stories", stories, "story_id")):
+                on_disk = {str(row[field]) for row in rows
+                           if int(row["window_index"]) == index}
+                in_raw = {str(row[field]) for row in answer.events if field == "event_id"}
+                if field == "story_id":
+                    in_raw = {str(row[field]) for row in answer.stories}
+                if on_disk != in_raw:
+                    problems.append(
+                        f"stories/{table_name}.parquet and stories/raw/{name} disagree about "
+                        f"window {index}: the table has {sorted(on_disk)}, the response "
+                        f"yields {sorted(in_raw)}")
+            spans_on_disk = sum(1 for row in uncertain
+                                if int(row["window_index"]) == index)
+            if spans_on_disk != len(answer.uncertain_spans):
+                problems.append(f"stories/uncertain_spans.parquet has {spans_on_disk} row(s) "
+                                f"for window {index}, stories/raw/{name} yields "
+                                f"{len(answer.uncertain_spans)}")
+        for table_name, rows, field in (("storytelling_events", events, "event_id"),
+                                        ("stories", stories, "story_id"),
+                                        ("uncertain_spans", uncertain,
+                                         "start_segment_id")):
+            for row in rows:
+                if str(row["request_key"]) in seen:
+                    continue
+                problems.append(f"{table_name} row {row.get(field)} names request "
+                                f"{row['request_key']}, which stories_summary.json does not "
+                                f"list as a window")
+                break
+        missing = [key for key in rebuilt if key not in seen]
+        if missing:
+            problems.append(f"stories_summary.json does not list {len(missing)} window(s) the "
+                            f"current configuration produces, so their responses were never "
+                            f"checked")
+        return problems
 
     def _boundary_problems(self, spans: dict[str, tuple[float, float]],
                            label: str, row: Mapping[str, Any]) -> list[str]:

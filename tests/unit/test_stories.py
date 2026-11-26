@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ from multimodal_pipeline.stages.stories import (
     StoriesClient,
     StoriesStage,
     StoriesTransportError,
+    align_token_times,
     _drop_counts,
     build_requests,
     locate_quote,
@@ -553,10 +555,14 @@ class TestPrompt:
         assert ("  text: it rolled down the side of the sofa\n"
                 "  speakers: [SPEAKER_01] it rolled down the side of the sofa") in prompt
 
-    def test_the_prompt_says_quotes_come_from_the_text_line_and_must_be_unique(self) -> None:
+    def test_the_prompt_says_quotes_come_from_the_text_line_and_how_to_pick_one(self) -> None:
         prompt = PROMPTS["v2"]
         assert "Copy exact wording into transcript_quote from the `text:` line" in prompt
-        assert "occurs only ONCE in that segment" in prompt
+        assert "add \"occurrence\": n" in prompt
+        assert "(1 = first)" in prompt
+        # The uniqueness rule is gone: a segment whose text repeats itself ("no no") has no
+        # longer quote that is unique, so that rule made a correct boundary unexpressible.
+        assert "occurs only ONCE" not in prompt
         # And the renderer really shows the line the rule talks about.
         assert "\n  text: " in request_for().prompt()
 
@@ -875,6 +881,91 @@ class TestBoundaryTimes:
         event = validate_response(honest_answer(request), request).events[0]
         assert event["start_time_precision"] == "segment"
 
+    def test_a_punctuation_only_alignment_row_never_times_an_edge(self) -> None:
+        """A separate ``?``/ ``¿`` row is not a word: its time is not a word's boundary.
+
+        The aligner used to *prefer* merging a token with the word plus the punctuation
+        after it — two rows covered beats one — so the quoted word's end became the
+        question mark's end.
+        """
+        segments = [segment(1, text="pasa"), segment(2, text="nada")]
+        words = [
+            {"segment_id": "seg000001", "word": "¿", "start_time": 2.8,
+             "end_time": 3.0},
+            {"segment_id": "seg000001", "word": "pasa", "start_time": 3.0,
+             "end_time": 3.2},
+            {"segment_id": "seg000001", "word": "?", "start_time": 3.2,
+             "end_time": 3.4},
+            {"segment_id": "seg000002", "word": "nada", "start_time": 6.0,
+             "end_time": 6.2},
+        ]
+        rows = prepare_segments(segments, words, [], speaker_source="none")
+        token = rows[0]["tokens"][0]
+        assert token["start_time"] == pytest.approx(3.0)  # not the ¿ before it
+        assert token["end_time"] == pytest.approx(3.2)  # not the ? after it
+
+    def test_character_offsets_place_the_occurrence_the_aligner_cannot(self) -> None:
+        """Offsets say *which* repeated word a row is; the order-only aligner does not.
+
+        The text says ``no`` three times and the alignment carries two rows: by order the
+        second row belongs to the second ``no``, and the third gets no time at all. The
+        offset says the row is the third one, and it is honoured.
+        """
+        segments = [segment(1, text="no no no")]
+        words = [
+            {"segment_id": "seg000001", "word": "no", "start_time": 3.0,
+             "end_time": 3.2},
+            {"segment_id": "seg000001", "word": "no", "start_time": 3.2,
+             "end_time": 3.4, "character_start": 6, "character_end": 8},
+        ]
+        by_order = prepare_segments(
+            segments, [dict(row, character_start=None, character_end=None) for row in words],
+            [], speaker_source="none")
+        assert by_order[0]["tokens"][2]["start_time"] is None
+        placed = prepare_segments(segments, words, [], speaker_source="none")
+        tokens = placed[0]["tokens"]
+        assert tokens[1]["start_time"] is None
+        assert tokens[2]["start_time"] == pytest.approx(3.2)
+        assert tokens[2]["end_time"] == pytest.approx(3.4)
+
+    def test_the_aligner_handles_more_than_two_thousand_tokens(self) -> None:
+        """It was a recursion that descended once per token: ~1000 tokens was a crash."""
+        count = 2100
+        words_in_text = [f"w{index}" for index in range(count)]
+        text = " ".join(words_in_text)
+        rows = [{"segment_id": "seg000001", "word": word,
+                 "start_time": 3.0 + index, "end_time": 3.5 + index}
+                for index, word in enumerate(words_in_text)]
+        # A contraction the sub-word tokenizer split, deep inside: the dynamic program runs
+        # for real, on a grid of a few cells rather than the whole transcript.
+        rows[999] = {"segment_id": "seg000001", "word": "w99", "start_time": 1002.0,
+                     "end_time": 1002.25}
+        rows.insert(1000, {"segment_id": "seg000001", "word": "9", "start_time": 1002.25,
+                           "end_time": 1002.5})
+        entries = align_token_times(text, rows)
+        assert len(entries) == count
+        assert entries[0]["start_time"] == pytest.approx(3.0)
+        assert entries[998]["end_time"] == pytest.approx(1001.5)
+        # w99 + 9 is the token w999: the merged run gives the token its own two edges.
+        assert entries[999]["start_time"] == pytest.approx(1002.0)
+        assert entries[999]["end_time"] == pytest.approx(1002.5)
+        assert entries[count - 1]["end_time"] == pytest.approx(3.5 + count - 1)
+
+    def test_a_case_expanding_character_does_not_create_a_quote(self) -> None:
+        """``sidefold('ß') == 'ss'`` used to make ``sa`` match inside ``ßa``.
+
+        One character must map to one character, or the index that says where a match
+        started is a lie. Folding that would change the length is dropped back to the
+        character as written — the exact-case fallback.
+        """
+        assert quote_occurrences("sa", "ßa") == []
+        assert locate_quote("sa", "ßa") is None
+        assert locate_quote("ßa", "ßa") == (0, 2)
+        assert locate_quote("BETA", "el beta") == (3, 7)  # case folding still works
+        assert locate_quote("AÑO", "el año pasado") == (3, 6)
+        assert locate_quote("STRASSE", "die Straße") is None  # no expansion, no match
+        assert locate_quote("straße", "die Straße") == (4, 10)
+
 
 # ------------------------------------------------------------------ rejection
 
@@ -1065,6 +1156,32 @@ class TestValidation:
         assert evidence == ["a wedding ring rolling away is one represented event",
                             "the speaker's embarrassment evaluates that experience"]
 
+    @pytest.mark.parametrize("evidence", [["seg000001"],
+                                          ["seg000001", "seg000002"],
+                                          ['["seg000001", "seg000002"]'],
+                                          ["the ring rolled away", "seg000002"]])
+    def test_a_story_evidence_entry_of_only_segment_ids_is_refused(
+            self, evidence: list[str]) -> None:
+        """An "explanation" that is only ids says where to look, never why.
+
+        It would pass the required-and-non-empty rule while explaining nothing, and the ids
+        already have their own field.
+        """
+        request = request_for()
+        payload = answer(events=[event_payload(request)],
+                        stories=[story_payload(request, story_evidence=evidence)])
+        with pytest.raises(ValidationError, match="is only segment ids"):
+            validate_response(payload, request)
+
+    def test_an_explanation_that_mentions_an_id_among_words_is_fine(self) -> None:
+        request = request_for()
+        payload = answer(events=[event_payload(request)],
+                        stories=[story_payload(
+                            request,
+                            story_evidence=["seg000001 shows the ring rolling away, an "
+                                            "event told from experience"])])
+        assert validate_response(payload, request).stories
+
     def test_a_story_without_evidence_segment_ids_is_refused(self) -> None:
         request = request_for()
         story = story_payload(request)
@@ -1091,13 +1208,27 @@ class TestValidation:
         with pytest.raises(ValidationError, match="not in this transcript"):
             validate_response(payload, request)
 
-    def test_an_ambiguous_quote_is_a_breach_that_asks_for_more_words(self) -> None:
-        """A quote that occurs twice says nothing about where the boundary is."""
-        segments = [segment(1, text="that was that"), segment(2, text="then she left")]
-        request = request_for(segments, words=word_rows(segments))
+    def test_a_repeated_quote_needs_an_occurrence_and_then_says_where_it_is(self) -> None:
+        """A quote that occurs twice says nothing about where the boundary is — until the
+        answer selects one. Quoting more words cannot always fix it (``no no``), so the
+        selection is what makes the retry converge."""
+        segments = [segment(1, text="no no"), segment(2, text="then she left")]
+        words = [
+            {"segment_id": "seg000001", "word": "no", "start_time": 3.0,
+             "end_time": 4.0},
+            {"segment_id": "seg000001", "word": "no", "start_time": 4.0,
+             "end_time": 5.0},
+            {"segment_id": "seg000002", "word": "then", "start_time": 6.0,
+             "end_time": 6.5},
+            {"segment_id": "seg000002", "word": "she", "start_time": 6.5,
+             "end_time": 7.0},
+            {"segment_id": "seg000002", "word": "left", "start_time": 7.0,
+             "end_time": 8.0},
+        ]
+        request = request_for(segments, words=words)
         payload = answer(events=[{
             "event_id": "SE1",
-            "start": {"segment_id": "seg000001", "transcript_quote": "that",
+            "start": {"segment_id": "seg000001", "transcript_quote": "no",
                       "speaker": "unknown", "boundary_type": "pre_telling",
                       "reason": "which one?"},
             "end": {"segment_id": "seg000002", "transcript_quote": "then she left",
@@ -1106,10 +1237,53 @@ class TestValidation:
             "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}])
         with pytest.raises(ValidationError, match="occurs 2 times") as excinfo:
             validate_response(payload, request)
-        assert "quote more surrounding words" in str(excinfo.value)
-        # The retry the message asks for is the answer that passes.
-        payload["storytelling_events"][0]["start"]["transcript_quote"] = "that was that"
-        assert len(validate_response(payload, request).events) == 1
+        assert "occurrence" in str(excinfo.value)
+        # The retry the message asks for is the answer that passes: the second "no".
+        payload["storytelling_events"][0]["start"]["occurrence"] = 2
+        event = validate_response(payload, request).events[0]
+        assert event["start_time"] == pytest.approx(4.0)
+        assert event["start_time_precision"] == "word"
+        # And occurrence 1 is the first one, with its own time.
+        payload["storytelling_events"][0]["start"]["occurrence"] = 1
+        assert (validate_response(payload, request).events[0]["start_time"]
+                == pytest.approx(3.0))
+        # A model that answers the same problem by quoting more words still passes.
+        payload["storytelling_events"][0]["start"] = {
+            "segment_id": "seg000001", "transcript_quote": "no no",
+            "speaker": "unknown", "boundary_type": "pre_telling", "reason": "x"}
+        assert (validate_response(payload, request).events[0]["start_time"]
+                == pytest.approx(3.0))
+
+    @pytest.mark.parametrize("occurrence,message", [
+        (3, "out of range"),
+        (0, "out of range"),
+        (True, "not a whole number"),
+        (1.5, "not a whole number"),
+    ])
+    def test_an_impossible_occurrence_is_a_breach(self, occurrence: Any,
+                                                  message: str) -> None:
+        segments = [segment(1, text="no no"), segment(2, text="then she left")]
+        request = request_for(segments, words=word_rows(segments))
+        payload = answer(events=[{
+            "event_id": "SE1",
+            "start": {"segment_id": "seg000001", "transcript_quote": "no",
+                      "occurrence": occurrence, "speaker": "unknown",
+                      "boundary_type": "pre_telling", "reason": "x"},
+            "end": {"segment_id": "seg000002", "transcript_quote": "then she left",
+                    "speaker": "unknown", "boundary_type": "coda", "reason": "x"},
+            "story_ids": [], "tellers": ["unknown"],
+            "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}])
+        with pytest.raises(ValidationError, match=message):
+            validate_response(payload, request)
+
+    def test_a_single_occurrence_accepts_only_occurrence_one(self) -> None:
+        request = request_for()
+        payload = honest_answer(request)
+        payload["storytelling_events"][0]["start"]["occurrence"] = 1
+        assert validate_response(payload, request).events
+        payload["storytelling_events"][0]["start"]["occurrence"] = 2
+        with pytest.raises(ValidationError, match="the only occurrence is 1"):
+            validate_response(payload, request)
 
     def test_an_interruption_outside_the_event_window_ids_is_refused(self) -> None:
         request = request_for()
@@ -1254,6 +1428,70 @@ class TestWindowedDrops:
         validated = validate_response(payload, request)
         assert validated.uncertain_spans == []
         assert [item["kind"] for item in validated.dropped] == ["uncertain_span"]
+
+    def test_an_uncertain_span_touching_context_is_dropped_and_counted(self) -> None:
+        """A span reaching into a context segment is the neighbouring window's answer.
+
+        Keeping it would publish an interval that runs into another window's territory, so
+        it is dropped and counted — the same question a cross-window event asks.
+        """
+        request = self.windowed()[0]  # seg000001..seg000002, context seg000003
+        payload = answer(uncertain=[{
+            "start_segment_id": "seg000001", "end_segment_id": "seg000003",
+            "transcript_quote": SEGMENTS[2]["text"], "issue": "reaches into context"}])
+        validated = validate_response(payload, request)
+        assert validated.uncertain_spans == []
+        assert [item["kind"] for item in validated.dropped] == ["uncertain_span"]
+        assert _drop_counts(validated.dropped)["uncertain_spans"] == 1
+
+    def test_a_boundary_in_an_unshown_segment_is_a_breach_not_a_drop(self) -> None:
+        """A real segment the prompt never showed cannot support a quoted boundary.
+
+        There is no context here, so ``seg000003`` was never rendered: the model cannot
+        have copied a quote out of it, and calling that a window drop would publish an
+        answer written about text it never read.
+        """
+        rows = prepared()
+        request = build_requests(rows, video_id="v", max_segments_per_request=2,
+                                 context_segments=0)[0]
+        payload = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        with pytest.raises(ValidationError, match="not shown in this request"):
+            validate_response(payload, request)
+
+    def test_an_uncertain_span_in_an_unshown_segment_is_a_breach(self) -> None:
+        rows = prepared()
+        request = build_requests(rows, video_id="v", max_segments_per_request=2,
+                                 context_segments=0)[0]
+        payload = answer(uncertain=[{
+            "start_segment_id": "seg000003", "end_segment_id": "seg000003",
+            "transcript_quote": SEGMENTS[2]["text"], "issue": "never shown"}])
+        with pytest.raises(ValidationError, match="not shown in this request"):
+            validate_response(payload, request)
+
+    def test_an_evidence_id_from_an_unshown_segment_is_a_breach(self) -> None:
+        """The evidence rule is the boundary rule: only what the prompt showed counts.
+
+        A window normally partitions the transcript contiguously, so every id between two
+        shown ids is shown too; this request shows ``seg000001`` and ``seg000003`` and
+        leaves ``seg000002`` in the transcript but out of the prompt, which is the state the
+        check exists for (a caller that assembles its own window).
+        """
+        request = request_for()
+        partial = replace(
+            request,
+            requested=[row for row in request.requested
+                       if row["segment_id"] in ("seg000001", "seg000003")],
+            context=[])
+        assert "seg000002" not in partial.visible_ids
+        assert "seg000002" in partial.segments
+        story = story_payload(partial, end={"segment_id": "seg000003",
+                                           "transcript_quote": SEGMENTS[2]["text"],
+                                           "speaker": label(partial, "seg000003"),
+                                           "reason": "the last represented event"},
+                              evidence_segment_ids=["seg000001", "seg000002"])
+        payload = answer(events=[event_payload(partial)], stories=[story])
+        with pytest.raises(ValidationError, match="were not shown in this request"):
+            validate_response(payload, partial)
 
 
 # ------------------------------------------------------------------ speakers
@@ -1689,18 +1927,23 @@ class TestStageExecution:
         assert raw[0].read_text(encoding="utf-8") == content
         assert len(rows_of(context, "storytelling_events")) == 1
 
-    def test_a_raw_file_that_already_matches_keeps_its_original_bytes(self, context) -> None:
+    def test_a_reused_window_restores_the_cached_bytes_not_a_respacing(self, context) -> None:
+        """Same payload, different bytes: the raw file must be what the endpoint sent.
+
+        Parsed equality used to decide this, so a re-indented (or otherwise edited) file
+        that still parsed to the accepted payload was left in place — a file the endpoint
+        never produced, filed as its original response.
+        """
         use_stage_config(context)
         seed_segments(context, SEGMENTS)
-        # Same payload, deliberately different bytes: a reused window must not rewrite a
-        # byte-identical-in-content file, because the spacing is the model's own output.
         content = envelope(honest_answer(request_for()))
         respaced = json.dumps(honest_answer(request_for()), indent=2)
+        assert respaced != content
         run_stage(context, FakeClient([content]))
         raw = sorted(context.artifact("stories_raw").glob("window_*.json"))
         raw[0].write_text(respaced, encoding="utf-8")
         run_stage(context, FakeClient([content]))
-        assert raw[0].read_text(encoding="utf-8") == respaced
+        assert raw[0].read_text(encoding="utf-8") == content
 
     def test_rejected_answers_are_kept_beside_the_accepted_one(self, endpoint, tmp_path) -> None:
         request = request_for()
@@ -1712,7 +1955,7 @@ class TestStageExecution:
         client.rejected_dir.mkdir()
         verdict = client.detect(request)
         assert verdict.answer.empty
-        attempts = sorted(client.rejected_dir.glob("window_0_*_attempt1.txt"))
+        attempts = sorted(client.rejected_dir.glob("window_0_*_attempt1_*.txt"))
         assert len(attempts) == 1, list(client.rejected_dir.iterdir())
         stored = attempts[0].read_text(encoding="utf-8")
         assert rejected in stored
@@ -1931,6 +2174,65 @@ class TestValidate:
         with pytest.raises(ValidationError, match="is missing"):
             StoriesStage().validate(context)
 
+    def test_a_corrupt_raw_file_is_caught_even_with_the_rows_intact(self, context) -> None:
+        """The raw window is the evidence behind the rows, so validate() reads it back.
+
+        Truncating it used to pass: nothing parsed the file, so "it exists" was the whole
+        check and the tables' only evidence was gone.
+        """
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(honest_answer(request_for()))]))
+        raw = sorted(context.artifact("stories_raw").glob("window_*.json"))
+        raw[0].write_text(raw[0].read_text(encoding="utf-8")[:40], encoding="utf-8")
+        with pytest.raises(ValidationError, match="not a parseable stories answer"):
+            StoriesStage().validate(context)
+
+    def test_a_raw_file_whose_answer_disagrees_with_the_table_is_caught(self, context) -> None:
+        """The response still parses and still validates — it just is a different answer."""
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(honest_answer(request_for()))]))
+        raw = sorted(context.artifact("stories_raw").glob("window_*.json"))
+        raw[0].write_text(envelope(answer()), encoding="utf-8")
+        with pytest.raises(ValidationError, match="disagree about window"):
+            StoriesStage().validate(context)
+
+    def test_a_summary_that_does_not_list_its_raw_windows_is_refused(self, context) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context)
+        path = context.artifact("stories_raw") / "stories_summary.json"
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+        recorded.pop("raw_windows")
+        path.write_text(json.dumps(recorded), encoding="utf-8")
+        with pytest.raises(ValidationError, match="does not list the raw window files"):
+            StoriesStage().validate(context)
+
+    def test_every_window_is_listed_even_an_empty_one(self, context) -> None:
+        use_stage_config(context, max_segments_per_request=2, context_segments=1)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(answer()), envelope(answer())]))
+        recorded = summary(context)
+        assert [entry["window_index"] for entry in recorded["raw_windows"]] == [0, 1]
+        assert all(entry["empty"] is None or isinstance(entry["empty"], bool)
+                   for entry in recorded["raw_windows"])
+        assert {entry["file"] for entry in recorded["raw_windows"]} == {
+            path.name for path in context.artifact("stories_raw").glob("window_*.json")}
+        assert StoriesStage().validate(context)["windows"] == 2
+
+    def test_a_table_row_whose_request_is_not_a_listed_window_is_refused(self, context) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(honest_answer(request_for()))]))
+        rows = rows_of(context, "storytelling_events")
+        rows[0]["request_key"] = "0" * 24
+        write_table(context.artifact("storytelling_events"),
+                    pa.Table.from_pylist(rows, schema=STORYTELLING_EVENTS_SCHEMA),
+                    STORYTELLING_EVENTS_SCHEMA)
+        with pytest.raises(ValidationError, match="does not list as a window"):
+            StoriesStage().validate(context)
+
     def test_a_summary_count_that_disagrees_with_the_table_is_refused(self, context) -> None:
         use_stage_config(context)
         seed_segments(context, SEGMENTS)
@@ -2097,6 +2399,96 @@ class TestClients:
         verdict = client.detect(request_for())
         assert client.request_count == 2
         assert verdict.answer.empty
+
+    def test_a_rejected_answer_is_retried_with_the_problems_as_feedback(self, endpoint) -> None:
+        """Resampling the identical prompt is not a retry plan: say what was wrong.
+
+        The second body carries the original question, the rejected answer as an
+        ``assistant`` message and the validator's problems in a following ``user`` message.
+        """
+        request = request_for()
+        broken = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        broken["stories"][0]["evidence_segment_ids"] = ["seg999999"]
+        server, state = endpoint([(200, ok_body(envelope(broken))),
+                                  (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=2)
+        client.detect(request)
+        assert client.request_count == 2, "the repaired answer was accepted on attempt 2"
+        first, second = state.bodies
+        assert first["messages"] == [{"role": "user", "content": request.prompt()}]
+        assert [message["role"] for message in second["messages"]] == [
+            "user", "assistant", "user"]
+        assert second["messages"][0]["content"] == request.prompt()
+        assert second["messages"][1]["content"] == envelope(broken)
+        feedback = second["messages"][2]["content"]
+        assert "seg999999" in feedback
+        assert "return the corrected answer" in feedback
+        # Everything except the conversation is the same request.
+        assert {key: value for key, value in first.items() if key != "messages"} == {
+            key: value for key, value in second.items() if key != "messages"}
+
+    def test_a_fixable_answer_converges_on_the_retry(self, endpoint) -> None:
+        """The first attempt invents a segment id; the repaired one is accepted."""
+        request = request_for()
+        broken = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        broken["stories"][0]["evidence_segment_ids"] = ["seg999999"]
+        fixed = answer(events=[event_payload(request)], stories=[story_payload(request)])
+        server, _state = endpoint([(200, ok_body(envelope(broken))),
+                                   (200, ok_body(envelope(fixed)))])
+        client = stories_client(server, max_retries=1)
+        verdict = client.detect(request)
+        assert client.request_count == 2
+        assert [row["event_id"] for row in verdict.events] == ["w0-SE1"]
+        assert json.loads(verdict.content) == fixed
+
+    def test_a_transport_error_retries_the_unchanged_body(self, endpoint) -> None:
+        """A broken connection is not the model's mistake, so it earns no feedback."""
+        request = request_for()
+        server, state = endpoint([(503, "upstream down"),
+                                  (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=1)
+        client.detect(request)
+        assert len(state.bodies) == 2
+        assert state.bodies[0] == state.bodies[1]
+        assert state.bodies[1]["messages"] == [{"role": "user", "content": request.prompt()}]
+
+    def test_an_empty_message_is_a_model_error_retried_with_feedback(self, endpoint,
+                                                                    tmp_path) -> None:
+        """No content is an empty answer, not a dead endpoint.
+
+        It used to escape as a transport failure on the first attempt: the answer was never
+        read, never kept and never repaired.
+        """
+        request = request_for()
+        server, state = endpoint([(200, {"choices": [{"message": {"content": "   "}}]}),
+                                  (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=1)
+        client.rejected_dir = tmp_path / "rejected"
+        client.rejected_dir.mkdir()
+        verdict = client.detect(request)
+        assert verdict.answer.empty
+        assert client.request_count == 2
+        assert len(state.bodies[1]["messages"]) == 2  # no assistant message: there was none
+        assert "no message content" in state.bodies[1]["messages"][-1]["content"]
+
+    def test_a_rejection_file_is_unique_and_redacted(self, endpoint, tmp_path) -> None:
+        request = request_for()
+        leaked = ("I cannot help. My key is sk-test-123 and I saw "
+                  "authorization: Bearer sk-test-123 too.")
+        server, _state = endpoint([(200, ok_body(leaked)), (200, ok_body(leaked)),
+                                   (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=2)
+        client.rejected_dir = tmp_path / "rejected"
+        client.rejected_dir.mkdir()
+        client.detect(request)
+        files = sorted(client.rejected_dir.iterdir())
+        assert len(files) == 2, files
+        assert files[0].name != files[1].name
+        for path in files:
+            stored = path.read_text(encoding="utf-8")
+            assert "sk-test-123" not in stored
+            assert "[redacted]" in stored
+            assert "attempt" in stored
 
     def test_the_api_key_never_appears_in_a_failure_report(self) -> None:
         client = StoriesClient(base_url="http://127.0.0.1:1/v1", api_key="sk-secret-123456",

@@ -103,6 +103,18 @@ class TestIntervalAttribution:
         turns = [turn("speaker_0", 0.0, 0.6), turn("speaker_0", 0.4, 1.0)]
         assert coverage(turns, 0.0, 1.0) == {"speaker_0": pytest.approx(1.0)}
 
+    def test_the_merge_does_not_depend_on_the_row_order(self) -> None:
+        """A later turn listed before an earlier one must not swallow it.
+
+        The merge started from ``spans[0]`` but walked the *sorted* list, so ``[7,9]`` first
+        and ``[1,6]`` second measured the union as 7..9 (2 s) instead of 1..9 (7 s).
+        """
+        late_first = [turn("speaker_0", 7.0, 9.0), turn("speaker_0", 1.0, 6.0)]
+        early_first = [turn("speaker_0", 1.0, 6.0), turn("speaker_0", 7.0, 9.0)]
+        assert coverage(late_first, 0.0, 10.0) == {"speaker_0": pytest.approx(7.0)}
+        assert coverage(late_first, 0.0, 10.0) == coverage(early_first, 0.0, 10.0)
+        assert attribute_interval(late_first, 7.5, 8.5) == "speaker_0"
+
     def test_a_doubly_diarized_speaker_cannot_reach_the_threshold_by_repetition(self) -> None:
         # Summed, these two turns cover 0.7 s of the 1 s word (past the 0.6 threshold);
         # their union covers 0.55 s (below it). The label is refused, as it must be: the

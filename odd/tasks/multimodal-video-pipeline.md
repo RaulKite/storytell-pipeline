@@ -62,39 +62,39 @@ run/resume backfills reuse, status/plan writes none.
 **Skeleton decision:** independent opt-in native MP4, with source audio when present.
 Native CFR timing is a preview; authoritative PTS stays in the frame index. Allow at most
 three trailing frames (seven observed raw/preview counts: 126/125, 124/121, 240/240,
-205/205, 249/249, 299/299, 100/100). Raw/tables/images/video precede mux/validation, and
-canonical paths plus refusing video overrides protect upstream's shell. Publication after
-validation is not a cross-artifact transaction; disabling deletes nothing.
+205/205, 249/249, 299/299, 100/100). Raw/tables/images/video precede mux/validation,
+canonical paths plus refusing video overrides protect upstream's shell, and publication
+after validation is not a cross-artifact transaction; disabling deletes nothing.
 
-**Stories v2 decision:** prompt `v2` replaces v1's single-span "anecdote" model with
-the domain expert's definition: a **storytelling event** (launching, telling, coda) and,
-separately, the **story** inside it, plus uncertain spans. The model cites a `segment_id`
-+ quote and outputs no times; the stage maps the quote's edge words and falls back to the
-cited segment (`segment`) when an edge word has no exact alignment, so no time is
-borrowed; a quote must cover whole words and occur once in its segment. `story_evidence`
-is the expert's list of explanations, with `evidence_segment_ids` (non-empty, inside the
-story's own span); schema 2.1. Speakers come from Nemotron on the operator's decision -
-overlapping turns `unknown`, coverage the union of a speaker's turns, a missing or empty
-source `used: none` and never pyannote - and only labels the rendered prompt shows are
-allowed, context included. Default is the whole transcript in one request; a windowed run
-drops each event **group** once and counts the child stories apart. Rendering, cache keys,
-raw windows, retained rejected attempts and `validate()` follow `docs/modalities.md`. v1's
-path is removed (`prompt_version: v1` fails at parse) and existing datasets keep their v1
-tables. Measured: `words.parquet` character offsets are NULL in all eight datasets.
+**Stories v2 decision:** prompt `v2` is the domain expert's definition: a **storytelling
+event** (launching, telling, coda) and, separately, the **story** inside it, plus uncertain
+spans. The model cites a `segment_id` + quote and outputs no times; the stage maps the
+quote's edge words and falls back to the cited segment (`segment`) when an edge word has no
+exact alignment, so no time is borrowed. A repeated quote is disambiguated by an optional
+`occurrence` (required when it repeats) instead of an unmeetable uniqueness rule, and a
+rejected answer is retried as a repair (same prompt, rejected answer, the problems). Only
+segments the prompt showed may be cited: a real but unshown id is a breach, not a window
+drop, while context-only references still drop and count. `story_evidence` is her list of
+explanations (never bare ids) beside `evidence_segment_ids`; schema 2.1. Speakers come from
+Nemotron on the operator's decision — overlapping turns `unknown`, coverage the union of a
+speaker's turns, a missing source `used: none`, never pyannote — and only labels the prompt
+showed are allowed, context included; a speaker her rule lets the transcript name goes in
+`notes`, the one documented deviation. Default is one whole-transcript request; a windowed
+run drops each event **group** once and counts child stories apart. Raw windows are listed
+in the summary and re-read by `validate()`; rejected attempts get unique, redacted files.
+Rendering, cache keys and `validate()` follow `docs/modalities.md`; v1's path is removed.
+Offsets stay NULL in `words.parquet`, so placement is the token alignment.
 
 **Corpus decision:** add missing visuals only, retain three existing MP4s; seven clips now
-have skeleton MP4/native ASD AVI (1343 JPGs, 261 guides) and fourteen prior ASD raw
-versions in `speaker/raw/history/`. Assumption: new previews must match rechecked raw
-measurements before installation, and reuse observed matching results rather than
-re-executing external tools. No inputs, native raw bytes or Parquet tables changed; the
-local profile uses the repository-local TalkNet mirror, not operator scripts.
+have skeleton MP4/native ASD AVI (1343 JPGs, 261 guides) and fourteen prior ASD raw versions
+in `speaker/raw/history/`. Assumption: new previews must match rechecked raw measurements
+before installation, and reuse observed results rather than re-executing external tools. No
+inputs, native raw bytes or Parquet tables changed; the profile uses the local TalkNet mirror.
 
 ## Verification and recovery
 
 - Previous candidate, re-measured then: stable unit/e2e **2126 passed, 12 skipped**;
-  corpus validate **7/7 OK**, all **205 Parquet** tables unchanged. Review found and
-  rechecked failed-mux data loss, lexical symlink shell injection, video-only provenance,
-  truncation and false note ownership; named RED/GREEN regressions and mutations.
+  corpus validate **7/7 OK**, all **205 Parquet** tables unchanged (see Git for details).
 - Native RDD remains ON; only observed current authority establishes closure, so this
   document and historical `7707fb3` prove none.
 - Recovery: `checkpoint/resume-explanations-7707fb3` plus

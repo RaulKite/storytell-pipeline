@@ -73,9 +73,13 @@ def coverage(turns: Sequence[Mapping[str, Any]], start: float, end: float) -> di
             intervals.setdefault(speaker, []).append((low, high))
     totals: dict[str, float] = {}
     for speaker, spans in intervals.items():
+        # Sorted first: the merge below assumes the earliest interval starts the run, so a
+        # table whose rows arrive late-first (a [7,9] turn before a [1,6] one) used to be
+        # summed as if the later turn swallowed the earlier one.
+        ordered = sorted(spans)
         total = 0.0
-        current_start, current_end = spans[0]
-        for low, high in sorted(spans)[1:]:
+        current_start, current_end = ordered[0]
+        for low, high in ordered[1:]:
             if low > current_end:
                 total += current_end - current_start
                 current_start, current_end = low, high

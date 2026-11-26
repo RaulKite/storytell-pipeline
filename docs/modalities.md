@@ -161,16 +161,26 @@ it never reports times. The pipeline locates the quote in
 `speech/segments.parquet` and maps its **first and last word** to times through
 `speech/words.parquet`, recording `*_time_precision` as `word` or, when the edge word
 has no exact alignment, `segment` — it never borrows a neighbouring word's time. A
-quote must cover whole words, so a one-letter quote cannot land inside a longer word;
-it must also occur exactly once in the cited segment, because a repeated quote does
-not say where the boundary is. An invented segment id, a quote that is not verbatim
-or is ambiguous, an enum value outside the closed vocabularies, a duplicate id, a
-story outside its event, inconsistent `story_ids`, a missing or blank `story_evidence`
-explanation, an `evidence_segment_ids` list that is empty or outside the story's own
-span, or a reference to a segment the prompt did not show rejects the whole answer and
-the batch is retried. `story_evidence` carries the model's short explanations of why
-the stretch is a story; the segments those explanations rest on are in
-`evidence_segment_ids`.
+quote must cover whole words, so a one-letter quote cannot land inside a longer word.
+When a quote occurs more than once in the cited segment the boundary must carry
+`occurrence` (1 = first) choosing which; quotation cannot always be made unique (a
+segment that says "no no" has no longer unique quote), so the selection is what keeps
+a correct answer expressible and a retry convergent. An alignment row that holds no
+word (a separately tokenized `¿`) never times an edge, character offsets from
+`words.parquet` are honoured only when they slice exactly that word out of the text,
+and quote matching folds case one character to one character so `sa` does not match
+inside `ßa`. An invented segment id, a quote that is not verbatim, a repeated quote
+without a usable `occurrence`, a reference to a real segment the prompt never showed
+(the answer cites text it cannot have read), an enum value outside the closed
+vocabularies, a duplicate id, a story outside its event, inconsistent `story_ids`,
+a missing or blank `story_evidence` explanation — or one that is only segment ids —
+an `evidence_segment_ids` list that is empty or outside the story's own span rejects
+the whole answer, and the next attempt is a repair: the same prompt, the rejected
+answer as an `assistant` message and the problems as a follow-up question. A
+transport failure is retried unchanged, and an answer with no message content is
+treated as a model error, not as a broken endpoint. `story_evidence` carries the
+model's short explanations of why the stretch is a story; the segments those
+explanations rest on are in `evidence_segment_ids`.
 
 The prompt shows each segment in three lines — `segment_id`/`start`/`end`, then the
 segment's own `text:`, then its `speakers:` runs — and quotes are copied from `text:`
@@ -193,15 +203,20 @@ with no transcript segments skips the stage. The default is the whole transcript
 one request; setting `stories.max_segments_per_request` restores windowing. An event
 whose boundary — or whose marked interruption — straddles a window is dropped and
 counted **once**, with the number of stories it took with it counted separately
-(`dropped_outside_window`, `dropped_stories_outside_window`), so absence is not a
-recall result; references to the visible context segments are evidence, not a reason to
-reject the answer. Raw responses and cache entries make claims auditable: the raw
+(`dropped_outside_window`, `dropped_stories_outside_window`), and an uncertain span
+that touches a context segment is dropped and counted the same way, so absence is not a
+recall result; references to the *visible* context segments are evidence, not a reason
+to reject the answer. Raw responses and cache entries make claims auditable: the raw
 window is the endpoint's exact bytes, every rejected attempt is kept beside it under
-`stories/raw/rejected/`, and a cache entry keyed by the rendered prompt and posted
-request body (so `extra_body` and prompt changes both invalidate it) is reused only
-with the response text that produced it. Validation checks the three tables' columns
-against their schemas and that every `request_key` in them still has its raw window
-file. Low temperature alone does not make service responses deterministic.
+`stories/raw/rejected/` with a unique name (UTC timestamp plus append-only numbering)
+and the configured credential redacted out, and a cache entry keyed by the rendered
+prompt and posted request body (so `extra_body` and prompt changes both invalidate it)
+is reused only with the response text that produced it — rewriting the raw file when its
+bytes differ from that text. `stories_summary.json` lists every window's raw file,
+empty windows included, and `validate()` reads each one back: it parses the response,
+re-runs the same validation against the current transcript, and requires the event and
+story ids to be the rows the tables attribute to that window. Low temperature alone
+does not make service responses deterministic.
 
 There is no validated ground truth or accuracy guarantee here. **Storytelling events
 and stories are not exported as an ELAN tier**. Transcript evidence supports auditing
