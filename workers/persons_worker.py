@@ -350,6 +350,19 @@ def label_text(person_id: int, score: float) -> str:
     return f"id={int(person_id)} {float(score):.2f}"
 
 
+def _even(value: int) -> int:
+    """``value`` rounded up to the next even integer: the chroma grid libx264 encodes on.
+
+    ``yuv420p`` subsamples chroma by two in both directions, so libx264 refuses an odd size
+    outright (measured: ``width not divisible by 2 (65x49)``, and the encoder never opens). A
+    65x49 source is not exotic — it is any odd crop — and the honest fix is to pad the last
+    column and row by one pixel of edge, not to re-encode in a 4:4:4 profile the corpus would
+    not otherwise use. The padded size is recorded in the render block, so a reader comparing
+    the preview against ``frames.parquet`` knows the picture is one pixel wider than the frames.
+    """
+    return int(value) + (int(value) % 2)
+
+
 def _clamped_box(box: Sequence[float], *, width: int, height: int) -> tuple[int, int, int, int]:
     """A detection box as integer pixels inside the frame, in the order cv2 wants."""
     x1 = max(0, min(int(round(float(box[0]))), width - 1))
@@ -405,6 +418,11 @@ class TrackVideoWriter:
         self.frames_written = 0
         self.width = 0
         self.height = 0
+        #: What the encoder was actually fed, after rounding the decoded geometry up to the
+        #: even chroma grid. Equal to ``width``/``height`` for the ordinary even-sized source;
+        #: recorded so a reader can tell a padded preview from a native one.
+        self.encoded_width = 0
+        self.encoded_height = 0
         self._process: subprocess.Popen | None = None
         # ffmpeg chooses the container from the output filename, so the staged name has to keep
         # an mp4 suffix: writing to ``tracks.mp4.partial`` fails at muxer initialisation with
@@ -428,7 +446,12 @@ class TrackVideoWriter:
         return [self.ffmpeg, "-v", "error", "-nostdin", "-y",
                 "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
                 "-r", f"{self.fps:.6f}", "-i", "-",
-                "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-an",
+                # The input geometry is whatever was decoded; the *encoded* geometry has to be
+                # even or libx264 refuses to open (see ``_even``). The filter is a no-op on an
+                # even source, so it is not conditional: one code path, not two.
+                "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart", str(self._partial)]
 
     def _mux_argv(self) -> list[str]:
@@ -524,6 +547,7 @@ class TrackVideoWriter:
         height, width = int(shape[0]), int(shape[1])
         if self._process is None:
             self.width, self.height = width, height
+            self.encoded_width, self.encoded_height = _even(width), _even(height)
             self._start(width, height)
         elif (width, height) != (self.width, self.height):
             raise WorkerFailure(
@@ -637,6 +661,11 @@ class TrackVideoWriter:
             "frames_written": self.frames_written,
             "width": self.width,
             "height": self.height,
+            # Only different from the source size when the source had an odd side and the
+            # encoder had to pad to the chroma grid; recorded either way so the two sizes are
+            # never confused.
+            "encoded_width": self.encoded_width,
+            "encoded_height": self.encoded_height,
             "has_audio": self.audio_source is not None,
         }
 
@@ -1116,9 +1145,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"({len(rows)} detection row(s), {document['elapsed_seconds']}s)")
         if document.get("render"):
             render = document["render"]
+            padding = (" (padded to the chroma grid)"
+                       if (render["encoded_width"], render["encoded_height"])
+                       != (render["width"], render["height"]) else "")
             log(f"rendered preview: {render['frames_written']} frame(s) at "
                 f"{render['width']}x{render['height']} / {render['fps']} fps "
-                f"({render['fps_source']}), audio "
+                f"({render['fps_source']}), encoded "
+                f"{render['encoded_width']}x{render['encoded_height']}{padding}, audio "
                 f"{'muxed' if render['has_audio'] else 'absent'}")
         if document["gmc_failure_count"]:
             log(f"WARNING: {document['gmc_failure_count']} frame(s) lost camera-motion "

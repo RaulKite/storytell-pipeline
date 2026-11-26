@@ -1004,7 +1004,8 @@ class TestRenderedPreviewIsOptIn:
                              extra=args)
         assert payload["status"] == "ok", payload.get("error")
         expected = {"fps": 25.0, "fps_source": "frame_index", "frames_written": 3,
-                    "width": 64, "height": 48, "has_audio": False}
+                    "width": 64, "height": 48, "encoded_width": 64, "encoded_height": 48,
+                    "has_audio": False}
         assert payload["_document"]["render"] == expected
         assert payload["render"] == expected
 
@@ -1338,6 +1339,38 @@ class TestRenderOutputCannotAliasAnInput:
         assert "--output-video" in payload["error"]
 
 
+class TestFrameSizeAndEncoderGrid:
+    def test_an_odd_frame_size_is_padded_to_the_chroma_grid(self, worker, tmp_path, clip,
+                                                          frame_index_file, fake_cv2):
+        """libx264 with yuv420p refuses an odd side outright (measured: 65x49).
+
+        The filter is a no-op on an even source, so the argv carries it unconditionally, and the
+        size the encoder was fed is recorded beside the size that was decoded.
+        """
+        FakeModel.results = [FakeResult(0, [1], frame=_Frame(49, 65))]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path, frame_bytes=49 * 65 * 3)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg))
+        assert payload["status"] == "ok", payload.get("error")
+        argv = read_call(log)["argv"]
+        assert "-vf" in argv, argv
+        assert argv[argv.index("-vf") + 1] == "pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        # The rawvideo header keeps the decoded size: those are the bytes on the pipe.
+        _slice_index(argv, ["-s", "65x49"])
+        render = payload["_document"]["render"]
+        assert (render["width"], render["height"]) == (65, 49)
+        assert (render["encoded_width"], render["encoded_height"]) == (66, 50)
+
+    def test_an_even_frame_size_is_recorded_as_encoded_unchanged(self, worker, tmp_path, clip,
+                                                                frame_index_file, fake_cv2):
+        FakeModel.results = [FakeResult(0, [1])]
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path))
+        assert payload["status"] == "ok", payload.get("error")
+        assert payload["_document"]["render"]["encoded_width"] == 64
+        assert payload["_document"]["render"]["encoded_height"] == 48
+
+
 requires_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe unavailable")
@@ -1389,7 +1422,7 @@ class TestAgainstRealFfmpeg:
         assert int(video["nb_frames"]) == 5, "the preview is not the frames measured"
 
     def test_audio_shorter_than_the_video_does_not_shorten_it(self, worker, tmp_path, fake_cv2):
-        """The measured defect this commit fixes, on real media.
+        """The measured defect behind the two-pass encoder, on real media.
 
         A single ffmpeg call with ``-shortest`` and the source as a second input stops the
         *video* when the audio runs out: the reviewer measured 125 frames from the repository's
@@ -1424,6 +1457,41 @@ class TestAgainstRealFfmpeg:
         assert decoded == 10, f"the preview kept {decoded} of 10 frames"
         audio = next(s for s in ffprobe_streams(dest)["streams"] if s["codec_type"] == "audio")
         assert float(audio["duration"]) >= 0.3, audio
+
+
+    def test_an_odd_frame_size_reaches_the_encoder_as_an_even_one(self, worker, tmp_path,
+                                                                 fake_cv2):
+        """The pad filter against the real binary: 65x49 is refused by libx264 without it.
+
+        Measured directly: ``ffmpeg -f lavfi -i testsrc=size=65x49 ... -c:v libx264 -pix_fmt
+        yuv420p`` fails with ``width not divisible by 2 (65x49)`` and writes no file.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from multimodal_pipeline.stages.metadata import ffprobe_streams
+
+        odd = _Frame(49, 65)
+        FakeModel.results = [FakeResult(i, [1], frame=odd) for i in range(3)]
+        # The source only has to be probeable: the frame geometry comes from the frames the
+        # model hands back, not from the container.
+        from tests.conftest import make_test_video
+
+        clip = make_test_video(tmp_path / "odd-source.mp4", seconds=0.2, fps=25,
+                              size="64x48", with_audio=False)
+        index = tmp_path / "frame_index.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array([0, 1, 2], type=pa.int64()),
+            "pts_seconds": pa.array([i * 0.04 for i in range(3)], type=pa.float64()),
+        }), index)
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index, extra=[
+            "--output-video", str(dest), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+        assert payload["status"] == "ok", payload.get("error")
+        video = next(s for s in ffprobe_streams(dest)["streams"] if s["codec_type"] == "video")
+        assert (video["width"], video["height"]) == (66, 50)
+        assert payload["_document"]["render"]["encoded_width"] == 66
+        assert ffprobe_count_frames(dest) == 3
 
 
 def ffprobe_count_frames(path: Path) -> int:

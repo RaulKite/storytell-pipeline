@@ -922,9 +922,14 @@ class TestPrepare:
 
 
 def render_block(**overrides: Any) -> dict[str, Any]:
-    """The worker's render block for the fixture document: 4 measured frames."""
+    """The worker's render block for the fixture document: 4 measured frames.
+
+    ``encoded_width``/``encoded_height`` are the padded size the encoder was actually fed; the
+    fixture frames are 64x48, so they equal the source size here.
+    """
     block = {"fps": 25.0, "fps_source": "frame_index", "frames_written": 4,
-             "width": 64, "height": 48, "has_audio": False}
+             "width": 64, "height": 48, "encoded_width": 64, "encoded_height": 48,
+             "has_audio": False}
     block.update(overrides)
     return block
 
