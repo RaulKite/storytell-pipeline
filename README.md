@@ -1,22 +1,19 @@
 # Storytel Pipeline
 
+[![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](#license)
+[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg)](docs/getting-started.md#prerequisites)
+[![Runs on uv](https://img.shields.io/badge/runs%20on-uv-261230.svg)](https://docs.astral.sh/uv/)
+
 **Video recordings → traceable, time-aligned multimodal datasets.**
 
-Transcribe speech, compare diarizers, extract acoustic and visual features, and
-inspect summaries in ELAN. Each video gets normalized Parquet tables, original tool
-output, logs and provenance in its own dataset directory.
-
-Developed for [STORYTEL](https://storytel.uni-koeln.de/), a project studying spontaneous
-storytelling in face-to-face conversations through words, voice and bodily movement.
-Its higher-education teaching and learning activities bring together university teams
-from Cologne (coordinator), Erlangen–Nürnberg, Murcia and Bologna.
-
-[Get started](docs/getting-started.md) · [Read the outputs](docs/datasets.md) ·
-[Architecture and design decisions](docs/architecture.md)
+Built for researchers studying face-to-face conversation and storytelling through words,
+voice and bodily movement. Each video becomes one dataset directory: normalized Parquet
+tables, the byte-identical raw output of every tool that ran, a log and provenance, all on
+one clock so the tables join. No accuracy claim: every stage records what it produced, skipped and why.
 
 ## What it does
 
-| Layer | Tools / results |
+| Layer | Tools and results |
 |---|---|
 | Speech | WhisperX transcription/alignment; pyannote turns; optional Nemotron comparison |
 | Language | English segment translations; spaCy source/English tokens and sentences |
@@ -26,59 +23,51 @@ from Cologne (coordinator), Erlangen–Nürnberg, Murcia and Bologna.
 | Stories | Transcript-bound LLM narrative candidates, not validated detections |
 | Inspection | Linked ELAN `.eaf` summaries, HTML preview and bundle helper |
 
-Execution is sequential: one video and one stage at a time. Heavy tools use
-separate `uv` environments; syncing the root project alone does **not** install them.
-Stages can be disabled, and missing optional prerequisites have recorded reasons.
-
 ```mermaid
 flowchart LR
-    video["one input video"] --> meta["metadata and audio<br/>ffprobe, ffmpeg"]
-    meta --> speech["speech and language<br/>WhisperX, pyannote, translation, spaCy, Praat"]
-    meta --> vision["vision<br/>OpenPose, YOLO persons"]
+    video["one input video"] --> meta["metadata + audio<br/>ffprobe, ffmpeg"]
+    meta --> speech["speech, language, acoustics<br/>WhisperX, pyannote, spaCy, Praat"]
+    meta --> vision["vision<br/>OpenPose, YOLO"]
     meta --> faces["visible faces<br/>optional TalkNet"]
-    speech --> fusion["audio-visual agreement<br/>diarizer turns against face frames"]
-    faces --> fusion
-    speech --> data["dataset directory<br/>raw output, Parquet, logs, provenance"]
-    vision --> data
-    faces --> data
-    fusion --> data
-    data --> eaf["elan/annotations.eaf summary"]
+    speech & faces --> fusion["audio-visual agreement"]
+    speech & vision & faces & fusion --> data["dataset directory<br/>tables, raw output, logs, ELAN summary"]
 ```
 
-Three optional stages ship disabled — Nemotron diarization, TalkNet active speaker and
-YOLO person tracking — and every stage in this table is implemented at this commit.
+Execution is sequential — one video, one stage at a time — and heavy tools live in separate
+`uv` environments the root sync does not install. Nemotron diarization, TalkNet active
+speaker and YOLO tracking ship disabled: [status matrix](docs/getting-started.md#what-runs-by-default).
 
-## First run
+## Quickstart
 
-Install `uv`, `ffmpeg` and `ffprobe`, then follow the
-[installation guide](docs/getting-started.md) for the tools you enable.
-Run these commands from the repository root, on a **fresh setup only**:
+`uv`, `ffmpeg` and `ffprobe` cover the default stages; GPU tools, OpenPose, `HF_TOKEN` and an
+LLM endpoint are per-stage [prerequisites](docs/getting-started.md#prerequisites). Fresh setup:
 
 ```bash
 uv sync --python 3.12
-cp config/config.example.yaml config/config.local.yaml
-cp .env.example .env
+cp config/config.example.yaml config/config.local.yaml && cp .env.example .env
 $EDITOR config/config.local.yaml   # paths, stages and endpoints
-$EDITOR .env                      # credentials; never commit this file
+$EDITOR .env                       # credentials; never commit this file
 uv run multimodal-pipeline inspect-environment -c config/config.local.yaml
 uv run multimodal-pipeline run -c config/config.local.yaml
 ```
 
-Keep existing local configuration and credentials instead of overwriting them.
-Translation and stories can send transcript text to an endpoint and incur costs;
-configure them deliberately or disable them.
+Keep existing configuration and credentials instead of overwriting them; the
+[installation guide](docs/getting-started.md#install) syncs each worker environment, and
+translation and stories send transcript text out, so they can cost money. One video becomes
+one [dataset directory](docs/datasets.md#directory-layout) under `output.directory`:
 
-```bash
-uv run multimodal-pipeline status -c config/config.local.yaml --plan
-uv run multimodal-pipeline validate -c config/config.local.yaml --json
+```text
+<video_id>/
+├── manifest.json  status.json   what exists, what is absent, what each stage decided
+├── source/ audio/ speech/ translation/ linguistic/ acoustic/ pose/ persons/ speaker/ stories/
+└── elan/ logs/ provenance/      ELAN summary, pipeline logs, config/tools/processing records
 ```
 
-## Where to read next
+## Documentation
 
 | Question | Guide |
 |---|---|
 | How do I install and process a video? | [Getting started](docs/getting-started.md) |
-| What runs by default, and what is optional? | [Stage status matrix](docs/getting-started.md#what-runs-by-default) |
 | How do I run, resume or select stages? | [CLI reference](docs/cli.md) |
 | What settings, credentials and failure messages matter? | [Configuration](docs/configuration.md) |
 | What files do I get, and how do I join their tables? | [Datasets and analysis](docs/datasets.md) |
@@ -87,14 +76,44 @@ uv run multimodal-pipeline validate -c config/config.local.yaml --json
 | How is the pipeline structured, and why? | [Architecture](docs/architecture.md) |
 | Where is the code, and how do I test a change? | [Development](docs/development.md) |
 
-Start a dataset analysis from `manifest.json`, not guessed filenames. Its artifact
-paths and declared absences explain what was produced. Separate clocks and track-ID
-namespaces matter: see the [consumer rules](docs/datasets.md#consumer-rules).
+## Status, scope and limitations
 
-Current work and deferred questions live in the compact
-[ODD tracker](odd/tasks/multimodal-video-pipeline.md). Historical plans and run diaries
-are retained in Git history, not in the user documentation.
+- Live work and deferrals: the [ODD tracker](odd/tasks/multimodal-video-pipeline.md).
+- `.github/workflows/unit.yml` covers the unit suite on Linux with ffmpeg only: no GPU
+  models, OpenPose, live endpoints or accuracy, and no hosted run is claimed here.
+- Stories are LLM candidates, track IDs are not unique-human counts, and one video runs at a time (no server or queue).
+
+## Citing
+
+Metadata: [CITATION.cff](CITATION.cff), which GitHub's **Cite this repository** button reads.
+
+```bibtex
+@misc{storytel_pipeline,
+  author  = {Sánchez, Raúl},
+  title   = {Storytel Pipeline},
+  version = {0.1.0},
+  url     = {https://github.com/RaulKite/storytell-pipeline}
+}
+```
+
+## Author and acknowledgements
+
+Author and maintainer: **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)); open an issue for
+defects, and read [Development](docs/development.md) first.
+
+Developed for [STORYTEL](https://storytel.uni-koeln.de/), which studies spontaneous
+storytelling in face-to-face conversation through words, voice and bodily movement; its
+teaching activities bring together teams from Cologne (coordinator), Erlangen–Nürnberg,
+Murcia and Bologna.
+
+The pipeline drives WhisperX, [pyannote.audio](https://github.com/pyannote/pyannote-audio),
+NVIDIA Nemotron, [spaCy](https://spacy.io/), [Praat](https://www.fon.hum.uva.nl/praat/) via
+Parselmouth, [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose),
+[Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and
+[ELAN](https://archive.mpi.nl/tla/elan) rather than reimplementing them; their licences and
+terms stay with their authors. This is attribution, not endorsement.
 
 ## License
 
-[MIT](LICENSE) covers this repository, not third-party media, model weights or tools.
+[MIT](LICENSE) covers this repository, not third-party media, model weights or tools, and
+not the recordings you process with it.
