@@ -49,6 +49,10 @@ what a fresh clone gets for free.
 - `on` is not a promise: `translation` and `stories` ship with a placeholder endpoint, so
   they skip until you configure them, and `diarization` skips without `HF_TOKEN`.
 
+Three outputs are opt-in inside an enabled stage: `openpose.write_images`,
+`openpose.write_video` and `activespeaker.write_video`. All default to off, none is needed
+for a table above, and each one both reruns its stage and costs disk.
+
 The three `off` stages need a download or an external checkout, so a fresh clone does not
 pay for them. **Deferred, not shipped as stages:** a renderer for normalized selected-face
 labels, a non-English synthetic fixture with e2e coverage, and a different
