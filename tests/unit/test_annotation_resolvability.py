@@ -230,7 +230,6 @@ _MUST_BE_SCANNED = (
     "multimodal_pipeline.schemas.write_table()",
     "multimodal_pipeline.state.utc_now()",
     "multimodal_pipeline.state.StageRecord:status",
-    "multimodal_pipeline.fusion.TurnTableSpec:engine",
     "multimodal_pipeline.config:PERSON_TRACKER_TYPES",
     # A method on a class, which the attribute-only class branch could not see.
     "multimodal_pipeline.state.StageRecord.to_dict()",

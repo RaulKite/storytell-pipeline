@@ -988,8 +988,8 @@ class TestSchemaAndWiring:
         assert stage.outputs == ("stories", "stories_raw")
         assert stage.config_keys == ("stories",)
 
-    def test_it_is_numbered_after_speaker_fusion_and_before_finalization(self) -> None:
-        assert STAGE_ORDER.index("speaker_fusion") < STAGE_ORDER.index("stories")
+    def test_it_is_numbered_after_the_media_stages_and_before_finalization(self) -> None:
+        assert STAGE_ORDER.index("activespeaker") < STAGE_ORDER.index("stories")
         assert STAGE_ORDER.index("stories") < STAGE_ORDER.index("finalization")
 
     def test_it_depends_on_the_speaker_branch_only(self) -> None:

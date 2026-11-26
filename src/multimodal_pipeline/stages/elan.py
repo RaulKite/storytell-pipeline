@@ -80,7 +80,7 @@ class ElanStage(Stage):
         ``config_hash`` still matched. An absent input is recorded as ``None`` rather than
         dropped from the payload, so a table that appears later changes the fingerprint — a key
         that vanished would hash the same as some other combination of missing inputs.
-        ``speaker_fusion`` and ``pose_normalized`` make the same argument for their inputs; this
+        ``speaker_assignment`` and ``pose_normalized`` make the same argument for their inputs; this
         stage simply has more of them.
 
         ``inventory_present`` is here because the coverage inventory makes the document a function
@@ -313,8 +313,8 @@ class ElanStage(Stage):
         is not a reusable result, and the rerun is a two-second, pure-python re-export of tables
         that have not changed. It does mean the corpus ``.eaf`` files still on disk report overlap
         until they are regenerated — measured, four of the seven on this machine (KABC, CNN,
-        La-1 and ``person_demo``, in ``person_tracks``/``turns_nemotron``/``fusion_nemotron``/
-        ``face_tracks``; the three ``pipeline_*`` clips are clean).
+        La-1 and ``person_demo``, in ``person_tracks``/``turns_nemotron``/``face_tracks``;
+        the three ``pipeline_*`` clips are clean).
         """
         path = ctx.artifact("elan_annotations")
         if not path.is_file():

@@ -47,7 +47,6 @@ from .stages.openpose import OpenPoseStage
 from .stages.pose_normalized import PoseNormalizedStage
 from .stages.persons import PersonsStage
 from .stages.speaker_assignment import SpeakerAssignmentStage
-from .stages.speaker_fusion import SpeakerFusionStage
 from .stages.spacy_english import SpacyEnglishStage
 from .stages.spacy_source import SpacySourceStage
 from .stages.stories import StoriesStage
@@ -73,7 +72,6 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         PoseNormalizedStage,
         ActiveSpeakerStage,
         PersonsStage,
-        SpeakerFusionStage,
         StoriesStage,
         FinalizationStage,
         ElanStage,
@@ -521,7 +519,6 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         # Its own enable check, so it has to be listed or the status table calls it
         # enabled while Stage.enabled reports a skip reason (the mapping defaults to True).
         "pose_normalized": config.pose_normalized.enabled,
-        "speaker_fusion": config.speaker_fusion.enabled,
         # Enabled by default, but its flag can flip the map's True default, so it must be
         # listed or the status table calls it enabled while Stage.enabled reports a skip.
         "elan": config.elan.enabled,

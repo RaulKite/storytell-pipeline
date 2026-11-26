@@ -4,16 +4,15 @@ Pure functions over files on disk: no stage imports, no config, no subprocess �
 whole mapping from Parquet to EAF can be driven against a synthetic dataset directory in a
 test, and ``stages/elan.py`` stays the reader, the writer and the reuse guarantee around it.
 
-Why fifteen fixed flat tiers instead of a hierarchy, and why fifteen is not "one per module".
+Why twelve fixed flat tiers instead of a hierarchy, and why twelve is not "one per module".
 ELAN's tier structure is a parent/child relation between annotation tiers, and deriving it from
 the data (one tier per speaker, one tier per detected face) would make the file's *shape* depend
 on what happened in a clip: two datasets could then not be compared column-for-column, and a tier
 rename would look like a new tier. A fixed set of named tiers is the contract every other stage
 follows — the schema is known before the file is opened, and an absent producer is an absent tier
-rather than a renamed one. What they are *not* is a module list: those fifteen tiers read
-fourteen of the normalised tables, because two diarizers and two fusions account for four tiers
-over two turn tables, the four Praat block tiers (`voiced_blocks`, `f0_blocks`, `intensity_blocks`,
-`formant_blocks`) all read the one frame table, ``person_tracks`` reads two more tables as
+rather than a renamed one. What they are *not* is a module list: those twelve tiers read
+eleven of the normalised tables, because the four Praat block tiers (`voiced_blocks`, `f0_blocks`,
+`intensity_blocks`, `formant_blocks`) all read the one frame table, ``person_tracks`` reads two more tables as
 **support** for its sightings (the per-frame detections and the clip's frame list place them;
 neither has a tier of its own and neither is an exported analysis), and the hand, face,
 normalised-pose, linguistic and per-segment-acoustic tables get no tier.
@@ -25,7 +24,10 @@ they printed a claim at a moment nobody had measured for that claim — and they
 over the tiers that own their own time. The three Praat frame tiers went in: the same
 measurements, placed on the 10 ms grid Praat actually sampled. Tables do not leave the corpus
 when their tier does (the coverage inventory records why each one is unread), so a withdrawal is
-a change of what the *document claims*, not of what the pipeline kept. Which tables still belong
+a change of what the *document claims*, not of what the pipeline kept. It changed a second time
+when pyannote diarization and the diarization × TalkNet fusion stage were removed: `turns_pyannote`,
+`fusion_pyannote` and `fusion_nemotron` went with them, and `turns_nemotron` is the one turn tier
+left. Which tables still belong
 on a coverage list is settled with the corpus refresh, not here. A tier is a decision, so adding
 or removing one is a change to this list rather than a name being reused for something else.
 
@@ -512,7 +514,7 @@ def _id(value: Any) -> str:
 
     Same argument as :func:`_num`. A producer that wrote no id used to make the tier print the
     string ``None``, which reads as a rendering bug rather than a missing value. The ids
-    themselves come straight from the tables (`word_id`, `segment_id`, `face_track_id`) — this
+    themselves come straight from the tables (`word_id`, `segment_id`, `turn_id`) — this
     formats one, it never invents, renumbers or cross-walks one.
     """
     if value is None:
@@ -796,10 +798,9 @@ ABSENT_DISPLAY = "none"
 WORD_NS = "word_id"
 SPEAKER_NS = "speaker_id"
 SEGMENT_NS = "segment_id"
-FACE_TRACK_NS = "face_track_id"
-#: `SPEAKER_FUSION_SCHEMA.engine` — which diarizer wrote the row, and therefore which
-#: `speaker_id` namespace that row's ids came from. Printed on the fusion label so a quoted
-#: verdict says its own namespace; the tier name carries the same fact but does not travel.
+#: The diarizer a turn came from. Printed in parentheses on the `turns_nemotron` label, so a
+#: quoted turn says its own speaker namespace; the tier name carries the same fact but does
+#: not travel with a screenshot.
 ENGINE_NS = "engine"
 
 #: The Praat frame tiers' blocking and quantisation steps, defined here rather than beside the
@@ -851,24 +852,18 @@ FRAME_MIN_FILL = 0.5
 # (which means a word-by-word gloss to anyone who has read a linguistics interlinear); the
 # score on `face_tracks` is a TalkNet logit-like number and not a probability; and the id spaces
 # that really are unrelated — each diarizer's `speaker_id` and YOLO's `person_id` — can print
-# equal digits for different things (§20.2). The opposite error costs the same afternoon: the
-# fusion row's `face_track_id` is *not* a fourth space, it is the same TalkNet `track_id` the
-# `face_tracks` tier is built from (`fuse_turn_table` copies the winning frame's id through), so
-# calling it unrelated would hide the one link that tier has. The clause therefore names the
-# spaces that are separate and the one that is shared. Putting this in the document rather than
-# only in the README is what makes the claim travel with the file. It is one property, kept to a
-# few clauses, and it describes only tiers this module actually writes.
+# equal digits for different things (§20.2). Putting this in the document rather than only in
+# the README is what makes the claim travel with the file. It is one property, kept to a few
+# clauses, and it describes only tiers this module actually writes.
 TIER_SEMANTICS: str = (
     "gloss_en = segment-level English translation of a whole segment, not word gloss. "
     f"Text tiers print the producer's own identity after the text: {WORD_NS} and {SEGMENT_NS} "
-    "on words, " + SEGMENT_NS + " on segments_src and gloss_en, turn_id on turns_* and "
-    "fusion_*, so rows link across tiers by those ids and by nothing else; fusion_* also print "
-    f"their own {ENGINE_NS} column in parentheses, so a detached verdict says which diarizer "
-    "namespace its turn speaker came from. "
-    f"Namespaces: {SPEAKER_NS} (pyannote 'SPEAKER_00'), {SPEAKER_NS} (nemotron 'speaker_0') and "
+    "on words, " + SEGMENT_NS + " on segments_src and gloss_en, turn_id on turns_nemotron, "
+    "so rows link across tiers by those ids and by nothing else; turns_nemotron also prints "
+    f"its own {ENGINE_NS} in parentheses, so a detached turn says which diarizer produced it. "
+    f"Namespaces: {SPEAKER_NS} (nemotron 'speaker_0') and "
     "YOLO 'person_id' are separate id spaces — equal digits name different things, never join "
-    f"them. {FACE_TRACK_NS} on fusion_* is the same TalkNet 'track_id' as the face_tracks tier, "
-    "so those two tiers link. "
+    "them. "
     "Numbers: face_tracks 'mean' is a TalkNet logit-like score (unbounded), not a probability; "
     f"a missing or non-finite value prints '{UNKNOWN_DISPLAY}', never a measured 0.000. "
     "ASD states: 'no face' means nothing was located, 'not evaluated' means a face was located "
@@ -1083,48 +1078,6 @@ def turn_rows_factory(engine: str) -> Callable[[TierInput], list[dict[str, Any]]
     return build
 
 
-def fusion_rows(item: TierInput) -> list[dict[str, Any]]:
-    """The A/V verdict, its turn's speaker and engine, the winning face track, the arithmetic.
-
-    Five parts, because the row answers one question with numbers from two id spaces:
-
-    * ``agreement`` — the verdict, unchanged (`fusion.AGREEMENT_STATES`);
-    * ``turn <turn_id>`` — which diarizer turn the verdict is about, i.e. the one legitimate
-      link between this tier and the `turns_*` tier built from the same table;
-    * ``turn speaker <id> (<engine>)`` — the diarizer's label and the column that says which
-      engine's namespace it came from;
-    * ``face track <id>`` — the TalkNet track with the strongest claim on the turn, which is the
-      *same* id space as `ACTIVE_SPEAKER_FRAMES_SCHEMA.track_id` and the `face_tracks` tier
-      (`fuse_turn_table` copies the winning frame's `track_id`), so the two tiers link on it;
-    * ``agreement_detail`` — the measured numbers in words, kept verbatim.
-
-    The engine comes from the row's own `engine` column rather than from the tier name or the
-    shape of the id, for the reason `turn_rows_factory` gives for its own parameter: a label is
-    quoted out of the file without the tier header, and pyannote's ``SPEAKER_00`` and Nemotron's
-    ``speaker_0`` are unrelated clusters. `speaker_fusion`'s validator already rejects a file
-    whose rows name another engine, so on a well-formed table this prints what the tier name
-    says; on a row that predates that check, or a null engine, the label prints the row's own
-    value (`unknown` for a null) instead of asserting something the row does not claim.
-
-    The speaker and face-track ids sit next to each other on purpose, *labelled*: they are
-    different spaces — one diarizer cluster, one TalkNet track — and a label that printed only
-    one of them would leave a reader to guess which the verdict was about. `agreement_detail`
-    was the only part of the row a tier used to show, so the verdict could not be traced to
-    either the voice or the face it compared.
-    """
-    rows = item.sorted_rows(("start_time", "end_time", "agreement", "agreement_detail",
-                             "speaker_id", "face_track_id", "turn_id", "engine"),
-                            "start_time", "end_time")
-    return [{"start": row["start_time"], "end": row["end_time"],
-             "text": _text(f"{row['agreement']}: turn {_id(row['turn_id'])} · turn speaker "
-                           f"{_id(row['speaker_id'])} ({_id(row['engine'])}) | face track "
-                           f"{_id(row['face_track_id'])} | {row['agreement_detail']}"),
-             "_id_keys": ("turn_id", SPEAKER_NS, ENGINE_NS, FACE_TRACK_NS),
-             **{key: row[key] for key in ("turn_id", "speaker_id", "engine",
-                                          "face_track_id", "agreement")}}
-            for row in rows]
-
-
 #: The readings the ASD frames table supports, in the order they are decided.
 ASD_NO_FACE = "no face"
 ASD_NOT_SPEAKING = "not speaking"
@@ -1188,9 +1141,8 @@ def asd_label(row: dict[str, Any]) -> str:
 
     Neither state is a claim about the *audio*: `is_active_speaker` is TalkNet's verdict on the
     one track this frame selected, so "not speaking" means that face's mouth was measured
-    inactive while an off-screen or out-of-frame speaker may still be talking (the fusion
-    table's `no_face_visible` verdict names that case). :data:`TIER_SEMANTICS` says so in the
-    file.
+    inactive while an off-screen or out-of-frame speaker may still be talking. :data:`TIER_SEMANTICS`
+    says so in the file.
 
     A missing ``frame_reason`` is tolerated the way the stage's own compat shim tolerates it:
     an old dataset carries ``face_status`` without a usable reason, and reading only the reason
@@ -1911,11 +1863,11 @@ class TierSpec:
     note: str = ""
 
 
-#: The seventeen tiers, in the order they are written. Declared here so the tier set is one
-#: list a reviewer can count and a test can assert against, rather than seventeen calls
+#: The twelve tiers, in the order they are written. Declared here so the tier set is one
+#: list a reviewer can count and a test can assert against, rather than twelve calls
 #: scattered through a build function.
-# The four linguistic tiers and the acoustic summary tier are appended rather than interleaved:
-# the twelve names they follow and their order are the contract every other stage and every
+# The four Praat block tiers and the coverage entries are appended rather than interleaved:
+# the names they follow and their order are the contract every other stage and every
 # existing .eaf follows, and a tier that moves is indistinguishable from a tier that was renamed.
 TIERS: tuple[TierSpec, ...] = (
     TierSpec("words", "speech_words", words_rows, "word-level transcript"),
@@ -1923,9 +1875,7 @@ TIERS: tuple[TierSpec, ...] = (
     TierSpec("gloss_en", "translation_segments", translation_rows, "English gloss"),
     TierSpec("turns_pyannote", "speaker_turns", turn_rows_factory("pyannote"), "engine 1 turns"),
     TierSpec("turns_nemotron", "speaker_turns_nemotron", turn_rows_factory("nemotron"),
-             "engine 2 turns"),
-    TierSpec("fusion_pyannote", "speaker_fusion_pyannote", fusion_rows, "engine 1 A/V verdict"),
-    TierSpec("fusion_nemotron", "speaker_fusion_nemotron", fusion_rows, "engine 2 A/V verdict"),
+             "diarization turns"),
     TierSpec("asd_speaking", "active_speaker_frames", asd_speaking_rows, "ASD blocks"),
     TierSpec("face_tracks", "active_speaker_tracks", face_track_rows, "TalkNet tracks"),
     TierSpec("person_tracks", "person_tracks", person_track_rows, "YOLO person sightings"),
@@ -2269,7 +2219,7 @@ def build_eaf(dataset_dir: Path, video_path: Path,
     built: dict[str, int] = {}
     skipped: dict[str, str] = {}
     # Only the tiers that actually had to be re-cut, so the property names the exceptions instead
-    # of restating seventeen unaffected tiers.
+    # of restating twelve unaffected tiers.
     projections: dict[str, Any] = {}
     # Computed before any table is opened, from the tier declarations themselves — see the
     # docstring. It is the one part of the document that describes the export rather than the clip.
@@ -2387,7 +2337,7 @@ def drop_counts(report: Any) -> dict[str, dict[str, int]]:
 
     **Only the non-zero tiers are returned.** `build_eaf` records every built tier so the report
     is uniform in memory, and the record keeps only the tiers with something to account for, so
-    ``dropped_rows: {}`` reads as "no row was refused" rather than as seventeen tiers each
+    ``dropped_rows: {}`` reads as "no row was refused" rather than as twelve tiers each
     reporting zero. A tier that was **skipped** is absent from this map as well: a skipped tier
     dropped no rows, it never read any — its answer is in `skipped_tiers`, and counting its
     unread rows as drops would report a producer defect that did not happen.
@@ -2407,8 +2357,8 @@ def tier_counts(eaf: Any) -> dict[str, int]:
     always 4 and would report a confident, wrong number in every provenance record).
 
     ``default`` is excluded because it is not one of this module's tiers: pympi creates it for
-    every document and nothing writes into it. Leaving it in would report eighteen tiers for
-    seventeen, and a count off by one is the kind of claim a reader believes.
+    every document and nothing writes into it. Leaving it in would report thirteen tiers for
+    twelve, and a count off by one is the kind of claim a reader believes.
 
     These are the **emitted** counts. Where a tier was projected (:func:`overlap_projection`),
     the number of producer rows behind those annotations is a different number and lives in that

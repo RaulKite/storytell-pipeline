@@ -52,9 +52,6 @@ STAGE_ORDER: tuple[str, ...] = (
     # Third visual signal, placed with the other video readers rather than after the audio
     # branch: it reads the source video and the frame index, nothing else.
     "persons",
-    # Audio/visual agreement. Last of the media stages because it consumes the diarizers'
-    # turn tables *and* the ASD frames table.
-    "speaker_fusion",
     # Narrative windows over the finished transcript. Placed here — after every producer it
     # reads and immediately before `finalization` — because it is a consumer of the
     # labelled transcript and nothing downstream reads its table. Its dependency is
@@ -88,8 +85,7 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # the transcript as speaker context. Depending on `translation` would make an
     # unconfigured or failing translation endpoint cost the story detection — the two
     # stages share an HTTP endpoint, not a table, and a Spanish clip with no English gloss
-    # still has stories in it. Depending on `speaker_fusion` would tie a narrative reading
-    # to TalkNet having run, and a diarization-free corpus would lose the stories it has.
+    # still has stories in it.
     "stories": ("speaker_assignment",),
     "spacy_source": ("speaker_assignment",),
     "spacy_english": ("translation",),
@@ -113,12 +109,6 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # independent signal. It deliberately does not depend on `activespeaker` either: a
     # TalkNet failure is about *faces*, and the person table is the evidence that survives one.
     "persons": ("metadata",),
-    # Depends on all three producers whose tables it reads, and on nothing else. Depending
-    # on `diarization` alone would let a pyannote failure poison the Nemotron fusion, and
-    # depending on `speaker_assignment` would tie a visual verdict to transcript bookkeeping
-    # it never reads. Either diarizer can be off: the stage fuses what exists and skips the
-    # engine whose table is absent (see SpeakerFusionStage.enabled).
-    "speaker_fusion": ("diarization", "diarization_nemotron", "activespeaker"),
     # Depends on every stage that precedes it, and — explicitly — on none that follow.
     #
     # `elan` is excluded from that comprehension, and the reason is a cycle rather than a

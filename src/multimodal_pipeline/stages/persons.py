@@ -137,7 +137,7 @@ class PersonsStage(WorkerStage):
         `person_frames` and `person_tracks` happens here — the span summary, the confidence
         reasons, the gap arithmetic — and a change to any of it left a completed run looking
         "reusable" while the numbers it reported had moved. Same defect class as
-        `pose_normalized` and `speaker_fusion`; here the parent's payload needed extending,
+        `pose_normalized` and `speaker_assignment`; here the parent's payload needed extending,
         not replacing.
 
         It is extended at this hook rather than in `digest_payload`, and the difference is the

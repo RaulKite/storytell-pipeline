@@ -55,7 +55,6 @@ SOME_STAGES_DISABLED = {
     "translation": False,
     "acoustic": False,
     "openpose": False,
-    "speaker_fusion": False,
 }
 
 

@@ -536,7 +536,7 @@ class TestSchemaRegistry:
         assert TABLE_SCHEMAS["person_tracks"] is PERSON_TRACKS_SCHEMA
 
     def test_the_two_tables_do_not_share_a_schema_object(self):
-        # Unlike the two speaker_fusion files, which differ only by a column *value*. Here the
+        # Unlike the two diarizer-style tables that differ only by a column *value*. Here the
         # grain differs — one row per (frame, person) versus one row per person — so one
         # schema object could not describe both and a shared object would be a bug.
         assert PERSON_FRAMES_SCHEMA is not PERSON_TRACKS_SCHEMA
