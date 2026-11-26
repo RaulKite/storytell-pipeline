@@ -117,4 +117,4 @@ rather than reimplemented; their licences and terms stay with their authors. Thi
 
 ---
 
-Code written and maintained by **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)), a co-author of the [ICMI Companion ’26 paper](https://doi.org/10.1145/3776591.3836646). To report a defect, see [Development](docs/development.md) and the [issue tracker](https://github.com/RaulKite/storytell-pipeline/issues).
+Code written and maintained by **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)).
