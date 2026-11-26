@@ -12,6 +12,7 @@ Commands use repository-relative paths: run them from the repository root.
 
 - [Directory layout](#directory-layout)
 - [Table reference](#table-reference)
+- [How the tables join](#how-the-tables-join)
 - [Speaker timing example](#speaker-timing-example)
 - [Read a dataset](#read-a-dataset)
 - [Consumer rules](#consumer-rules)
@@ -100,6 +101,51 @@ Presence is determined by the manifest, not this inventory.
 | `speaker_fusion_nemotron` | `speaker/fusion_nemotron.parquet` | Nemotron turn × face evidence agreement |
 | `stories` | `stories/stories.parquet` | LLM candidates with transcript evidence and request identity |
 
+### How the tables join
+
+```mermaid
+flowchart TB
+    fi["source/frame_index.parquet<br/>frame_number, pts_seconds"]
+    seg["speech/segments.parquet<br/>segment_id, speaker_id<br/>start_time, end_time"]
+    words["speech/words.parquet<br/>word_id, segment_id, speaker_id"]
+    tr["speech/speaker_turns.parquet<br/>turn_id, speaker_id"]
+    trn["speech/speaker_turns_nemotron.parquet<br/>turn_id, speaker_id"]
+    en["translation/segments_en.parquet<br/>segment_id, speaker_id"]
+    tok["linguistic/source/tokens.parquet<br/>segment_id, sentence_id, token_id"]
+    acseg["acoustic/segment_features.parquet<br/>segment_id, start_time, end_time"]
+    acfr["acoustic/frame_features.parquet<br/>timestamp only, Praat grid"]
+    body["pose/body.parquet<br/>frame_number, timestamp"]
+    norm["pose/normalized.parquet<br/>frame_number, timestamp"]
+    asd["speaker/active_speaker_frames.parquet<br/>track_id, frame_number,<br/>timestamp, source_timestamp"]
+    asdt["speaker/active_speaker_tracks.parquet<br/>track_id"]
+    pf["persons/frames.parquet<br/>person_id, frame_number, timestamp"]
+    pt["persons/tracks.parquet<br/>person_id"]
+    fus["speaker/fusion_pyannote.parquet<br/>turn_id, face_track_id, agreement"]
+    st["stories/stories.parquet<br/>story_id, parent_id,<br/>evidence segment ids as JSON"]
+    seg -- "segment_id" --> words
+    seg -- "segment_id" --> en
+    seg -- "segment_id" --> tok
+    words -- "segment_id" --> tok
+    seg -- "segment_id" --> acseg
+    tr -- "turn_id" --> fus
+    trn -- "turn_id" --> fus
+    asd -- "face_track_id = track_id" --> fus
+    asd -- "track_id" --> asdt
+    pf -- "person_id" --> pt
+    body -. "re-expressed, same rows" .-> norm
+    fi -. "pts_seconds is the source clock" .-> body
+    fi -. "pts_seconds is the source clock" .-> asd
+    asd -. "join here, never on frame_number" .-> body
+    tr -. "interval overlap, no id column" .-> seg
+    acfr -. "no key: interval overlap only" .-> acseg
+    st -. "segment ids inside the evidence JSON" .-> seg
+```
+
+Solid edges are id joins; dotted edges are time-only relationships that must be stated
+explicitly. These are conventions the files carry, not declared foreign keys — nothing on
+disk enforces them. `face_track_id` names a TalkNet `track_id`, never a diarizer
+`speaker_id` or a YOLO `person_id`: separate namespaces, even when the digits match.
+
 ## Speaker timing example
 
 Speaker-turn intervals and word-timing markers are separate records. This synthetic
@@ -110,8 +156,8 @@ or data from a recording. See [Consumer rules](#consumer-rules) before joining t
 
 ## Read a dataset
 
-Run the following with `uv run python` in the root environment. Replace the dataset
-path with one produced by your configuration; there is no required local demo dataset.
+Run the following with `uv run python` in the root environment. Replace the dataset path
+with one your configuration produced; there is no required local demo dataset.
 
 ```python
 import json
