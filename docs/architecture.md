@@ -31,12 +31,12 @@ flowchart TB
     binary --> out
     out --> fin["finalization<br/>manifest, provenance, cross-modal checks"]
     fin --> eaf["elan stage<br/>elan/annotations.eaf"]
-    fin --> summary["explanation.md guides<br/>and batch_report.json"]
+    fin --> summary["explanation.md guides<br/>written by the runner"]
+    cli --> report["batch_report.json<br/>the last batch's outcome"]
 ```
 
-The three execution columns are a boundary, not an implementation detail: a stage that
-needs a heavy model declares a `uv` project and a worker, so the orchestrator stays
-importable without torch, pyannote, spaCy or Parselmouth.
+The three columns are a boundary: a heavy model lives in a declared `uv` project and a
+worker, so the orchestrator imports no torch, pyannote, spaCy or Parselmouth.
 
 | Responsibility | Source |
 |---|---|
@@ -129,12 +129,11 @@ flowchart TD
 
 `skipped` and `failed` are different records on purpose: a skip names a reason the
 operator chose or a prerequisite that is absent, a failure names an error. A zero-row
-table is neither — it is a completed analysis that found nothing.
-
-- **Disabled or unavailable optional input:** record a skip reason; a skipped prerequisite is not automatically a failure.
-- **Broken required installation:** fail with the tool error, except for explicitly optional checks such as Nemotron's missing environment directory.
-- **Failed upstream:** dependent stages are skipped with the upstream named.
-- **Batch policy:** continue to the next video unless `execution.stop_on_video_error` is enabled.
+table is neither — it is a completed analysis that found nothing. Beyond the flow above,
+a dependant's skip reason names the failed upstream, a broken required tool fails with its
+own error (only explicitly optional checks, such as Nemotron's missing environment
+directory, become skips), and a batch continues to the next video unless
+`execution.stop_on_video_error` is enabled.
 
 `finalization` excludes `elan` from its dependencies to avoid a cycle. The runner's
 closing summary refresh includes the export after it has run; a manifest read
@@ -202,8 +201,7 @@ flowchart LR
     pure["speaker_assignment, translation, stories,<br/>speaker_fusion, pose_normalized,<br/>finalization, elan"] --> eroot["root project<br/>imported in-process"]
 ```
 
-A stage with no worker is pure Python over Parquet or HTTP: it costs a re-read, not a
-model run.
+A stage with no worker is pure Python over Parquet or HTTP: a re-read, not a model run.
 
 | Environment | Constraint worth preserving |
 |---|---|
