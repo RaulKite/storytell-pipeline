@@ -11,10 +11,9 @@ clip has no person data". The dependency is on ``finalization`` alone for the co
 reason recorded in ``STAGE_DEPENDENCIES``: the manifest has to be able to declare this stage, so
 this stage cannot be upstream of the stage that writes the manifest.
 
-Why it defaults to **on** when ``persons`` and ``diarization_nemotron`` default to off: those two
-cost a torch environment and a checkpoint download a fresh clone never asked for. This one costs
-a pure-Python library and a few seconds over files already on disk. See
-:class:`~multimodal_pipeline.config.ElanConfig`.
+Why it defaults to **on** when ``persons`` defaults to off: that one costs a torch environment and
+a checkpoint download a fresh clone never asked for. This one costs a pure-Python library and a
+few seconds over files already on disk. See :class:`~multimodal_pipeline.config.ElanConfig`.
 
 The table-to-tier mapping lives in ``elan.py``, so the tier algebra can be driven against a
 synthetic dataset directory with no stage, no config and no output directory. This file is the

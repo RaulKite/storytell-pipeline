@@ -1,8 +1,14 @@
-"""Speaker-assignment stage: normalise transcript rows onto diarization turns.
+"""Speaker-assignment stage: normalise transcript rows onto Nemotron diarization turns.
 
-Deliberately a distinct stage: raw WhisperX and raw Pyannote outputs stay
-untouched, so this normalisation can be recomputed (with different rules or a
-better timeline) without re-running either model.
+Nemotron is the only diarizer, so ``speech/speaker_turns_nemotron.parquet`` is the one
+timeline this stage reads. Its turns overlap across speaker channels, and the assignment
+rule is unchanged by that: every transcript interval takes the speaker whose turns cover
+most of it, with ties broken deterministically. There is no exclusive variant to prefer —
+an exclusive timeline is what a different engine produced, and it is not here any more.
+
+Deliberately a distinct stage: raw WhisperX and raw Nemotron outputs stay untouched, so
+this normalisation can be recomputed (with different rules or a better timeline) without
+re-running either model.
 """
 
 from __future__ import annotations
@@ -22,17 +28,16 @@ from .base import Stage, StageContext, ValidationError
 
 class SpeakerAssignmentStage(Stage):
     name = "speaker_assignment"
-    inputs = ("speech_segments", "speech_words", "speaker_turns")
+    inputs = ("speech_segments", "speech_words", "speaker_turns_nemotron")
     outputs = ("speech_segments", "speech_words")
-    config_keys = ("diarization",)
+    config_keys = ("diarization_nemotron",)
 
     def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
-        cfg = ctx.config.diarization
+        cfg = ctx.config.diarization_nemotron
         return {
             "stage": self.name,
             "assignment_method": "max_overlap",
-            "prefer_exclusive": cfg.use_exclusive_diarization_for_alignment,
-            "pipeline": cfg.pipeline,
+            "model": cfg.model,
             "turns_digest": self._turns_digest(ctx),
         }
 
@@ -42,39 +47,40 @@ class SpeakerAssignmentStage(Stage):
         from ..stages.metadata import sha256_of
 
         try:
-            path = ctx.input("speaker_turns")
+            path = ctx.input("speaker_turns_nemotron")
         except StageError:
             return None
         return sha256_of(path)
 
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
-        if not ctx.config.diarization.enabled:
-            return False, "diarization.enabled = false (no speaker timeline to assign)"
+        if not ctx.config.diarization_nemotron.enabled:
+            return False, "diarization_nemotron.enabled = false (no speaker timeline to assign)"
         if ctx.state.stage("whisperx").status != "completed" and not ctx.artifact("speech_words").is_file():
             return False, "transcript unavailable"
-        # ``diarization.enabled`` is only an intention: the stage can still be skipped
-        # (no HF token) or fail. Assigning speakers over a timeline that was never
-        # produced would fail this stage and take the transcript consumers with it.
-        diarization_status = ctx.state.stage("diarization").status
+        # ``diarization_nemotron.enabled`` is only an intention: the stage can still be
+        # skipped (its uv environment is not installed) or fail. Assigning speakers over a
+        # timeline that was never produced would fail this stage and take the transcript
+        # consumers with it.
+        diarization_status = ctx.state.stage("diarization_nemotron").status
         if diarization_status == STATUS_SKIPPED:
-            prior = ctx.state.stage("diarization")
+            prior = ctx.state.stage("diarization_nemotron")
             why = (prior.validation_result or {}).get("reason")
-            return False, f"diarization produced no speaker turns (skipped: {why or 'unknown'})"
+            return False, f"diarization_nemotron produced no speaker turns (skipped: {why or 'unknown'})"
         if diarization_status == STATUS_FAILED:
-            return False, "diarization failed; no speaker timeline available"
-        if diarization_status != STATUS_COMPLETED and not ctx.artifact("speaker_turns").is_file():
-            return False, "speaker turns unavailable (run the diarization stage first)"
+            return False, "diarization_nemotron failed; no speaker timeline available"
+        if diarization_status != STATUS_COMPLETED and not ctx.artifact("speaker_turns_nemotron").is_file():
+            return False, "speaker turns unavailable (run the diarization_nemotron stage first)"
         return True, ""
 
     def prepare(self, ctx: StageContext) -> None:
         ctx.input("speech_segments")
         ctx.input("speech_words")
-        ctx.input("speaker_turns")
+        ctx.input("speaker_turns_nemotron")
 
     def execute(self, ctx: StageContext) -> dict[str, Any]:
         turns = normalise_turns(
             (row["start_time"], row["end_time"], row["speaker_id"])
-            for row in read_table(ctx.input("speaker_turns")).to_pylist()
+            for row in read_table(ctx.input("speaker_turns_nemotron")).to_pylist()
         )
         diarization_type = self._diarization_type(ctx)
         duration = self._duration(ctx)
@@ -125,7 +131,7 @@ class SpeakerAssignmentStage(Stage):
     @staticmethod
     def _diarization_type(ctx: StageContext) -> str | None:
         try:
-            path = ctx.input("speaker_turns")
+            path = ctx.input("speaker_turns_nemotron")
         except StageError:
             return None
         rows = read_table(path).to_pylist()
@@ -144,9 +150,9 @@ class SpeakerAssignmentStage(Stage):
     # ---------------------------------------------------------------- validation
 
     def validate(self, ctx: StageContext) -> dict[str, Any]:
-        turns_path = ctx.artifact("speaker_turns")
+        turns_path = ctx.artifact("speaker_turns_nemotron")
         if not turns_path.is_file():
-            raise ValidationError(self.name, ["speaker_turns.parquet missing"])
+            raise ValidationError(self.name, ["speaker_turns_nemotron.parquet missing"])
         known_speakers = {row["speaker_id"] for row in read_table(turns_path).to_pylist() if row["speaker_id"]}
         segments = read_table(ctx.artifact("speech_segments")).to_pylist()
         words = read_table(ctx.artifact("speech_words")).to_pylist()

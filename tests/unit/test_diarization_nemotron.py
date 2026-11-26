@@ -1,9 +1,9 @@
-"""Unit tests for the Nemotron 3 Diarization stage — the second engine.
+"""Unit tests for the Nemotron 3 Diarization stage — the pipeline's speaker diarizer.
 
-The stage exists so two diarizers can be compared, so the guarantees worth testing are the
-ones that keep a comparison honest: the pyannote artifacts must be untouched, the two
-speaker-id namespaces must not merge, the overlap that motivates the engine must survive
-normalisation, and an unavailable optional engine must skip rather than fail a corpus.
+The guarantees worth testing are the ones a single-engine pipeline still depends on: the
+table is the one `speaker_assignment` reads, the speaker-id namespace is this model's own,
+the overlap between its channels survives normalisation, and an environment that is not
+installed skips rather than fails a corpus.
 """
 
 from __future__ import annotations
@@ -26,9 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def make_nemotron_document(**overrides: Any) -> dict[str, Any]:
     """A structurally real worker document, measured shape from the 2026-09-25 probe.
 
-    Segment times and the two-channel overlap come from the La1 clip: pyannote reported one
-    speaker there and Nemotron reported two with real overlap, so this fixture reproduces
-    the disagreement that is the reason the stage exists.
+    Segment times and the two-channel overlap come from the La1 clip, where two speakers
+    genuinely overlap, so the fixture reproduces the shape a real document has.
     """
     document = {
         "schema_version": "1.0",
@@ -105,9 +104,15 @@ def enable_environment(context, tmp_path: Path) -> Path:
 
 
 class TestGating:
-    """An optional second engine must skip, and say exactly why."""
+    """The one diarizer must skip, and say exactly why, when it cannot run."""
 
-    def test_disabled_by_default(self, context):
+    def test_enabled_by_default(self):
+        from multimodal_pipeline.config import DiarizationNemotronConfig
+
+        assert DiarizationNemotronConfig().enabled is True
+
+    def test_disabled_by_the_operator_skips_with_a_reason(self, context):
+        context.config.diarization_nemotron.enabled = False
         enabled, reason = DiarizationNemotronStage().enabled(context)
         assert enabled is False
         assert reason == "diarization_nemotron.enabled = false"
@@ -130,7 +135,7 @@ class TestGating:
         assert reason == ""
 
     def test_missing_token_does_not_disable_it(self, context, tmp_path, monkeypatch):
-        """Unlike pyannote community-1, this model is not gated: no token, still runs."""
+        """This model is not gated: no token, still runs."""
         enable_environment(context, tmp_path)
         monkeypatch.delenv("HF_TOKEN", raising=False)
         monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
@@ -147,31 +152,31 @@ class TestGating:
         assert "worker script missing" in reason
 
 
-class TestNoPyannoteCoupling:
-    """The comparison is only valid if the first engine is genuinely untouched."""
+class TestArtifactOwnership:
+    """The stage writes exactly its own two artifacts, and the transcript reads one of them."""
 
-    def test_declares_no_pyannote_artifact_as_output(self):
+    def test_declares_only_its_own_artifacts_as_output(self):
         stage = DiarizationNemotronStage()
-        assert "speaker_turns" not in stage.outputs
-        assert "diarization_raw" not in stage.outputs
         assert set(stage.outputs) == {"nemotron_diarization_raw", "speaker_turns_nemotron"}
 
-    def test_normalize_does_not_touch_the_pyannote_table(self, seeded):
+    def test_normalize_writes_only_its_own_table(self, seeded):
         stage = DiarizationNemotronStage()
-        pyannote_table = seeded.artifact("speaker_turns")
-        pyannote_table.parent.mkdir(parents=True, exist_ok=True)
-        original = b"pyannote-owned-bytes-must-survive"
-        pyannote_table.write_bytes(original)
+        table = seeded.artifact("speaker_turns_nemotron")
+        table.parent.mkdir(parents=True, exist_ok=True)
+        table.unlink(missing_ok=True)
         stage.normalize(seeded)
-        assert pyannote_table.read_bytes() == original
+        assert table.is_file()
+        assert not seeded.artifact("speech_segments").exists()
 
-    def test_dependencies_exclude_the_other_diarizer(self):
+    def test_dependencies_are_the_audio_stage_only(self):
         from multimodal_pipeline.stages.base import STAGE_DEPENDENCIES
 
         assert STAGE_DEPENDENCIES["diarization_nemotron"] == ("audio",)
-        # And the reverse: speaker assignment must not start consuming the new engine
-        # silently, because speaker labels across the whole dataset would change meaning.
-        assert "diarization_nemotron" not in STAGE_DEPENDENCIES["speaker_assignment"]
+
+    def test_speaker_assignment_reads_this_engine(self):
+        from multimodal_pipeline.stages.base import STAGE_DEPENDENCIES
+
+        assert "diarization_nemotron" in STAGE_DEPENDENCIES["speaker_assignment"]
 
 
 class TestEnvironmentIsolation:
@@ -202,7 +207,7 @@ class TestFingerprint:
         stage = DiarizationNemotronStage()
         before = stage.request_digest(seeded)
         seeded.artifact("audio").write_bytes(b"different-audio")
-        # The stage memoises the digest in ctx.scratch for the run, exactly as the pyannote
+        # The stage memoises the digest in ctx.scratch for the run, exactly as the
         # stage does; clearing it is what a fresh process would bring.
         seeded.scratch.pop("audio_sha256_nemotron", None)
         assert stage.request_digest(seeded) != before
@@ -296,7 +301,7 @@ class TestOverlapNormalisation:
         assert {row["diarization_type"] for row in rows} == {"overlapping"}
 
     def test_speaker_ids_are_kept_verbatim(self):
-        """Nemotron's namespace must stay distinguishable from pyannote's SPEAKER_00."""
+        """The ids are this model's own arrival-ordered namespace, kept verbatim."""
         rows = nemotron_turn_rows(make_nemotron_document(), "v1")
         assert {row["speaker_id"] for row in rows} == {"speaker_0", "speaker_1"}
         assert not any(row["speaker_id"].startswith("SPEAKER_") for row in rows)

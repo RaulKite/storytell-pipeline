@@ -157,19 +157,19 @@ class TestValidation:
             stage.validate(dataset)
 
     def test_a_speaker_absent_from_diarization_is_caught(self, dataset: StageContext) -> None:
-        write_rows(dataset.artifact("speaker_turns"),
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
                    [{"speaker_id": "SPEAKER_01", "start_time": 0.0, "end_time": 1.0}])
         write_rows(dataset.artifact("speech_segments"),
                    [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
                      "speaker_id": "SPEAKER_07", "language": "en", "text": "hello"}])
-        dataset.state.mark_completed("diarization")
+        dataset.state.mark_completed("diarization_nemotron")
         dataset.state.mark_completed("speaker_assignment")
         finalize(dataset)
         with pytest.raises(ValidationError, match="absent from diarization"):
             stage.validate(dataset)
 
     def test_matching_speakers_pass(self, dataset: StageContext) -> None:
-        write_rows(dataset.artifact("speaker_turns"),
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
                    [{"speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 9.0}])
         write_rows(dataset.artifact("speech_segments"),
                    [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,

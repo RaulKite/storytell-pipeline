@@ -20,7 +20,7 @@ from .base import STAGE_ORDER, Stage, StageContext
 TIMED_TABLES = (
     ("speech_segments", "start_time"),
     ("speech_words", "start_time"),
-    ("speaker_turns", "start_time"),
+    ("speaker_turns_nemotron", "start_time"),
     ("translation_segments", "start_time"),
     ("acoustic_frames", "timestamp"),
     ("acoustic_segments", "start_time"),
@@ -156,13 +156,13 @@ def _translation_references(ctx: StageContext) -> list[str]:
 
 def _speaker_references(ctx: StageContext) -> list[str]:
     """Every speaker the transcript cites must exist in the diarization output."""
-    if not ctx.artifact("speaker_turns").is_file():
+    if not ctx.artifact("speaker_turns_nemotron").is_file():
         return []
     try:
-        speakers = {row["speaker_id"] for row in read_table(ctx.artifact("speaker_turns"),
-                                                           columns=["speaker_id"]).to_pylist()}
+        speakers = {row["speaker_id"] for row in read_table(ctx.artifact("speaker_turns_nemotron"),
+                                                            columns=["speaker_id"]).to_pylist()}
     except Exception as exc:  # noqa: BLE001
-        return [f"speaker_turns.parquet unreadable: {exc}"]
+        return [f"speaker_turns_nemotron.parquet unreadable: {exc}"]
     speakers.discard(None)
     if not speakers:
         return []

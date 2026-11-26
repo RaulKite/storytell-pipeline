@@ -238,24 +238,24 @@ class DiarizationConfig(_Model):
 
 
 class DiarizationNemotronConfig(_Model):
-    """NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote.
+    """NVIDIA Nemotron 3 Diarization — the pipeline's only speaker diarizer.
 
-    A parallel opinion, not a replacement: it reads ``audio/audio.wav`` and writes its own
-    raw JSON and its own table. ``speaker_assignment`` never reads either, so the existing
-    dataset meaning is untouched and the operator can compare the two tables and then
-    decide which engine to adopt.
+    It reads ``audio/audio.wav`` and writes its own raw JSON and
+    ``speech/speaker_turns_nemotron.parquet``; ``speaker_assignment`` labels the transcript
+    from that table, and ``finalization`` checks the cited speaker ids against it.
 
-    The model is **not gated**, so unlike pyannote community-1 there is no model-condition
-    acceptance step; ``hf_token_env`` is a rate-limit convenience, and the stage runs
-    without it. It is still read from the environment and never from YAML, because the
-    token would otherwise land in ``provenance/config.json``.
+    The model is **not gated**, so there is no model-condition acceptance step;
+    ``hf_token_env`` is a rate-limit convenience, and the stage runs without it. It is
+    still read from the environment and never from YAML, because the token would otherwise
+    land in ``provenance/config.json``.
+
+    Enabled by default because it is the only diarizer left: a config that switches it off
+    gets a corpus with no speaker labels at all, and ``speaker_assignment`` says so instead
+    of guessing. Its uv environment and checkpoint are still a large download, so the stage
+    skips cleanly (never fails) when ``environments/diarization_nemotron`` is not installed.
     """
 
-    #: Off by default. This is an extra engine whose environment is not part of the
-    #: default set a fresh clone syncs, and whose checkpoint is a large download from the
-    #: Hugging Face hub; a fresh clone must not start that download unasked. A corpus still
-    #: completes with this stage off, which is the point of a second opinion.
-    enabled: bool = False
+    enabled: bool = True
     uv_project: Path = Path("environments/diarization_nemotron")
     worker: Path = Path("workers/nemotron_diarization_worker.py")
     python_version: str = "3.12"
@@ -272,10 +272,8 @@ class DiarizationNemotronConfig(_Model):
     threshold: float = 0.5
     timeout_seconds: float | None = None
     #: When true, a worker that asks for cuda and cannot see a GPU degrades to cpu and
-    #: records why. When false it fails. The pyannote worker only ever degrades, which is
-    #: right there; here the second engine is optional, so a silent CPU run is worth being
-    #: able to forbid: an hour-long batch that quietly crawled on CPU is a worse outcome
-    #: than a fast failure.
+    #: records why. When false it fails. A silent CPU run is worth being able to forbid: an
+    #: hour-long batch that quietly crawled on CPU is a worse outcome than a fast failure.
     fallback_to_cpu: bool = True
     extra_args: list[str] = Field(default_factory=list)
 

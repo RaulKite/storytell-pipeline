@@ -521,14 +521,17 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         "pose_normalized": config.pose_normalized.enabled,
         # Enabled by default, but its flag can flip the map's True default, so it must be
         # listed or the status table calls it enabled while Stage.enabled reports a skip.
+        "diarization_nemotron": config.diarization_nemotron.enabled,
+        # Enabled by default, but its flag can flip the map's True default, so it must be
+        # listed or the status table calls it enabled while Stage.enabled reports a skip.
         "elan": config.elan.enabled,
         # `persons` is deliberately NOT listed, and the reason is a precedent rather than an
         # oversight. The map's default is True, so a stage appears in it only when its flag
-        # can flip that default without lying about the pipeline's shape. `activespeaker` and
-        # `diarization_nemotron` — the two other stages that ship disabled — are absent for the
-        # same reason: adding a default-False stage here makes `enabled_stage_names` return
-        # fewer names than `STAGE_ORDER` on an untouched config, which is the invariant the
-        # status table's column layout is built on (tests/unit/test_cli_status_layout.py).
+        # can flip that default without lying about the pipeline's shape. `activespeaker` — the
+        # other stage that ships disabled — is absent for the same reason: adding a
+        # default-False stage here makes `enabled_stage_names` return fewer names than
+        # `STAGE_ORDER` on an untouched config, which is the invariant the status table's
+        # column layout is built on (tests/unit/test_cli_status_layout.py).
         # The skip reason still reaches an operator, through the plan and the manifest, which
         # is where a per-stage reason belongs; the header belongs to the stage list.
     }

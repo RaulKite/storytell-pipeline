@@ -45,7 +45,8 @@ def base_config(tmp_path: Path) -> PipelineConfig:
     filters by needle instead of comparing whole lists.
     """
     (tmp_path / "videos").mkdir()
-    for name in ("whisperx", "diarization", "spacy", "acoustic", "activespeaker"):
+    for name in ("whisperx", "diarization", "diarization_nemotron", "spacy", "acoustic",
+                 "activespeaker"):
         (tmp_path / "environments" / name).mkdir(parents=True)
     return PipelineConfig.model_validate(
         {
@@ -53,6 +54,7 @@ def base_config(tmp_path: Path) -> PipelineConfig:
             "input": {"directory": str(tmp_path / "videos")},
             "output": {"directory": str(tmp_path / "out")},
             "diarization": {"enabled": False},
+            "diarization_nemotron": {"enabled": False},
             "translation": {"enabled": False},
             "openpose": {"enabled": False},
             "activespeaker": {"enabled": False},

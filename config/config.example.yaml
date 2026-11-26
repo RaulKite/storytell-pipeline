@@ -63,11 +63,12 @@ diarization:
   # num_speakers: 2              # set only when the count is genuinely known
   python_version: "3.12"
 
-# A second, independent diarizer, so the two engines can be compared on the same corpus.
-# It writes speech/speaker_turns_nemotron.parquet and never touches speaker_turns.parquet;
-# speaker assignment still uses pyannote, so turning this on changes no existing label.
+# The speaker diarizer. It writes speech/speaker_turns_nemotron.parquet, and
+# speaker_assignment labels the transcript from that table -- there is no second engine.
+# On by default because it is the only one; it skips cleanly (never fails) when its uv
+# environment is not installed, and the rest of the corpus still completes.
 diarization_nemotron:
-  enabled: false                 # off: needs its own uv env and a model download
+  enabled: true                  # needs its own uv env and a model download
   uv_project: environments/diarization_nemotron
   worker: workers/nemotron_diarization_worker.py
   model: nvidia/Nemotron-3-Diarization

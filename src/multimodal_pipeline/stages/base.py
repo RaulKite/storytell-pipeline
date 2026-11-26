@@ -73,15 +73,14 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "audio": ("metadata",),
     "whisperx": ("audio",),
     "diarization": ("audio",),
-    # Deliberately independent of `diarization`: the point of a second engine is that
-    # either one can be off and the other still produces a dataset. Depending on it would
-    # also let a pyannote failure (gated-model consent, expired token) cost the very
-    # comparison the operator asked for.
+    # Deliberately independent of `speaker_assignment`: a diarization failure must not cost
+    # the transcript labels of a stage that reads the same audio, and either side can be off
+    # in a dataset whose subject is the other one.
     "diarization_nemotron": ("audio",),
-    "speaker_assignment": ("whisperx", "diarization"),
+    "speaker_assignment": ("whisperx", "diarization_nemotron"),
     "translation": ("speaker_assignment",),
     # `speaker_assignment` only, which is exactly what it reads: `speech/segments.parquet`
-    # with the speaker labels applied, plus `speech/speaker_turns.parquet` rendered beside
+    # with the speaker labels applied, plus `speech/speaker_turns_nemotron.parquet` rendered beside
     # the transcript as speaker context. Depending on `translation` would make an
     # unconfigured or failing translation endpoint cost the story detection — the two
     # stages share an HTTP endpoint, not a table, and a Spanish clip with no English gloss

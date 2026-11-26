@@ -761,7 +761,7 @@ class StoriesStage(Stage):
         """
         from ..schemas import table_columns
 
-        path = ctx.artifact("speaker_turns")
+        path = ctx.artifact("speaker_turns_nemotron")
         if not path.is_file():
             return []
         columns = set(table_columns(path))
