@@ -3,7 +3,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/banner-dark.svg">
-    <img alt="Storytel Pipeline: video recordings to traceable, time-aligned multimodal datasets" src="docs/assets/brand/banner-light.svg" width="100%"></picture></p>
+    <img alt="" src="docs/assets/brand/banner-light.svg" width="100%"></picture></p>
 
 <p align="center">
   <a href="#license"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green.svg"></a> <a href="docs/getting-started.md#prerequisites"><img alt="Python 3.10–3.13" src="https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg"></a> <a href="https://docs.astral.sh/uv/"><img alt="Runs on uv" src="https://img.shields.io/badge/runs%20on-uv-261230.svg"></a><br>
@@ -12,8 +12,8 @@
 **Video recordings → traceable, time-aligned multimodal datasets.**
 
 Built for researchers studying face-to-face conversation and storytelling through words, voice
-and bodily movement. Each video yields one dataset directory: normalized Parquet tables, the raw
-artifacts each tool emitted, a log and provenance, times in seconds from video start, and stated
+and bodily movement. Each video yields one dataset directory: normalized Parquet tables, retained
+tool output and stage caches, a log and provenance, times in seconds from video start, and stated
 [join rules](docs/datasets.md#consumer-rules). No accuracy claim: each stage records what it produced, skipped and why.
 
 ## What it does
@@ -21,7 +21,7 @@ artifacts each tool emitted, a log and provenance, times in seconds from video s
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/modalities-dark.svg">
-    <img alt="Synthetic illustration: six labelled lanes — speech, language, acoustics, vision, speakers and stories — share one axis in seconds from video start and feed one dataset directory of Parquet tables, raw output, provenance and an ELAN export." src="docs/assets/brand/modalities-light.svg" width="100%"></picture></p>
+    <img alt="Synthetic illustration with invented values: six labelled lanes — speech, language, acoustics, vision, speakers and stories — share one axis in seconds from video start. A marker at 33 seconds reads every lane at once, inside an example story candidate span, and the lanes feed one dataset directory of Parquet tables, retained tool output, provenance and an optional ELAN export." src="docs/assets/brand/modalities-light.svg" width="100%"></picture></p>
 
 | Layer | Tools and results | Output |
 |---|---|---|
@@ -31,11 +31,13 @@ artifacts each tool emitted, a log and provenance, times in seconds from video s
 | Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks | `pose/body.parquet`, `persons/tracks.parquet` |
 | Speakers | Optional TalkNet visible-face activity and audio–visual agreement | `speaker/active_speaker_frames.parquet` |
 | Stories | Transcript-bound LLM narrative candidates, not validated detections | `stories/stories.parquet` |
-| Inspection | ELAN `.eaf` files written with pympi-ling, HTML preview, corpus-specific bundle | `elan/annotations.eaf` |
+| Inspection | ELAN `.eaf` files written with pympi-ling (requires a transcript), HTML preview, corpus-specific bundle | `elan/annotations.eaf` |
 
-Execution is sequential — one video, one stage at a time — and heavy tools live in separate `uv`
-environments the root sync does not install: [what runs by default](docs/getting-started.md#what-runs-by-default).
-The stage graph and its dependencies are in [Architecture](docs/architecture.md).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/flow-dark.svg">
+  <img alt="Five steps, run sequentially for one video: probe with ffprobe and ffmpeg; run each tool in its own uv environment or the OpenPose binary; normalize to Parquet and retain tool output; validate and record status, manifest and provenance so valid results are reused; inspect through an optional ELAN file, an HTML preview helper and explanation guides." src="docs/assets/brand/flow-light.svg" width="100%"></picture>
+
+Heavy tools live in `uv` environments the root sync does not install ([what runs by default](docs/getting-started.md#what-runs-by-default)); the full stage graph is in [Architecture](docs/architecture.md#stage-dependencies).
 
 ## Quickstart
 
@@ -97,13 +99,9 @@ Metadata: [CITATION.cff](CITATION.cff), which GitHub's **Cite this repository** 
   url    = {https://github.com/RaulKite/storytell-pipeline}}
 ```
 
-## Author and acknowledgements
+## Acknowledgements
 
-Author and maintainer: **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)); read [Development](docs/development.md)
-first, then file defects on the [issue tracker](https://github.com/RaulKite/storytell-pipeline/issues).
-
-Developed for [STORYTEL](https://storytel.uni-koeln.de/), which studies spontaneous
-storytelling in face-to-face conversation through words, voice and bodily movement.
+Developed for [STORYTEL](https://storytel.uni-koeln.de/), which studies spontaneous storytelling in face-to-face conversation through words, voice and bodily movement.
 
 <details><summary>Tools this pipeline drives</summary>
 
@@ -116,3 +114,7 @@ rather than reimplemented; their licences and terms stay with their authors. Thi
 ## License
 
 [MIT](LICENSE) covers this repository, not third-party media, model weights or tools, and not the recordings you process with it.
+
+---
+
+Code written and maintained by **Raúl Sánchez** ([raul@um.es](mailto:raul@um.es)), a co-author of the [ICMI Companion ’26 paper](https://doi.org/10.1145/3776591.3836646). To report a defect, see [Development](docs/development.md) and the [issue tracker](https://github.com/RaulKite/storytell-pipeline/issues).
