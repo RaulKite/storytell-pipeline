@@ -1,11 +1,10 @@
 # CLI reference
 
 Use `multimodal-pipeline` through `uv run` to process, resume, inspect and validate
-videos. Commands operate on the output directory selected by the configuration.
+videos. Commands operate on the output directory selected by the configuration and use
+repository-relative paths: run them from the repository root.
 
 Back to the overview: [Storytel Pipeline](../README.md).
-
-Commands use repository-relative paths: run them from the repository root.
 
 ## Contents
 
@@ -38,9 +37,8 @@ uv run multimodal-pipeline status -c config/config.local.yaml --plan
 uv run multimodal-pipeline validate -c config/config.local.yaml --json
 ```
 
-`validate` gets the output directory from config; it has no `-o` flag.
-JSON command output goes to stdout, human tables/messages to stderr.
-`inspect-environment` does not accept `--json` because JSON is unconditional.
+`validate` gets the output directory from config (no `-o` flag). JSON goes to stdout,
+human tables and messages to stderr; `inspect-environment` always prints JSON.
 
 Every command that processes or validates accepts `--video <path>`. `status` takes
 `--video-id <id>` instead and can only report videos discovered under `input.directory`,
@@ -89,13 +87,13 @@ sequenceDiagram
     CLI->>Cfg: load, interpolate, validate
     CLI-->>Op: JSON tool and GPU inventory, plus warnings
     Op->>CLI: process-video -c CONFIG IN/clip.mp4
-    loop every stage in STAGE_ORDER
+    CLI->>Disk: write explanation.md guides
+    loop every stage in STAGE_ORDER (finalization and elan included)
         CLI->>State: read the reuse decision
         CLI->>Disk: run the stage, write raw output and Parquet
         CLI->>State: record status, hashes and row counts
-        CLI->>Disk: explanation.md guides (runner, before and after the loop)
     end
-    CLI->>Disk: finalization writes manifest and provenance
+    CLI->>Disk: refresh summary and explanation.md guides
     CLI-->>Op: per-stage table, dataset path, exit 2 if partial
     Op->>CLI: status -c CONFIG --video-id clip --plan
     CLI->>State: compare recorded fingerprints and sequences
@@ -121,13 +119,10 @@ cp path/to/clip.mp4 data/input_videos/
 uv run multimodal-pipeline process-video -c config/config.local.yaml data/input_videos/clip.mp4
 ```
 
-`process-video` would accept a file anywhere, but nothing else would find it later:
-every other command rebuilds the video list from the configuration. Either keep the clip
-in `input.directory`, or scope the follow-up commands with `--video <path>` and accept
-that `status` cannot report a file outside it.
-
 The dataset lands in `<output.directory>/<video_id>/`; the run prints that path, one
-line per stage, and exits `2` when the video ended `partial` or `failed`.
+line per stage, and exits `2` when the video ended `partial` or `failed`. The video id
+is the file stem (`clip` here) unless another input shares it, in which case discovery
+adds a suffix — use the id and path the run printed in the commands below.
 
 **Ask why a stage would run again:**
 
@@ -143,7 +138,9 @@ about the stage.
 Treat the plan as an estimate from the dataset as it stands, not a forecast: some stage
 fingerprints read artifacts already on disk, so asking for a plan on a clip that was
 never processed can exit with `StageError: audio stage requires metadata.json` instead of
-printing a table. After a real run the same pass is what a following `run` decides.
+printing a table. Even after a real run it can differ from what a following `run`
+does: a dependent marked blocked by a recorded failure may run once that failure is
+repaired upstream.
 
 **Resume, or retry what broke:**
 
@@ -152,12 +149,13 @@ uv run multimodal-pipeline resume -c config/config.local.yaml --video data/input
 uv run multimodal-pipeline retry-failed -c config/config.local.yaml --video data/input_videos/clip.mp4
 ```
 
-`resume` is `run` again: every stage whose five reuse conditions still hold is reused,
-and nothing is forced.
+`resume` is `run` again: stages whose five reuse conditions hold are reused, none forced.
 
 `retry-failed` reads `status.json`, forces every stage **downstream** of a failed one and
-prints that list before processing. The failed stage is not on the list: it reruns
-because a failed record never satisfies the reuse test. Two consequences worth knowing:
+prints that forced list before processing; the same list, expanded with its
+prerequisites, is the stage selection. A failed stage appears on the list only when it is
+also downstream of another failure (with `translation` and `elan` both failed, `elan` is
+listed); otherwise it reruns because a failed record never satisfies the reuse test. Two consequences worth knowing:
 a failure in `elan`, the one stage nothing depends on, yields an empty forced list and
 the command falls back to the full stage order; and with no failed stage in the selected
 videos it exits `0` without processing. It also accepts no stage controls — the forced
@@ -166,22 +164,23 @@ set is the whole selection.
 **Refresh one end of the pipeline:**
 
 ```bash
-uv run multimodal-pipeline run -c config/config.local.yaml --only-stage elan
-uv run multimodal-pipeline run -c config/config.local.yaml --force-stage acoustic
+uv run multimodal-pipeline run -c config/config.local.yaml --video data/input_videos/clip.mp4 --only-stage elan
+uv run multimodal-pipeline run -c config/config.local.yaml --video data/input_videos/clip.mp4 --force-stage acoustic
 ```
 
 `--only-stage` keeps the prerequisites, so an export is cheap only when they are
-reusable. `--force-stage` recomputes a stage even when it is reusable.
+reusable. `--force-stage` recomputes a stage even when reusable. Without `--video`, both
+apply to every video in `input.directory`.
 
 **Validate what is on disk.** No processing happens here:
 
 ```bash
-uv run multimodal-pipeline validate -c config/config.local.yaml --json
+uv run multimodal-pipeline validate -c config/config.local.yaml --video data/input_videos/clip.mp4 --json
 ```
 
-Each completed stage's own validation runs again and its recorded Parquet row counts are
-compared. Exit `1` means an artifact is missing, changed shape or is semantically invalid;
-skipped stages are reported as skipped, not failed.
+Without `--video` it checks every discovered video. Each completed stage's validation
+reruns and recorded row counts are compared; exit `1` means an artifact is missing,
+changed shape or is invalid. Skipped stages are reported as skipped, not failed.
 
 **Open the result in ELAN.** An `.eaf` needs an audio stream in the source and a
 successful transcription: without audio there are no words to align, and `elan` skips
@@ -191,7 +190,8 @@ directory intact so the relative media link still resolves. Without ELAN at hand
 same file rendered as HTML:
 
 ```bash
-uv run python scripts/make_elan_view.py data/processed/clip/elan/annotations.eaf /tmp/view.html
+DATASET=data/processed/clip   # the dataset path the run printed
+uv run python scripts/make_elan_view.py "$DATASET/elan/annotations.eaf" /tmp/view.html
 ```
 
 The preview shows tiers and bars and never plays the video; see

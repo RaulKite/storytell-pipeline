@@ -37,7 +37,7 @@ what a fresh clone gets for free.
 | `pose_normalized` | on | OpenPose body output | `pose/normalized.parquet` | [Modalities](modalities.md#pose-coordinates) |
 | `activespeaker` | **off** | TalkNet-ASD checkout at `activespeaker.talknet_root`, its environment | `speaker/active_speaker_frames.parquet`, `speaker/active_speaker_tracks.parquet` | [Modalities](modalities.md#active-speaker-evidence) |
 | `persons` | **off** | its environment; a checkpoint under `persons.weights_dir`, or the worker downloads one | `persons/frames.parquet`, `persons/tracks.parquet` | [Modalities](modalities.md#person-tracks) |
-| `speaker_fusion` | on | TalkNet frames and a turn table from an enabled diarizer | `speaker/fusion_pyannote.parquet`, `speaker/fusion_nemotron.parquet` | [Modalities](modalities.md#audiovisual-agreement) |
+| `speaker_fusion` | on | TalkNet frames and an existing turn table for each engine in `speaker_fusion.engines` | `speaker/fusion_pyannote.parquet`, `speaker/fusion_nemotron.parquet` | [Modalities](modalities.md#audiovisual-agreement) |
 | `stories` | on | endpoint, key, model | `stories/stories.parquet` | [Modalities](modalities.md#story-candidates) |
 | `finalization` | always | — | `manifest.json`, `provenance/` | [Datasets](datasets.md#read-a-dataset) |
 | `elan` | on | a transcript (words or segments) | `elan/annotations.eaf` | [ELAN export](elan.md) |
@@ -53,11 +53,11 @@ what a fresh clone gets for free.
   they skip until you configure them, and `diarization` skips without `HF_TOKEN`.
 - A trained spaCy model is an optimisation, not a prerequisite: with no model for the
   detected language the worker falls back to a blank pipeline and records it, so tokens and
-  sentence boundaries arrive with empty lemmas, POS and dependencies. `speaker_fusion` also
-  needs faces: without TalkNet frames it skips rather than writing an empty table, and an
-  engine whose turn table was never produced is skipped one engine at a time. An explicit
-  `persons.weights_dir` is a promise about a file — if the checkpoint is absent the stage
-  skips rather than downloading one; unset, the worker fetches it on first use.
+  sentence boundaries arrive with empty lemmas, POS and dependencies.
+- `speaker_fusion` skips without TalkNet frames, and skips any engine in
+  `speaker_fusion.engines` whose turn table is absent (a retained one counts).
+- An explicit `persons.weights_dir` must hold the checkpoint or the stage skips; unset,
+  Ultralytics resolves it and may download it on first use.
 
 Three outputs are opt-in inside an enabled stage: `openpose.write_images`,
 `openpose.write_video` and `activespeaker.write_video`. All default to off, none is needed
@@ -136,18 +136,17 @@ the root or explicit executable/model paths to match your installation. TalkNet 
 also external to this repository. Neither checkout is created by the root sync.
 
 GPU compatibility is per environment, not a global rule: each one pins its own CUDA
-wheel train and records above its dependency list the driver and card that combination
-was measured on. Read that comment rather than comparing numbers — the Nemotron
-environment's cu128 wheels, for instance, were measured working on a driver reporting
-CUDA 12.5. A wheel train your driver cannot serve installs without complaint and then
-reports no CUDA device, so the recorded measurement is the only useful evidence for a
-machine that is not the one the pins were measured on.
+wheel train, explained by the comments in its `pyproject.toml` (some record the driver and
+card measured). Read those rather than comparing numbers — Nemotron's cu128 wheels ran on a
+driver reporting CUDA 12.5. A wheel train your driver cannot serve may install cleanly and
+then report no CUDA device: check with `inspect-environment` and a short run.
 
 A missing environment directory and an existing one that was never synced are
 different failures. `uv` syncs an existing project on first use, so a checkout that was
-never synced costs time, not a failure. A *missing* directory is refused before `uv` is
-called: a skip with a reason for `diarization_nemotron` and `persons`, which check first,
-and a stage failure naming the path for every other worker stage.
+never synced usually costs time, though that sync can itself fail (network, no wheels for
+your platform) and fail the stage. A *missing* directory is refused before `uv` is called:
+a skip with a reason for `diarization_nemotron` and `persons`, which check first, and a
+stage failure naming the path for every other worker stage.
 `inspect-environment` warns about missing project directories before a batch starts.
 
 ## Configure

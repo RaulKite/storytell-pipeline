@@ -115,21 +115,23 @@ Every stage goes through the same decision, in `VideoRunner._run_stage`:
 ```mermaid
 flowchart TD
     visit(["each stage, in STAGE_ORDER"]) --> range{"in the selected range?"}
-    range -- no --> outside["record untouched"]
+    range -- no --> prior{"recorded completed?"}
+    prior -- yes --> keptprior["completed record kept"]
+    prior -- no --> outside["skipped: outside range"]
     range -- yes --> poison{"failed upstream?"}
     poison -- yes --> blocked["skipped: upstream failed"]
     poison -- no --> able{"enabled?"}
     able -- no --> disabled["skipped: reason"]
     able -- yes --> reuse{"reuse?"}
     reuse -- yes --> kept["completed: reused"]
-    reuse -- "forced, or test failed" --> running["running: prepare, execute"]
-    running -- "raises" --> failed["failed"]
+    reuse -- "forced, or test failed" --> running
+    running["running: prepare, execute, validate"] -- "raises" --> failed["failed"]
     running -- "validate passes" --> done["completed"]
 ```
 
 `skipped` and `failed` are different records on purpose: a skip names a chosen reason or
-an absent prerequisite, a failure an error, a zero-row table neither. Unstated details: an
-unselected stage keeps a `completed` record rather than becoming skipped, a forced stage
+an absent prerequisite, a failure an error, a zero-row table neither. Unstated details: a
+forced stage
 resets its record and skips the reuse test, and an exception in `prepare` or `execute`
 fails the stage before validation is reached. Beyond the flow, a broken required tool
 fails with its own error (only explicitly optional checks, such as Nemotron's missing
@@ -158,10 +160,8 @@ exclude a stage's own generated bookkeeping, so finalization does not invalidate
 Stages can reuse retained raw output for normalization when their tool-request identity
 still matches. Request identity and normalization identity are separate: a schema or
 transform edit need not rerun an expensive model, while a changed model or request must
-not reuse an incompatible raw result. Stage selection is not uniform:
-`--only-stage` expands to that stage's dependency chain, while `--from-stage` and
-`--to-stage` only slice `STAGE_ORDER` and add no prerequisite. See
-[CLI controls](cli.md#stage-controls).
+not reuse an incompatible raw result. `--only-stage` expands to the dependency chain;
+`--from-stage`/`--to-stage` only slice `STAGE_ORDER` ([CLI controls](cli.md#stage-controls)).
 
 ## Design decisions
 
@@ -215,6 +215,5 @@ A stage with no worker is pure Python over Parquet or HTTP: a re-read, not a mod
 | `activespeaker` | torch 2.5.1: TalkNet's checkpoints use `torch.load()` without `weights_only=` |
 | `persons` | Ultralytics detection/tracking and its own torch stack |
 
-Exact pins and their failure rationale belong in each `pyproject.toml`, not a version list
-here: read those comments before upgrading. See [Development](development.md) and
-[Configuration](configuration.md).
+Exact pins and their rationale live in each `pyproject.toml`: read those comments before
+upgrading. See [Development](development.md) and [Configuration](configuration.md).

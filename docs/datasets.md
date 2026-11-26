@@ -100,7 +100,8 @@ Presence is determined by the manifest, not this inventory.
 
 ### How the tables join
 
-Two families of tables share no key, so they are drawn apart. Speech, text and acoustics:
+The tables fall into two families joined mostly by time, so they are drawn apart; the one
+shared id between them is pyannote's `speaker_id`, explained below. Speech, text and acoustics:
 
 ```mermaid
 flowchart TB
@@ -117,8 +118,7 @@ flowchart TB
     st -. "decoded evidence_segment_ids<br/>to segment_id" .-> seg
 ```
 
-Then turns, clocks, pose, persons and agreement, with some filenames shortened; the table
-above gives every full dataset-relative path:
+Then turns, clocks, pose, persons and agreement (filenames shortened; see the table above):
 
 ```mermaid
 flowchart TB
@@ -138,27 +138,27 @@ flowchart TB
     pf --> pt
     tr --> fusP
     trn --> fusN
-    asd -- "face_track_id" --> fusP & fusN
+    asd -- "track_id = face_track_id<br/>(identity only)" --> fusP & fusN
     fi -. "source clock" .-> body & asd
     asd -. "source_timestamp" .-> body
 ```
 
-Solid edges are id joins; dotted edges are relationships to state explicitly — interval
-overlap, a shared clock, or an id that agrees only at a coarser grain. Neither is a
-declared foreign key, though `finalization` checks two: a translation row citing a missing
-`segment_id`, and a transcript `speaker_id` absent from pyannote's turns.
+Solid edges are id joins; dotted ones are overlap, a shared clock or a coarser-grain id.
+None is a declared foreign key; `finalization` checks only that translation rows cite an
+existing `segment_id` and that transcript `speaker_id`s appear in pyannote's turns.
 
 The families meet through overlap and one shared id: a turn table against the transcript,
 TalkNet's frames against the turns (what the fused tables measure), and pyannote's labels
 in the transcript's `speaker_id` column. Each diarizer numbers its own turns from one, so
 `turn000001` means something only inside the file that wrote it — hence one fused file per
-engine. `face_track_id` names a TalkNet `track_id`, never a diarizer `speaker_id`.
+engine. `face_track_id` names a TalkNet `track_id`, never a diarizer `speaker_id`; that id
+alone also returns frames outside the turn, while agreement uses working-grid `timestamp`s
+inside it, both endpoints included.
 
 ## Speaker timing example
 
-Speaker-turn intervals and word-timing markers are separate records: a synthetic
-example of `speaker_turns` beside `speech_words`, not measured accuracy. See
-[Consumer rules](#consumer-rules) before joining them.
+A synthetic example of `speaker_turns` beside `speech_words` — separate records, not
+measured accuracy. See [Consumer rules](#consumer-rules) before joining them.
 
 ![Synthetic schema demo: speaker turns and word timings](assets/speaker_turn_strip.png)
 
