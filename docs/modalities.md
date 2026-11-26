@@ -147,6 +147,15 @@ the **stories** told inside them (the represented "what"), plus spans it could n
 place. The three tables are `storytelling_events`, `stories` and `uncertain_spans`;
 a story names its event, and one event may carry several stories.
 
+The prompt is the domain expert's own annotation prompt, quoted word for word in
+[stories annotation guidelines](stories-annotation-guidelines.md) — her goal,
+speaker-attribution limitation, working criteria, boundary guidance, multiple
+tellers rule and annotation rules are hers as she wrote them. Two of her sections are
+adapted, because they describe her input and her output rather than this stage's: her
+WhisperX JSON section becomes the input format below, and her `time_seconds` report
+becomes a `segment_id` + `transcript_quote` citation the pipeline resolves itself.
+Prompts that paraphrase a domain expert's criteria are the failure this avoids.
+
 The model cites a `segment_id` and copies a `transcript_quote` from that one segment;
 it never reports times. The pipeline locates the quote in
 `speech/segments.parquet` and maps its **first and last word** to times through

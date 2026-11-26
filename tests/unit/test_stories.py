@@ -32,8 +32,10 @@ retry/transport code is exercised against a real local HTTP server as in
 from __future__ import annotations
 
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -386,29 +388,140 @@ def log_recorder(context) -> list[str]:
 
 # ------------------------------------------------------------------ prompt
 
+#: The expert's own annotation prompt, committed verbatim. The prompt below quotes it, so
+#: the document is the source the quotes are checked against; `PROMPTS["v2"]` embedded a
+#: paraphrase once, and a paraphrase of a domain expert's criteria is a different criterion.
+GUIDELINES = (Path(__file__).resolve().parents[2] / "docs"
+              / "stories-annotation-guidelines.md")
+
+#: Her sections, split on the ``##`` heading that introduces each one. Three of her last
+#: sections are not quoted: her input format (a WhisperX JSON object) and her output
+#: contract (times in seconds) describe *her* pipeline, and her prompt's trailing
+#: ``## Transcript`` placeholder is where our rendered transcript goes instead.
+ADAPTED_SECTIONS: tuple[str, ...] = ("Using WhisperX JSON", "Output", "Transcript")
+
+#: The single sentence of hers the prompt rewrites, and what it becomes. Her rule points at
+#: timestamps the model would have to read; this pipeline makes the model report no time at
+#: all, which is the same intent (never invent precision) pushed to where nothing is typed.
+HER_TIMESTAMP_RULE = ("- Use the transcript\u2019s timestamps. Do not invent timestamp "
+                      "precision that the segments do not support.")
+PIPELINE_TIMESTAMP_RULE = ("- Do not output times: the pipeline computes them from the "
+                           "segment ids and quotes you cite, so there is no timestamp "
+                           "precision for you to invent.")
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def guidelines_sections() -> dict[str, str]:
+    """Her document as ``{section name: heading + body}``, plus ``""`` for the goal.
+
+    Read from the committed file rather than restated in the test so that an edit to either
+    side is a failure: the check is that the *same* words are in both places, not that two
+    hand-maintained copies agree.
+    """
+    text = GUIDELINES.read_text(encoding="utf-8")
+    head, *blocks = text.split("\n## ")
+    sections: dict[str, str] = {"": head.split("\n\n")[-1]}
+    for block in blocks:
+        name = block.partition("\n")[0]
+        sections[name.strip()] = "## " + block.rstrip("\n")
+    return sections
+
+
+def quoted_sections() -> list[str]:
+    """Every section the prompt must quote: hers, minus the adapted ones, plus the goal."""
+    return [name for name in guidelines_sections() if name not in ADAPTED_SECTIONS]
+
+
+def test_the_guidelines_document_is_the_experts_own_text() -> None:
+    """The committed source still starts with her goal sentence, after a short header."""
+    text = GUIDELINES.read_text(encoding="utf-8")
+    assert text.startswith("# Stories annotation guidelines\n")
+    assert "Your goal is to mark the boundaries of each storytelling event" in text
+    assert "2026-11-26" in text
+
+
+class TestPromptQuotesTheExpertVerbatim:
+    """Every section of her prompt except the two adapted ones is in the prompt word for word.
+
+    Whitespace is normalised and nothing else: no rewording, no abbreviation, no reordered
+    bullets. A future edit that "tidies" her prose while looking at the prompt — or the
+    reverse — fails here instead of shipping a criterion the expert never wrote.
+    """
+
+    def test_the_adapted_sections_are_exactly_the_ones_declared(self) -> None:
+        sections = guidelines_sections()
+        assert set(ADAPTED_SECTIONS) <= set(sections)
+        assert "" in sections
+        # Her goal paragraph is a section like the rest, and is quoted like the rest.
+        assert "" in quoted_sections()
+
+    @pytest.mark.parametrize("name", quoted_sections(), ids=lambda name: name or "goal")
+    def test_the_section_is_quoted_word_for_word(self, name: str) -> None:
+        expected = _norm(guidelines_sections()[name])
+        if name == "Annotation rules":
+            # One bullet of hers is rewritten, and only that one.
+            assert _norm(HER_TIMESTAMP_RULE) in expected
+            expected = expected.replace(_norm(HER_TIMESTAMP_RULE),
+                                        _norm(PIPELINE_TIMESTAMP_RULE))
+        assert expected in _norm(PROMPTS["v2"])
+
+    def test_only_one_sentence_of_hers_is_rewritten(self) -> None:
+        """Her timestamps rule is gone, its replacement is there, the other bullets stay."""
+        shipped = _norm(PROMPTS["v2"])
+        assert _norm(HER_TIMESTAMP_RULE) not in shipped
+        assert _norm(PIPELINE_TIMESTAMP_RULE) in shipped
+        rules = guidelines_sections()["Annotation rules"]
+        bullets = [line for line in rules.splitlines() if line.startswith("- ")]
+        assert HER_TIMESTAMP_RULE in bullets
+        for bullet in bullets:
+            if bullet == HER_TIMESTAMP_RULE:
+                continue
+            assert _norm(bullet) in shipped, bullet
+
+    def test_her_story_evidence_example_survives_in_the_contract(self) -> None:
+        prompt = PROMPTS["v2"]
+        for item in ("Represented event(s)", "Causal or experiential connection",
+                     "Embodiment, intentionality, or evaluation, if relevant"):
+            assert item in prompt, item
+
+    def test_her_input_limitations_survive_the_adapted_input_section(self) -> None:
+        """Her WhisperX section is replaced, but not every bullet in it was about WhisperX."""
+        prompt = _norm(PROMPTS["v2"])
+        for bullet in ("Do not invent words or silently correct transcription errors",
+                       "may combine multiple conversational turns",
+                       "Do not infer pauses, overlap, intonation, gaze, gesture, or other "
+                       "nonverbal cues from text alone",
+                       "do not invent them"):
+            assert bullet in prompt, bullet
+
 
 class TestPrompt:
     def test_v2_is_the_only_prompt_version(self) -> None:
         assert list(PROMPTS) == ["v2"]
 
     def test_the_goal_sentence_is_the_domain_experts(self) -> None:
-        prompt = PROMPTS["v2"]
+        prompt = _norm(PROMPTS["v2"])
         assert ("Your goal is to mark the boundaries of each storytelling event and, "
                 "separately, the boundaries of each story told within it.") in prompt
-        assert ('A story is the "what" being represented; a storytelling event is the '
-                'conversational activity of launching and telling it.') in prompt
+        # Her words, including her typographic quotes: the straight-quote version was a
+        # paraphrase, and `TestPromptQuotesTheExpertVerbatim` is what keeps it honest.
+        assert ("A story is the \u201cwhat\u201d being represented; a storytelling event is "
+                "the conversational activity of launching and telling it.") in prompt
 
     def test_the_working_criteria_and_boundary_guidance_are_present(self) -> None:
-        prompt = PROMPTS["v2"]
-        lowered = prompt.lower()
+        lowered = _norm(PROMPTS["v2"]).lower()
         for phrase in ("foregrounds experience", "not automatically a story",
                        "pre-telling", "coda", "listener_acknowledgment", "activity_shift",
-                       "interruptions", "never invent words", "uncertain"):
+                       "interruptions", "do not invent words", "uncertain"):
             assert phrase in lowered, phrase
 
     def test_the_emptiness_rule_stays_prominent(self) -> None:
-        assert ("An empty answer is the expected and correct answer" in PROMPTS["v2"])
-        assert "empty arrays" in PROMPTS["v2"]
+        prompt = _norm(PROMPTS["v2"])
+        assert "An empty answer is the expected and correct answer" in prompt
+        assert "empty arrays" in prompt
 
     def test_the_input_format_is_ours_not_whisperx_json(self) -> None:
         prompt = PROMPTS["v2"]
@@ -417,8 +530,8 @@ class TestPrompt:
         assert "[speaker label]" in prompt
         assert "Do not output times" in prompt
         assert "transcript_quote" in prompt
-        assert ("Do not infer pauses, overlap, intonation, gaze or gesture"
-                in prompt)
+        assert ("Do not infer pauses, overlap, intonation, gaze, gesture, or other "
+                "nonverbal cues from text alone" in _norm(prompt))
 
     def test_the_output_contract_keeps_the_experts_field_names(self) -> None:
         prompt = PROMPTS["v2"]

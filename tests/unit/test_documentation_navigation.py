@@ -1,4 +1,4 @@
-"""Navigation guards for the README + the eight topic guides under ``docs/``.
+"""Navigation guards for the README, the eight topic guides, and the sources they quote.
 
 The README used to be 2112 lines: one file that was simultaneously the landing page, the
 install chain, the dataset schema reference and the ELAN tier semantics. The fix is
@@ -20,6 +20,11 @@ So the guard is mechanical and closed: an explicit allowlist of documents, every
 link and image resolving from the file that wrote it, every ``#fragment`` matching a real
 heading in the document that owns it, fenced code excluded (a ``#`` inside a bash block is
 a comment, not a heading, and a ``[text](thing)`` inside a Python block is not a link).
+
+The allowlist has two kinds of document, and both must be reachable. A **guide** is routed
+to from the landing page. A **source** is quoted by code or config and read for its exact
+words — the domain expert's annotation prompt underlies ``stories`` prompt v2 — so it is
+linked from the guide that owns its topic instead, which is where a reader meets it.
 """
 
 from __future__ import annotations
@@ -46,6 +51,15 @@ GUIDES: tuple[str, ...] = (
     "architecture.md",
     "configuration.md",
     "development.md",
+)
+
+#: Documents under ``docs/`` that are *sources*, not guides. A source is quoted by code or
+#: config and read for its exact words, so it is routed to from the guide that owns the
+#: topic rather than from the landing page: the expert's annotation prompt is the text
+#: ``stories`` prompt v2 is checked against, and a reader arrives at it from
+#: ``docs/modalities.md``, where the stage is described.
+SOURCES: tuple[str, ...] = (
+    "stories-annotation-guidelines.md",
 )
 
 #: How the README announces the guides, and how every guide points home.
@@ -107,7 +121,7 @@ def anchors_in(text: str) -> set[str]:
 
 
 def documents() -> list[Path]:
-    return [README, *(DOCS / name for name in GUIDES)]
+    return [README, *(DOCS / name for name in (*GUIDES, *SOURCES))]
 
 
 def body(path: Path) -> str:
@@ -188,13 +202,25 @@ class TestGuidesExistAndAreNavigable:
         """A new guide has to be routed to, not merely written.
 
         Adding a ninth guide means adding it to ``GUIDES`` and linking it from the README;
-        this fails while the document exists but is unreachable, which is the state where
-        content ships and no reader finds it.
+        a quoted source goes in ``SOURCES`` and must be linked from a guide. This fails
+        while the document exists but is unreachable, which is the state where content
+        ships and no reader finds it.
         """
         present = sorted(p.name for p in DOCS.glob("*.md"))
-        assert present == sorted(GUIDES), (
-            "docs/ holds a document that is not in GUIDES and therefore not routed to by "
-            f"the README (or lost one): {present}")
+        assert present == sorted((*GUIDES, *SOURCES)), (
+            "docs/ holds a document that is not in GUIDES or SOURCES and therefore not "
+            f"routed to (or lost one): {present}")
+
+    @pytest.mark.parametrize("name", SOURCES)
+    def test_a_quoted_source_is_linked_from_the_guide_that_owns_it(self, name: str) -> None:
+        linked = {
+            target.partition("#")[0]
+            for guide in GUIDES
+            for target in LINK_RE.findall(body(DOCS / guide))
+        }
+        assert name in linked, (
+            f"docs/{name} is quoted by code and shipped, but no guide links it: a reader "
+            "who wants the exact words has no path to them")
 
 
 class TestLinksResolve:

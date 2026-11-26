@@ -108,8 +108,8 @@ local profile uses the repository-local TalkNet mirror, not operator scripts.
   durations; person tables cannot prove sampled-frame coverage.
 - Storytelling-event/story candidates lack validated ground truth; temperature zero
   is not service determinism, and retained bytes/cache support auditing, not accuracy.
-  Diarized labels are arbitrary ids. The v2 prose is restored from the expert's
-  terminology, not her verbatim text (absent here); schema 2.1 is local-only.
+  Diarized labels are arbitrary ids. The v2 prompt quotes her annotation prompt verbatim
+  (`docs/stories-annotation-guidelines.md`; two sections adapted); schema 2.1 is local-only.
 - Historical review advisories (fusion, pose assembly, persons, figure errors) without
   finding detail stay unconfirmed, not invented fixes; derived source fingerprints can
   lose readable-module coverage when another module is unreadable. Mixed annotation keys
