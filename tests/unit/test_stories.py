@@ -17,7 +17,8 @@ the batch is retried. Empty arrays are a valid answer.
 **Speaker labels are attributed** (`TestSpeakerSources`): Nemotron's turns overlap, so a
 word no single speaker dominates is `unknown`; a missing Nemotron table is a supported state
 that labels everything `unknown` and records requested→used, and never falls back to
-pyannote.
+the max-overlap `speaker_id` on segments/words (Nemotron is the only diarizer; the
+`pyannote` source was removed on 2026-11-26).
 
 **The stage contract** (`TestStageExecution` and below): whole-transcript default,
 windowed drop-and-count when configured, the digest cache and its re-validation, raw
@@ -105,6 +106,14 @@ SEGMENTS = [
     segment(2, text="it rolled down the side of the sofa", speaker="SPEAKER_01"),
     segment(3, text="that was embarrassing"),
 ]
+
+#: Nemotron turns that cover SEGMENTS one speaker at a time (no overlap).
+NEMOTRON_TURNS = [
+    {"schema_version": "1.0", "video_id": "conversation_001", "turn_id": f"turn{i:06d}",
+     "speaker_id": spk, "start_time": a, "end_time": b, "duration": b - a,
+     "diarization_type": "inclusive", "overlap_s": 0.0}
+    for i, (spk, a, b) in enumerate([("speaker_0", 3.0, 5.5), ("speaker_1", 6.0, 8.5),
+                                     ("speaker_0", 9.0, 11.5)], start=1)]
 
 
 def word_rows(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -546,16 +555,16 @@ class TestPrompt:
         assert "time_seconds" not in prompt
 
     def test_the_transcript_lines_show_text_and_speaker_runs_separately(self) -> None:
-        prompt = request_for(speaker_source="pyannote").prompt()
+        prompt = request_for(turns=NEMOTRON_TURNS, speaker_source="nemotron").prompt()
         assert "VIDEO: conversation_001" in prompt
         for row in SEGMENTS:
             assert row["segment_id"] in prompt
             assert f"{float(row['start_time']):.3f}" in prompt
         assert ("- segment_id=seg000001 start=3.000 end=5.500\n"
                 "  text: I was fiddling with my wedding ring\n"
-                "  speakers: [SPEAKER_00] I was fiddling with my wedding ring") in prompt
+                "  speakers: [speaker_0] I was fiddling with my wedding ring") in prompt
         assert ("  text: it rolled down the side of the sofa\n"
-                "  speakers: [SPEAKER_01] it rolled down the side of the sofa") in prompt
+                "  speakers: [speaker_1] it rolled down the side of the sofa") in prompt
 
     def test_the_prompt_says_quotes_come_from_the_text_line_and_how_to_pick_one(self) -> None:
         prompt = PROMPTS["v2"]
@@ -582,14 +591,16 @@ class TestPrompt:
 
     def test_the_key_follows_the_rendered_labels(self) -> None:
         """A relabelled transcript is a different question, not the same one re-asked."""
-        base = request_for(speaker_source="pyannote").key()
+        base_rows = prepared(turns=NEMOTRON_TURNS, speaker_source="nemotron")
+        base = request_for(rows=base_rows, speaker_source="nemotron").key()
         assert request_for(speaker_source="none").key() != base
         # A threshold that leaves every rendered run unchanged leaves the question
         # unchanged: the model is shown the same transcript, so the answer is reusable.
         # Binding the *threshold* rather than the rendering would throw a paid answer away
         # for a setting that changed nothing.
-        assert request_for(speaker_source="pyannote",
-                           speaker_min_coverage=0.9).key() == base
+        same_runs = prepared(turns=NEMOTRON_TURNS, speaker_source="nemotron",
+                             speaker_min_coverage=0.9)
+        assert request_for(rows=same_runs, speaker_source="nemotron").key() == base
         turns = [turn("speaker_0", 3.0, 11.5, index=1), turn("speaker_1", 3.0, 11.5, index=2)]
         strict = prepared(turns=turns, speaker_source="nemotron", speaker_max_competing=0.1)
         lenient = prepared(turns=turns, speaker_source="nemotron", speaker_max_competing=99.0)
@@ -1604,7 +1615,9 @@ class TestSpeakerSources:
             {"segment_id": "seg000002", "word": "yes", "start_time": 6.0, "end_time": 6.5,
              "speaker_id": "speaker_0"},
         ]
-        rows = prepared(segments, words=words, speaker_source="pyannote")
+        turns = [turn("speaker_0", 3.0, 3.5, index=1), turn("speaker_1", 3.5, 4.0, index=2),
+                 turn("speaker_0", 4.0, 4.5, index=3), turn("speaker_0", 6.0, 6.5, index=4)]
+        rows = prepared(segments, words=words, turns=turns, speaker_source="nemotron")
         assert rows[0]["speaker_runs"] == "[speaker_0] hello there"
         assert rows[0]["speaker_labels"] == ["speaker_0"]
         request = build_requests(rows, video_id="v", max_segments_per_request=None,
@@ -1640,25 +1653,16 @@ class TestSpeakerSources:
         validated = validate_response(payload, request)
         assert json.loads(validated.events[0]["tellers"]) == ["speaker_2"]
 
-    def test_pyannote_with_no_labels_at_all_is_used_none_and_says_so(self, context) -> None:
-        use_stage_config(context, speaker_source="pyannote")
-        seed_segments(context, [dict(row, speaker_id=None) for row in SEGMENTS])
-        seed_words(context, [dict(row, speaker_id=None) for row in WORDS])
-        messages = log_recorder(context)
-        run_stage(context)
-        recorded = summary(context)
-        assert recorded["speaker_source_requested"] == "pyannote"
-        assert recorded["speaker_source_used"] == "none"
-        assert {row["start_speaker"]
-                for row in rows_of(context, "storytelling_events")} == {"unknown"}
-        assert any("pyannote" in message for message in messages)
+    def test_pyannote_is_no_longer_a_speaker_source(self) -> None:
+        """Nemotron is the only diarizer (operator decision, 2026-11-26)."""
+        import pydantic
 
-    def test_pyannote_uses_the_word_id_and_unknown_only_for_a_null_one(self) -> None:
-        words = [dict(row, speaker_id=None) if row["segment_id"] == "seg000002" else row
-                 for row in WORDS]
-        rows = prepared(words=words, speaker_source="pyannote")
-        assert rows[0]["speaker_labels"] == ["SPEAKER_00"]
-        assert rows[1]["speaker_labels"] == ["unknown"]
+        from multimodal_pipeline.config import PipelineConfig
+
+        with pytest.raises(pydantic.ValidationError, match="speaker_source"):
+            PipelineConfig.model_validate({
+                "input": {"directory": "/tmp/in"}, "output": {"directory": "/tmp/out"},
+                "stories": {"speaker_source": "pyannote"}})
 
     def test_none_labels_everything_unknown(self) -> None:
         rows = prepared(speaker_source="none")
@@ -1678,8 +1682,8 @@ class TestSpeakerSources:
         assert recorded["speaker_source_used"] == "none"
         assert any("nemotron" in message.lower() for message in messages)
 
-    def test_never_falls_back_to_pyannote(self, context) -> None:
-        """Pyannote words exist; a missing Nemotron table must still not use them."""
+    def test_never_falls_back_to_the_segment_speaker_ids(self, context) -> None:
+        """Words/segments carry speaker ids; a missing Nemotron table must still not use them."""
         use_stage_config(context, speaker_source="nemotron")
         seed_segments(context, SEGMENTS)
         seed_words(context, WORDS)  # words carry SPEAKER_00 / SPEAKER_01
@@ -1929,7 +1933,7 @@ class TestStageExecution:
 
     def test_a_changed_speaker_source_invalidates_the_cache(self, context) -> None:
         """The same text with a different attribution rule is a different question."""
-        use_stage_config(context, speaker_source="pyannote")
+        use_stage_config(context, speaker_source="none")
         seed_segments(context, SEGMENTS)
         seed_words(context, WORDS)
         seed_nemotron(context, [turn("speaker_0", 3.0, 5.5, index=1),

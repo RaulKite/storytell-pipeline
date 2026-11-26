@@ -186,15 +186,14 @@ The prompt shows each segment in three lines — `segment_id`/`start`/`end`, the
 segment's own `text:`, then its `speakers:` runs — and quotes are copied from `text:`
 only. Speaker labels beside each word come from automatic diarization — Nemotron by
 default — and are rendered as `[speaker_0] words … [unknown] words` runs.
-`stories.speaker_source` selects `nemotron`, `pyannote` or `none`. Nemotron's turns
+`stories.speaker_source` selects `nemotron` (the only diarizer) or `none`. Nemotron's turns
 overlap, so a word is attributed only when one speaker covers at least
 `stories.speaker_min_coverage` of it — measured as the union of that speaker's turns,
 so being diarized twice over one instant is not two instants — and no other covers at
 least `stories.speaker_max_competing`; otherwise it is `unknown`. A selected source
-with nothing to read (no Nemotron turns, or pyannote labels absent from both word rows
-and segments) labels everything `unknown` and is recorded in `stories_summary.json` as
-`speaker_source_requested`/`speaker_source_used: none`; the stage never falls back to
-the other engine. A label the answer names must be one the rendered prompt showed,
+with nothing to read (no Nemotron turns) labels everything `unknown` and is recorded in
+`stories_summary.json` as `speaker_source_requested`/`speaker_source_used: none`; the
+stage never reads the max-overlap `speaker_id` on segments or words instead. A label the answer names must be one the rendered prompt showed,
 including labels that appear only in the context segments. Labels are arbitrary ids,
 not identities.
 

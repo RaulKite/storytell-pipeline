@@ -370,12 +370,12 @@ class StoriesConfig(_Model):
     ``speaker_source`` chooses where the speaker labels shown to the model come from.
     ``nemotron`` is the operator's decision: its turns may overlap, so a word whose
     duration is not clearly dominated by one speaker is labelled ``unknown``
-    (``speaker_min_coverage`` / ``speaker_max_competing``). ``pyannote`` reuses the
-    ``speaker_id`` already on the words/segments, and ``none`` labels everything
-    ``unknown``. A missing selected source is a supported state, is recorded in
-    ``stories_summary.json`` as ``speaker_source_requested``/``speaker_source_used``, and
-    never falls back to the other engine: swapping engines silently would relabel a
-    transcript under a name the operator did not ask for.
+    (``speaker_min_coverage`` / ``speaker_max_competing``), and ``none`` labels everything
+    ``unknown``. Nemotron is the only diarizer the pipeline keeps (2026-11-26), and the
+    max-overlap ``speaker_id`` on words/segments is never read here. A missing Nemotron
+    table is a supported state, is recorded in ``stories_summary.json`` as
+    ``speaker_source_requested``/``speaker_source_used``, and never falls back to another
+    label source.
 
     ``repair_max_answer_chars`` bounds the retry a rejected answer earns. That retry is a
     second request: the same prompt, the rejected answer as an assistant message and the
@@ -470,9 +470,10 @@ class StoriesConfig(_Model):
     @field_validator("speaker_source")
     @classmethod
     def _speaker_source(cls, value: str) -> str:
-        if value not in {"nemotron", "pyannote", "none"}:
+        if value not in {"nemotron", "none"}:
             raise ValueError(
-                "stories.speaker_source must be 'nemotron', 'pyannote' or 'none'"
+                "stories.speaker_source must be 'nemotron' or 'none' (Nemotron is the "
+                "only diarizer; pyannote labels are not used for stories)"
             )
         return value
 

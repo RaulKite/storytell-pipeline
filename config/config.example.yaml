@@ -124,9 +124,9 @@ stories:
                                  # conversation. A number restores windowing, and an event
                                  # whose boundaries straddle a window is dropped AND counted.
   context_segments: 5            # neighbours shown as context only when windowing is on
-  speaker_source: nemotron       # nemotron | pyannote | none. Nemotron's turns overlap, so
+  speaker_source: nemotron       # nemotron | none. Nemotron's turns overlap, so
                                  # a word no single speaker dominates is labelled "unknown".
-                                 # Never falls back to pyannote: a missing source is recorded
+                                 # Never falls back to other labels: a missing source is recorded
                                  # in stories_summary.json as requested -> used.
   speaker_min_coverage: 0.6      # fraction of a word's duration the dominant speaker must
                                  # cover before the word is attributed to it

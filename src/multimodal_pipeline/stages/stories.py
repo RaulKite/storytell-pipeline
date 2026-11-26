@@ -748,18 +748,17 @@ def prepare_segments(segments: Sequence[Mapping[str, Any]],
                      speaker_max_competing: float = DEFAULT_MAX_COMPETING) -> list[dict[str, Any]]:
     """Segment rows with their rendered speaker runs and their word positions attached.
 
-    Three label sources, and the difference between them is real:
+    Two label sources:
 
     * ``nemotron`` attributes every word against the overlapping Nemotron turns, and a
       segment with no word rows falls back to the same rule over the segment's own
       interval (the only timing evidence left).
-    * ``pyannote`` uses the ``speaker_id`` already on each word (or on the segment when it
-      has no words) and only replaces a *null* id with ``unknown`` — the id is already an
-      assignment, so re-deciding it here would be inventing a second diarizer.
     * ``none`` labels everything ``unknown``.
 
-    Nothing falls back from one engine to the other: ``speaker_source`` is what the operator
-    asked for, and the stage records whether it was available.
+    Nemotron is the pipeline's only diarizer (operator decision, 2026-11-26). The
+    ``speaker_id`` already on words and segments is deliberately never read: it is a
+    max-overlap assignment with no "unknown", which is exactly the guess Armine's
+    guidelines forbid.
     """
     ordered = sorted(segments, key=lambda row: (float(row["start_time"]),
                                                 float(row["end_time"]),
@@ -774,10 +773,7 @@ def prepare_segments(segments: Sequence[Mapping[str, Any]],
         text = str(row.get("text") or "")
         segment_words = by_segment.get(segment_id, [])
         tokens = align_token_times(text, segment_words)
-        if speaker_source == "pyannote":
-            labels = [str(word.get("speaker_id") or "").strip() or UNKNOWN_SPEAKER
-                      for word in segment_words]
-        elif speaker_source == "nemotron":
+        if speaker_source == "nemotron":
             labels = attribute_words(segment_words, turns,
                                      min_coverage=speaker_min_coverage,
                                      max_competing=speaker_max_competing)
@@ -797,9 +793,7 @@ def prepare_segments(segments: Sequence[Mapping[str, Any]],
             runs = speaker_runs(text, spans, token_labels)
         else:
             fallback = UNKNOWN_SPEAKER
-            if speaker_source == "pyannote":
-                fallback = str(row.get("speaker_id") or "").strip() or UNKNOWN_SPEAKER
-            elif speaker_source == "nemotron":
+            if speaker_source == "nemotron":
                 fallback = attribute_interval(turns, row.get("start_time"), row.get("end_time"),
                                               min_coverage=speaker_min_coverage,
                                               max_competing=speaker_max_competing)
@@ -2397,35 +2391,18 @@ class StoriesStage(Stage):
 
         A missing selected source is supported and recorded, never silently replaced: a
         Nemotron-configured corpus with no Nemotron table labels everything "unknown"
-        instead of quietly switching to pyannote, because that swap would relabel a
-        transcript under a name the operator did not ask for and would be invisible in the
-        table.
+        instead of quietly reading another label source (e.g. the max-overlap
+        ``speaker_id`` on segments), which would relabel the transcript invisibly.
         """
         cfg = ctx.config.stories
         if cfg.speaker_source == "none":
             return [], "none"
-        if cfg.speaker_source == "pyannote":
-            # The labels are already on the words/segments; no turn table is needed. But a
-            # corpus whose word rows and segments both carry no `speaker_id` has no
-            # pyannote labels to use, and that is the same state as a missing source: say
-            # so, label everything unknown, and record `used: none` rather than presenting
-            # an all-unknown transcript as a successful diarization.
-            labeled_words = any(str(word.get("speaker_id") or "").strip()
-                                for word in self._word_rows(ctx))
-            labeled_segments = any(str(row.get("speaker_id") or "").strip()
-                                   for row in self._segment_rows(ctx))
-            if not labeled_words and not labeled_segments:
-                ctx.log("stories: speaker_source=pyannote found no speaker_id on any word "
-                        "or segment; every speaker label will be 'unknown'",
-                        30)
-                return [], "none"
-            return [], "pyannote"
         turns = self._read_soft(ctx, "speaker_turns_nemotron",
                                 required={"speaker_id", "start_time", "end_time"})
         if not turns:
             ctx.log(f"stories: speaker_source=nemotron has no usable "
                     f"speech/speaker_turns_nemotron.parquet; every speaker label will be "
-                    f"'unknown' (no fallback to pyannote)", 30)
+                    f"'unknown' (no fallback to another label source)", 30)
             return [], "none"
         return turns, "nemotron"
 
