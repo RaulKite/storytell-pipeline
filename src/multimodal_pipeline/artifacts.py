@@ -34,10 +34,14 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "speaker_turns_nemotron": "speech/speaker_turns_nemotron.parquet",
     "translation_raw": "translation/raw",
     "translation_segments": "translation/segments_en.parquet",
-    # Narrative windows (T16). Its own directory rather than a `translation/` sibling:
-    # the table answers a question no other table asks, and a reader looking for the
-    # LLM's story verdict should not find it filed under the thing that only translates.
+    # The stories stage's three tables (prompt v2). Its own directory rather than a
+    # `translation/` sibling: the tables answer a question no other table asks, and a
+    # reader looking for the LLM's judgement should not find it filed under the thing that
+    # only translates. An event, the story told inside it and the span that could not be
+    # placed are three different claims, so they are three files.
+    "storytelling_events": "stories/storytelling_events.parquet",
     "stories": "stories/stories.parquet",
+    "uncertain_spans": "stories/uncertain_spans.parquet",
     "stories_raw": "stories/raw",
     "spacy_source_raw": "linguistic/source/raw/spacy_source.json",
     "spacy_english_raw": "linguistic/english/raw/spacy_english.json",

@@ -723,7 +723,8 @@ class TestConfigAndRegistry:
         assert "elan_annotations" in MANIFEST_ARTIFACTS
         assert "activespeaker_video_raw" in MANIFEST_ARTIFACTS
         assert "pose_skeleton_video" in MANIFEST_ARTIFACTS
-        assert len(MANIFEST_ARTIFACTS) == 48
+        # 50 after the stories stage's event/story split turned one table into three.
+        assert len(MANIFEST_ARTIFACTS) == 50
 
     def test_the_registered_path_lives_in_its_own_directory(self) -> None:
         assert ARTIFACT_LAYOUT["elan_annotations"] == "elan/annotations.eaf"
@@ -962,7 +963,7 @@ class TestRecordReportsWhatWasLeftOut:
         summary = record_of(stage, ctx)
         assert summary["dropped_rows"] == {}
         assert summary["projected_tiers"] == {}
-        assert len(summary["coverage"]) == 23
+        assert len(summary["coverage"]) == 25
 
 
 class TestValidateChecksCoverageAgainstTheDocument:
@@ -1278,10 +1279,10 @@ class TestValidateChecksCoverageAgainstTheDocument:
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
         summary = record_of(stage, ctx)
-        assert len(summary["coverage"]) == 23, "the inventory stopped covering the 23 tables"
+        assert len(summary["coverage"]) == 25, "the inventory stopped covering the 25 tables"
         monkeypatch.setitem(artifacts_module.ARTIFACT_LAYOUT, "eye_gaze", "gaze/eye.parquet")
         assert len([key for key, relative in artifacts_module.ARTIFACT_LAYOUT.items()
-                    if relative.endswith(".parquet")]) == 24
+                    if relative.endswith(".parquet")]) == 26
         assert stage.validate(ctx)["tiers"] == 5
 
     @pytest.mark.parametrize("bad_tiers", [

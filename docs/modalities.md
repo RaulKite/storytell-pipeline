@@ -14,7 +14,7 @@ Back to the overview: [Storytel Pipeline](../README.md).
 - [Audio–visual agreement](#audiovisual-agreement)
 - [Pose coordinates](#pose-coordinates)
 - [Person tracks](#person-tracks)
-- [Story candidates](#story-candidates)
+- [Storytelling events and stories](#storytelling-events-and-stories)
 
 ## Speech and language
 
@@ -139,20 +139,40 @@ The detection table contains sightings, not a complete sampled/empty-frame grid.
 An absent detection cannot prove that frame was inspected. YOLO person IDs, OpenPose
 per-frame person indices and TalkNet face tracks cannot be equated by matching digits.
 
-## Story candidates
+## Storytelling events and stories
 
-The `stories` stage asks an LLM for narrative windows in the source transcript.
-Rows retain model/prompt/request identity, times and JSON-encoded evidence segment
-IDs. IDs are namespaced by request window; parent links remain inside that namespace.
-Out-of-window evidence, invalid boundaries and broken parent relationships are
-rejected/countable rather than promoted to valid claims.
+The `stories` stage asks an LLM to mark **storytelling events** (the conversational
+activity of launching and telling: pre-telling, telling, coda) and, **separately**,
+the **stories** told inside them (the represented "what"), plus spans it could not
+place. The three tables are `storytelling_events`, `stories` and `uncertain_spans`;
+a story names its event, and one event may carry several stories.
 
-An empty answer with `no_story_reason` is legitimate and retained in raw response
-metadata; a video with no transcript segments skips the stage. A story whose evidence
-crosses request-window boundaries can be dropped, so absence is not a recall result.
-Raw responses and cache entries make claims auditable; low temperature alone does
-not make service responses deterministic.
+The model cites a `segment_id` and copies a `transcript_quote` from that one segment;
+it never reports times. The pipeline locates the quote in
+`speech/segments.parquet` and maps it to word times through `speech/words.parquet`,
+recording `*_time_precision` as `word` or, when no aligned word exists, `segment`.
+An invented segment id, a quote that is not verbatim, an enum value outside the
+closed vocabularies, a duplicate id, a story outside its event, or inconsistent
+`story_ids` rejects the whole answer and the batch is retried.
 
-There is no validated ground truth or accuracy guarantee here. **Story candidates
-are not exported as an ELAN tier**. Transcript evidence supports auditing a claim,
-not treating the LLM's title/confidence as a measurement of narrative truth.
+Speaker labels beside each word come from automatic diarization — Nemotron by
+default — and are rendered as `[speaker_0] words … [unknown] words` runs.
+`stories.speaker_source` selects `nemotron`, `pyannote` or `none`. Nemotron's turns
+overlap, so a word is attributed only when one speaker covers at least
+`stories.speaker_min_coverage` of it and no other covers at least
+`stories.speaker_max_competing`; otherwise it is `unknown`. A missing selected
+source labels everything `unknown` and is recorded in `stories_summary.json` as
+`speaker_source_requested`/`speaker_source_used`; the stage never falls back to the
+other engine. Labels are arbitrary ids, not identities.
+
+Empty arrays are a legitimate, expected answer and are counted per window; a video
+with no transcript segments skips the stage. The default is the whole transcript in
+one request; setting `stories.max_segments_per_request` restores windowing, and an
+event whose boundaries straddle a window is dropped *and counted* with its stories,
+so absence is not a recall result. Raw responses and cache entries make claims
+auditable; low temperature alone does not make service responses deterministic.
+
+There is no validated ground truth or accuracy guarantee here. **Storytelling events
+and stories are not exported as an ELAN tier**. Transcript evidence supports auditing
+a claim, not treating the LLM's summary or confidence as a measurement of narrative
+truth.

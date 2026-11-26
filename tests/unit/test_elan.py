@@ -3298,18 +3298,19 @@ class TestCoverageInventory:
 
     def test_the_document_inventories_every_parquet_artifact_with_one_state(
             self, dataset: dict[str, Path]) -> None:
-        """22 tables in, 22 entries out, each holding exactly one of the four words.
+        """Every registered normalised table in, one entry out, one of the four words each.
 
         The count is taken from the registry rather than typed, because the claim is "every
-        normalised table appears", not "22 appear today". The state vocabulary is asserted as a
-        closed set so a fifth state cannot be introduced without being named.
+        normalised table appears", not "25 appear today"; the pinned number only notices that
+        the registry's shape changed. The state vocabulary is asserted as a closed set so a
+        fifth state cannot be introduced without being named.
         """
         eaf = eaf_of(dataset)
         inventory = coverage_map(eaf)
         parquet = {name for name, relative in ARTIFACT_LAYOUT.items()
                    if relative.endswith(".parquet")}
         assert set(inventory) == parquet
-        assert len(inventory) == 23, "the registry's normalised-table count changed shape"
+        assert len(inventory) == 25, "the registry's normalised-table count changed shape"
         assert {entry["state"] for entry in inventory.values()} <= set(elan_core.COVERAGE_STATES)
 
     def test_the_inventory_is_a_json_property_that_survives_the_round_trip(
@@ -3594,7 +3595,7 @@ class TestCoverageInventory:
         for root in corpus_datasets():
             eaf, _report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
             inventory = coverage_map(eaf)
-            assert len(inventory) == 23, root.name
+            assert len(inventory) == 25, root.name
             for name in UNREAD_TABLES:
                 on_disk = (root / ARTIFACT_LAYOUT[name]).is_file()
                 expected = (elan_core.COVERAGE_PRESENT_NOT_EXPORTED if on_disk
@@ -3626,7 +3627,8 @@ class TestCoverageInventory:
                                          if state == elan_core.COVERAGE_ABSENT}
         assert seen == set(elan_core.COVERAGE_STATES), seen
         assert {name: missing for name, missing in absent_by_root.items() if missing} == {
-            "person_demo": {"stories"}, "pipeline_silent": {"stories"},
+            "person_demo": {"storytelling_events", "stories", "uncertain_spans"},
+            "pipeline_silent": {"storytelling_events", "stories", "uncertain_spans"},
         }, "which datasets lack a table changed; re-measure the README's counts"
 
 

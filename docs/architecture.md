@@ -100,7 +100,7 @@ checkout: a shipping default, not an unimplemented feature. See the
 | `activespeaker` | `metadata`, `audio` | TalkNet face activity |
 | `persons` | `metadata` | YOLO person detection/tracking |
 | `speaker_fusion` | `diarization`, `diarization_nemotron`, `activespeaker` | Audio–visual agreement |
-| `stories` | `speaker_assignment` | Narrative candidates from the source transcript |
+| `stories` | `speaker_assignment` | Storytelling events, the stories inside them, uncertain spans |
 | `finalization` | All producer stages above | Cross-modal validation, manifest and provenance |
 | `elan` | `finalization` | Annotation summary export |
 

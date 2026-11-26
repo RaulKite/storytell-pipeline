@@ -49,7 +49,7 @@ The same applies independently to the `stories` section.
 | `whisperx` | Model, language, device, compute type, batching and VAD |
 | `diarization` | pyannote pipeline, speaker constraints, exclusive alignment preference |
 | `diarization_nemotron` | Optional second engine, threshold and up to eight speaker channels |
-| `translation`, `stories` | Independent endpoint/model, prompt version, retries, context and cache |
+| `translation`, `stories` | Independent endpoint/model, prompt version, retries, context and cache. `stories` also chooses `speaker_source` (nemotron/pyannote/none) and its coverage thresholds; `max_segments_per_request: null` sends the whole transcript |
 | `spacy` | Source/English models, fallback and language-reliability policy |
 | `acoustic` | Frame step, pitch range, formant ceiling, pause policy and chunk size |
 | `openpose` | Root/executable/models, enabled keypoint modules, optional rendered images |

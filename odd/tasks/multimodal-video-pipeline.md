@@ -13,7 +13,7 @@ Completed plans, probes and review receipts remain in Git history, not live auth
 |---|---|---|
 | `speaker_fusion` | built | Agreement tables beside diarization; transcript labels unchanged |
 | `persons` | built | Optional detections/tracks; IDs are not unique-human counts |
-| `stories` | built | Transcript-bound candidates, including legitimate empty answers |
+| `stories` | built | Storytelling events + the stories inside them + uncertain spans, all transcript-bound; empty is a valid answer |
 | `pose_normalized` | built | Separate body-centred table; measured pixels preserved |
 | `openpose` | built | Measured landmarks, opt-in skeleton JPGs and native MP4 |
 | `activespeaker` | built | Dense selected-face tables and opt-in native annotated AVI with audio |
@@ -68,46 +68,46 @@ three trailing frames (seven observed raw/preview counts: 126/125, 124/121, 240/
 canonical paths and refusing video overrides protect upstream's shell. Publication after
 validation is not a cross-artifact filesystem transaction. Disabling deletes nothing.
 
-**Corpus decision:** add missing visuals only, retain three existing MP4s. Initial
-publication halted on two rerun JSON mismatches; isolated rechecks matched all seven.
-Assumption: new previews must have matching raw measurements before installation.
-Seven clips now have skeleton MP4/native ASD AVI; 1343 JPGs and 261 guides were added.
-No inputs, native measurement raw bytes or Parquet tables changed. Fourteen prior ASD
-raw/sidecar versions live in `speaker/raw/history/`; only sidecars/bookkeeping/logs changed.
-The local profile uses the existing repository-local TalkNet mirror and its checkpoints,
-not operator scripts or missing `/tmp` weights. Assumption: reuse observed matching native
-results rather than execute external tools again; all seven ASD logs confirm no model run.
+**Stories v2 decision:** prompt `v2` replaces v1's single-span "anecdote" model with
+the domain expert's definition: a **storytelling event** (launching, telling, coda) and,
+separately, the **story** inside it, plus uncertain spans. The model cites a `segment_id`
++ verbatim quote and outputs no times; the stage maps quotes to word times (segment
+precision when no aligned word exists). Speakers are attributed from Nemotron on the
+operator's decision, overlapping turns refused as `unknown`, and a missing source
+recorded rather than replaced by pyannote. Default is the whole transcript in one
+request; a configured window drops and counts. v1's code path was removed and
+`prompt_version: v1` fails at parse; existing datasets keep their v1 tables untouched.
+Measured: `words.parquet` character offsets are NULL in all eight processed datasets.
+
+**Corpus decision:** add missing visuals only, retain three existing MP4s; seven clips
+now have skeleton MP4/native ASD AVI (1343 JPGs, 261 guides), with fourteen prior ASD raw
+versions in `speaker/raw/history/`. Assumption: new previews must match rechecked raw
+measurements before installation, and reuse observed matching results rather than
+re-execute external tools. No inputs, native raw bytes or Parquet tables changed; the
+local profile uses the repository-local TalkNet mirror, not operator scripts or `/tmp`
+weights.
 
 ## Verification and recovery
 
-- Stable unit/e2e: **2126 passed, 12 skipped**; focused current surfaces: **136 passed**.
-  Independent review found and rechecked failed-mux data loss, lexical symlink shell
-  injection, video-only provenance, truncation and false ownership of human notes.
-  Named regressions and sensitivity mutations observed RED then GREEN; not mock-only
-  codec evidence. AST/compile and `git diff --check` pass.
-- Real seven-clip OpenPose/TalkNet previews decode with video/audio. A genuinely audio-less
-  native source also passed with video only; its first concurrent run failed GPU OOM,
-  then passed in isolation. Offline build failed: missing hatchling; ruff unavailable.
-- Corpus validation initially failed seven stale ASD request sidecars. Genuine matching
-  results/sidecars were installed with version archives, then ASD normalization reused raw
-  in seven logs (no model run). Final validate: **7/7 OK**, exit 0. All **205 Parquet**
-  tables remain semantically and byte-identical; input/native raw hashes unchanged.
-  This does not establish accuracy, desktop ELAN or regenerate changed spaCy settings.
-- Review workload is split by work unit (ASD preservation, skeleton preview, output guides),
-  not file type. The guide unit is large because readable contract prose and behavior tests
-  are retained, not compressed. Native RDD remains ON; only observed current authority
-  establishes closure. This document and historical `7707fb3` prove no new closure.
-- Recovery: `checkpoint/resume-explanations-7707fb3`, plus
-  `.git/resume-explanations-checkpoint/` contains the initial diff, local config backups,
-  hashes, native checks and full corpus backup before metadata renewal. No downloads,
-  paid API requests, original input edits or external TalkNet script edits were made.
+- Previous candidate, re-measured then: stable unit/e2e **2126 passed, 12 skipped**;
+  corpus validate **7/7 OK** with all **205 Parquet** tables unchanged. Independent
+  review found and rechecked failed-mux data loss, lexical symlink shell injection,
+  video-only provenance, truncation and false ownership of human notes; named
+  regressions and sensitivity mutations observed RED then GREEN.
+- Native RDD remains ON; only observed current authority establishes closure. This
+  document and historical `7707fb3` prove no new closure.
+- Recovery: `checkpoint/resume-explanations-7707fb3` plus
+  `.git/resume-explanations-checkpoint/` hold the initial diff, config backups, hashes,
+  native checks and a full corpus backup before metadata renewal. No downloads, paid API
+  requests, original input edits or external TalkNet script edits were made.
 
 ## Known limitations and documentation policy
 
 - Person tracks/diarizer labels are not identities. Sighting gaps are not absence
   durations; person tables cannot prove sampled-frame coverage.
-- Story candidates lack validated ground truth; temperature zero is not service
-  determinism. Retained bytes/cache support auditing, not accuracy claims.
+- Storytelling-event/story candidates lack validated ground truth; temperature zero
+  is not service determinism. Retained bytes/cache support auditing, not accuracy
+  claims. Diarized speaker labels are arbitrary ids, not identities.
 - Historical review advisories (fusion, pose assembly, persons and figure errors)
   without finding detail remain unconfirmed, not invented fixes.
 - Derived source fingerprints can lose readable-module coverage when another module

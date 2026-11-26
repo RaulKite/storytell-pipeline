@@ -41,7 +41,8 @@ a reason. If those inputs disappear after enablement, execution can fail.
 | `formant_blocks` | F1/F2/F3 low-median bins in a 100 ms window |
 
 No tier exports `linguistic/*`, acoustic segment statistics, hand/face landmarks,
-normalized pose coordinates or `stories` candidates. These remain in the dataset.
+normalized pose coordinates or the `stories` stage's tables (`storytelling_events`,
+`stories`, `uncertain_spans`). These remain in the dataset.
 `person_frames` and `frame_index` support the sightings tier without becoming
 independent tiers. Exact mappings live in [`elan.py`](../src/multimodal_pipeline/elan.py).
 

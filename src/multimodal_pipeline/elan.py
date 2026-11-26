@@ -716,10 +716,13 @@ POSE_DENSE_TRACK_REASON = (
     "confidences alone, so these joints' coordinates stay in the Parquet table")
 
 STORIES_TABLE_REASON = (
-    "narrative-level claims are not represented by this export: no tier reads this table, "
-    "and no existing tier represents a stretch of speech as a story — the transcript tiers "
-    "(`segments_src`, `words`) block over individual segments' own rows and never group them, "
-    "so a story's span and its `why_it_is_a_story` have no bar to reach")
+    "narrative-level claims are not represented by this export: no tier reads these tables, "
+    "and no existing tier represents a stretch of speech as a storytelling event or as a "
+    "story told inside one — the transcript tiers (`segments_src`, `words`) block over "
+    "individual segments' own rows and never group them, so an event's launch and coda, a "
+    "story's separate span and the model's own `summary`/`notes` have no bar to reach. The "
+    "three tables (`storytelling_events`, `stories`, `uncertain_spans`) are unchanged on "
+    "disk and readable as Parquet")
 
 SPACY_TABLES_REASON = (
     "token- and sentence-level morphosyntax is not represented by this export: these tables "
