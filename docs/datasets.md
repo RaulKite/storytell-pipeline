@@ -32,7 +32,7 @@ Commands use repository-relative paths: run them from the repository root.
 ├── pose/               body, hands, face, normalized + raw/ and optional raw_images/
 ├── persons/            detections, tracks + raw/yolo_track.json
 ├── speaker/            active-speaker evidence, fusion + raw/
-├── stories/            events, stories, uncertain spans + raw responses/cache
+├── stories/            events, stories, uncertain spans + raw responses, rejected attempts, cache
 ├── elan/               annotations.eaf
 ├── logs/               pipeline.log + <stage>.log
 └── provenance/         config.json, tools.json, processing.json
@@ -97,7 +97,7 @@ Presence is determined by the manifest, not this inventory.
 | `speaker_fusion_pyannote` | `speaker/fusion_pyannote.parquet` | pyannote turn × face evidence agreement |
 | `speaker_fusion_nemotron` | `speaker/fusion_nemotron.parquet` | Nemotron turn × face evidence agreement |
 | `storytelling_events` | `stories/storytelling_events.parquet` | LLM storytelling-event boundaries (pre-telling/launch … coda/shift) with cited segment, verbatim quote and computed times |
-| `stories` | `stories/stories.parquet` | The represented "what" told inside an event, with its own start/end boundaries |
+| `stories` | `stories/stories.parquet` | The represented "what" told inside an event, with its own start/end boundaries, the model's `story_evidence` explanations and the `evidence_segment_ids` they rest on |
 | `uncertain_spans` | `stories/uncertain_spans.parquet` | Stretches the LLM marked but could not place, with the stated reason |
 
 ### How the tables join

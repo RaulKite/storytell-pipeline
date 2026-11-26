@@ -51,13 +51,15 @@ def _number(value: Any) -> float | None:
 
 
 def coverage(turns: Sequence[Mapping[str, Any]], start: float, end: float) -> dict[str, float]:
-    """Seconds of ``[start, end)`` each speaker's turns cover.
+    """Seconds of ``[start, end)`` each speaker's turns cover, as a **union**.
 
-    Summed per speaker, so two turns of the same speaker covering the same instant count
-    twice. That is intentional: it can only make a competing speaker look *stronger*, and
-    the rule's job in the overlap case is to refuse a label, not to award one.
+    A speaker's turns are merged before they are measured, so two of their own turns
+    covering the same instant cover it once. Summing them would let a speaker reach
+    ``min_coverage`` on 40 % of a word by being diarized twice over it, which is exactly
+    the arithmetic the rule exists to refuse: the quantity being compared against a share
+    of the word's duration is *time held*, and no instant is held twice.
     """
-    totals: dict[str, float] = {}
+    intervals: dict[str, list[tuple[float, float]]] = {}
     for turn in turns:
         speaker = str(turn.get("speaker_id") or "").strip()
         if not speaker:
@@ -66,9 +68,22 @@ def coverage(turns: Sequence[Mapping[str, Any]], start: float, end: float) -> di
         turn_end = _number(turn.get("end_time"))
         if turn_start is None or turn_end is None or turn_end <= turn_start:
             continue
-        overlap = max(0.0, min(end, turn_end) - max(start, turn_start))
-        if overlap:
-            totals[speaker] = totals.get(speaker, 0.0) + overlap
+        low, high = max(start, turn_start), min(end, turn_end)
+        if high > low:
+            intervals.setdefault(speaker, []).append((low, high))
+    totals: dict[str, float] = {}
+    for speaker, spans in intervals.items():
+        total = 0.0
+        current_start, current_end = spans[0]
+        for low, high in sorted(spans)[1:]:
+            if low > current_end:
+                total += current_end - current_start
+                current_start, current_end = low, high
+            else:
+                current_end = max(current_end, high)
+        total += current_end - current_start
+        if total:
+            totals[speaker] = total
     return totals
 
 
@@ -128,23 +143,24 @@ def attribute_segments(segments: Sequence[Mapping[str, Any]],
             for segment in segments]
 
 
-def render_speaker_runs(text: str, spans: Sequence[tuple[int, int] | None],
-                        labels: Sequence[str]) -> str:
-    """``[speaker_0] words… [unknown] more words`` for one segment's text.
+def speaker_runs(text: str, spans: Sequence[tuple[int, int] | None],
+                 labels: Sequence[str]) -> list[tuple[str, str]]:
+    """``[(label, piece), …]``: the runs one segment's text is split into.
 
     ``spans`` are the word character ranges inside ``text`` (``None`` for a word whose
     position could not be resolved) and ``labels`` the label of each word. Every piece is
-    a **substring of the segment text**, so a quote the model copies out of this rendering
+    a **substring of the segment text**, so a quote the model copies out of the rendering
     is still findable in the transcript; only whitespace at a run boundary is collapsed.
     A word without a span stays inside the surrounding run rather than being dropped or
-    moved.
+    moved — which also means its own label never reaches the prompt, and so cannot be
+    named by the answer.
 
     With no words at all the whole text becomes one ``[unknown]`` run: the prompt must
     never show text with no label, because the model is asked to say where a boundary
     sits in *attributed* speech.
     """
     if not text.strip():
-        return f"[{UNKNOWN_SPEAKER}]"
+        return [(UNKNOWN_SPEAKER, "")]
     pieces: list[tuple[str, int, int]] = []
     current: str | None = None
     run_start = 0
@@ -164,8 +180,33 @@ def render_speaker_runs(text: str, spans: Sequence[tuple[int, int] | None],
         # two words land in exactly one piece and no character is invented or lost.
         current, run_start, last_end = label, last_end, end
     if current is None:
-        return f"[{UNKNOWN_SPEAKER}] {text.strip()}"
+        return [(UNKNOWN_SPEAKER, text.strip())]
     pieces.append((current, run_start, len(text)))
-    rendered = " ".join(f"[{label}] {text[start:stop].strip()}"
-                        for label, start, stop in pieces if text[start:stop].strip())
-    return rendered or f"[{UNKNOWN_SPEAKER}] {text.strip()}"
+    runs = [(label, text[start:stop].strip()) for label, start, stop in pieces
+            if text[start:stop].strip()]
+    return runs or [(UNKNOWN_SPEAKER, text.strip())]
+
+
+def render_speaker_runs(text: str, spans: Sequence[tuple[int, int] | None],
+                        labels: Sequence[str]) -> str:
+    """``[speaker_0] words… [unknown] more words`` for one segment's text."""
+    return render_runs(speaker_runs(text, spans, labels))
+
+
+def render_runs(runs: Sequence[tuple[str, str]]) -> str:
+    """The one-line form of ``speaker_runs``: ``[label] piece`` joined by a space."""
+    return " ".join(f"[{label}] {piece}".strip() for label, piece in runs)
+
+
+def emitted_labels(runs: Sequence[tuple[str, str]]) -> list[str]:
+    """The labels a rendering actually shows, in order of first appearance.
+
+    This, and not the per-word label list, is what the answer may name: a word whose
+    position could not be resolved is folded into a neighbouring run, so its own label is
+    absent from the prompt and naming it would be a claim about words the model never saw.
+    """
+    shown: list[str] = []
+    for label, _piece in runs:
+        if label not in shown:
+            shown.append(label)
+    return shown

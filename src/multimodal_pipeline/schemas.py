@@ -268,8 +268,13 @@ STORIES_SCHEMA = pa.schema(
         ("tellers", pa.string()),
         # The represented "what", in the model's words.
         ("summary", pa.string()),
-        # JSON array of `segment_id`s the story is carried by.
+        # JSON array of the model's short explanations of why this stretch is a story
+        # (which events are represented, how they connect, embodiment/intentionality/
+        # evaluation). Explanations, not ids: the ids are in `evidence_segment_ids`.
         ("story_evidence", pa.string()),
+        # JSON array of `segment_id`s carrying that evidence, all inside this story's own
+        # start..end segment range.
+        ("evidence_segment_ids", pa.string()),
         ("confidence", pa.string()),
         ("notes", pa.string()),
         ("window_index", pa.int32()),

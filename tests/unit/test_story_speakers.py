@@ -94,9 +94,22 @@ class TestIntervalAttribution:
         assert attribute_interval(turns, 0.0, 1.0,
                                   max_competing=0.05) == UNKNOWN_SPEAKER
 
-    def test_coverage_sums_per_speaker(self) -> None:
+    def test_coverage_takes_the_union_of_a_speakers_turns(self) -> None:
         turns = [turn("speaker_0", 0.0, 0.5), turn("speaker_0", 0.5, 1.0)]
         assert coverage(turns, 0.0, 1.0) == {"speaker_0": pytest.approx(1.0)}
+
+    def test_overlapping_same_speaker_turns_do_not_double_count(self) -> None:
+        """Being diarized twice over the same instant is not holding the floor twice."""
+        turns = [turn("speaker_0", 0.0, 0.6), turn("speaker_0", 0.4, 1.0)]
+        assert coverage(turns, 0.0, 1.0) == {"speaker_0": pytest.approx(1.0)}
+
+    def test_a_doubly_diarized_speaker_cannot_reach_the_threshold_by_repetition(self) -> None:
+        # Summed, these two turns cover 0.7 s of the 1 s word (past the 0.6 threshold);
+        # their union covers 0.55 s (below it). The label is refused, as it must be: the
+        # speaker did not hold the word.
+        turns = [turn("speaker_0", 0.0, 0.35), turn("speaker_0", 0.2, 0.55)]
+        assert coverage(turns, 0.0, 1.0) == {"speaker_0": pytest.approx(0.55)}
+        assert attribute_interval(turns, 0.0, 1.0) == UNKNOWN_SPEAKER
 
 
 class TestWordAttribution:

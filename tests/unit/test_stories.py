@@ -59,10 +59,12 @@ from multimodal_pipeline.stages.stories import (
     StoriesClient,
     StoriesStage,
     StoriesTransportError,
+    _drop_counts,
     build_requests,
     locate_quote,
     parse_stories_response,
     prepare_segments,
+    quote_occurrences,
     validate_response,
 )
 
@@ -201,7 +203,9 @@ def story_payload(request, **overrides: Any) -> dict[str, Any]:
                 "reason": "the last represented event"},
         "tellers": [label(request, "seg000001"), label(request, "seg000002")],
         "summary": "a wedding ring rolled down the side of the sofa",
-        "story_evidence": ["seg000001", "seg000002"],
+        "story_evidence": ["a wedding ring rolling away is one represented event",
+                           "the speaker's embarrassment evaluates that experience"],
+        "evidence_segment_ids": ["seg000001", "seg000002"],
         "confidence": "high",
         "notes": "",
     }
@@ -419,18 +423,29 @@ class TestPrompt:
     def test_the_output_contract_keeps_the_experts_field_names(self) -> None:
         prompt = PROMPTS["v2"]
         for field in ("storytelling_events", "story_ids", "interruptions_or_resumptions",
-                      "tellers", "story_evidence", "uncertain_spans", "summary", "issue"):
+                      "tellers", "story_evidence", "evidence_segment_ids",
+                      "uncertain_spans", "summary", "issue"):
             assert field in prompt, field
         assert "time_seconds" not in prompt
 
-    def test_the_transcript_lines_show_ids_boundaries_and_speaker_runs(self) -> None:
+    def test_the_transcript_lines_show_text_and_speaker_runs_separately(self) -> None:
         prompt = request_for(speaker_source="pyannote").prompt()
         assert "VIDEO: conversation_001" in prompt
         for row in SEGMENTS:
             assert row["segment_id"] in prompt
             assert f"{float(row['start_time']):.3f}" in prompt
-        assert "[SPEAKER_00] I was fiddling with my wedding ring" in prompt
-        assert "[SPEAKER_01] it rolled down the side of the sofa" in prompt
+        assert ("- segment_id=seg000001 start=3.000 end=5.500\n"
+                "  text: I was fiddling with my wedding ring\n"
+                "  speakers: [SPEAKER_00] I was fiddling with my wedding ring") in prompt
+        assert ("  text: it rolled down the side of the sofa\n"
+                "  speakers: [SPEAKER_01] it rolled down the side of the sofa") in prompt
+
+    def test_the_prompt_says_quotes_come_from_the_text_line_and_must_be_unique(self) -> None:
+        prompt = PROMPTS["v2"]
+        assert "Copy exact wording into transcript_quote from the `text:` line" in prompt
+        assert "occurs only ONCE in that segment" in prompt
+        # And the renderer really shows the line the rule talks about.
+        assert "\n  text: " in request_for().prompt()
 
     def test_an_unknown_prompt_version_fails_loudly(self) -> None:
         request = request_for(prompt_version="v1")
@@ -444,14 +459,42 @@ class TestPrompt:
         changed = [dict(SEGMENTS[0], text="a different line")] + SEGMENTS[1:]
         assert request_for(changed).key() != base
 
-    def test_the_key_moves_with_the_speaker_source_and_its_thresholds(self) -> None:
+    def test_the_key_follows_the_rendered_labels(self) -> None:
         """A relabelled transcript is a different question, not the same one re-asked."""
         base = request_for(speaker_source="pyannote").key()
         assert request_for(speaker_source="none").key() != base
+        # A threshold that leaves every rendered run unchanged leaves the question
+        # unchanged: the model is shown the same transcript, so the answer is reusable.
+        # Binding the *threshold* rather than the rendering would throw a paid answer away
+        # for a setting that changed nothing.
         assert request_for(speaker_source="pyannote",
-                           speaker_min_coverage=0.9).key() != base
-        assert request_for(speaker_source="pyannote",
-                           speaker_max_competing=0.01).key() != base
+                           speaker_min_coverage=0.9).key() == base
+        turns = [turn("speaker_0", 3.0, 11.5, index=1), turn("speaker_1", 3.0, 11.5, index=2)]
+        strict = prepared(turns=turns, speaker_source="nemotron", speaker_max_competing=0.1)
+        lenient = prepared(turns=turns, speaker_source="nemotron", speaker_max_competing=99.0)
+        assert [row["speaker_runs"] for row in strict] != [
+            row["speaker_runs"] for row in lenient]
+        assert (request_for(rows=strict).key() != request_for(rows=lenient).key())
+
+    def test_the_key_moves_with_extra_body_and_the_posted_body(self) -> None:
+        """`extra_body` changes the answer without changing one character of the prompt."""
+        base = request_for().key()
+        assert request_for(extra_body={"top_p": 0.5}).key() != base
+        assert request_for(max_output_tokens=64).key() != base
+        rendered = request_for(extra_body={"top_p": 0.5})
+        assert rendered.body()["top_p"] == 0.5
+        assert rendered.body()["model"] == "chat"
+        assert rendered.body()["messages"][0]["content"] == rendered.prompt()
+
+    def test_the_key_moves_with_a_context_segment_time(self) -> None:
+        """Context timestamps are part of the prompt, and were once missing from the key."""
+        rows = prepared()
+        base = request_for(rows=rows, max_segments_per_request=2, context_segments=1,
+                           index=0).key()
+        moved = [dict(row) for row in rows]
+        moved[2]["start_time"] = 8.75  # a context segment of the first window
+        assert request_for(rows=moved, max_segments_per_request=2, context_segments=1,
+                           index=0).key() != base
 
     def test_the_key_moves_when_only_the_rendered_runs_move(self) -> None:
         base = request_for().key()
@@ -585,29 +628,130 @@ class TestBoundaryTimes:
         assert locate_quote("not that 1", "not that one") is None
         assert locate_quote("well I said", "Well, I said") is None
 
-    def test_character_offsets_are_used_when_they_index_into_the_text(self) -> None:
-        words = word_rows(SEGMENTS)
-        text = SEGMENTS[0]["text"]
-        offset = 0
-        for row in words:
-            if row["segment_id"] == "seg000001":
-                row["character_start"] = text.index(row["word"], offset)
-                row["character_end"] = row["character_start"] + len(row["word"])
-                offset = row["character_end"]
-        request = request_for(rows=prepared(words=words))
-        validated = validate_response(honest_answer(request), request)
-        assert validated.stories[0]["start_time"] == pytest.approx(3.0 + 3 * (2.5 / 7))
+    def test_a_quote_inside_another_word_is_not_a_match(self) -> None:
+        """Telediario seg000002: the quote "a" used to match inside "Ahora"."""
+        text = "Ahora vamos a retroceder."
+        assert quote_occurrences("a", text) == [(12, 13)]
+        assert locate_quote("a", text) == (12, 13)
+        # A prefix of a word is not a word either: "Ah" does not end where a token ends.
+        assert quote_occurrences("Ah", text) == []
 
-    def test_offsets_that_do_not_index_into_the_text_are_ignored(self) -> None:
-        """The real corpus has NULL offsets; a *wrong* one must not be trusted either.
+    def test_a_word_boundary_quote_reads_the_real_word(self) -> None:
+        """Juman seg000007 repeats "that"; the quote has to be word-aligned to be found."""
+        text = "that was the thing that rolled away"
+        assert quote_occurrences("that", text) == [(0, 4), (19, 23)]
+        assert locate_quote("that", text) is None  # ambiguous, so not a location
+        assert locate_quote("that was the thing", text) == (0, 18)
 
-        Every column offset here points at character 0, so the slice never equals the word
-        it claims to be. The ordered scan has to place the words anyway.
+    def test_the_word_alignment_does_not_depend_on_the_column_offsets(self) -> None:
+        """Every character offset in the corpus is NULL; a wrong one must not be trusted.
+
+        The placement is the token alignment of the segment's own text, so offsets that
+        point at the wrong characters (all of them point at character 0 here) change
+        nothing.
         """
         words = [dict(row, character_start=0, character_end=3) for row in WORDS]
         request = request_for(rows=prepared(words=words))
         validated = validate_response(honest_answer(request), request)
         assert validated.stories[0]["start_time"] == pytest.approx(3.0 + 3 * (2.5 / 7))
+
+    def test_a_contraction_split_into_two_alignment_words_is_one_token(self) -> None:
+        """``can`` + ``'t`` is the transcript's ``can't``: the token's own edges are used."""
+        segments = [segment(1, text="I can't do it"), segment(2, text="she left")]
+        words = [
+            {"segment_id": "seg000001", "word": "I", "start_time": 3.0, "end_time": 3.2},
+            {"segment_id": "seg000001", "word": "can", "start_time": 3.2, "end_time": 3.4},
+            {"segment_id": "seg000001", "word": "'t", "start_time": 3.4, "end_time": 3.6},
+            {"segment_id": "seg000001", "word": "do", "start_time": 3.6, "end_time": 3.8},
+            {"segment_id": "seg000001", "word": "it", "start_time": 3.8, "end_time": 4.0},
+            {"segment_id": "seg000002", "word": "she", "start_time": 6.0, "end_time": 6.2},
+            {"segment_id": "seg000002", "word": "left", "start_time": 6.2, "end_time": 6.4},
+        ]
+        request = request_for(segments, words=words)
+        payload = answer(events=[{
+            "event_id": "SE1",
+            "start": {"segment_id": "seg000001", "transcript_quote": "can't do",
+                      "speaker": "unknown", "boundary_type": "pre_telling", "reason": "x"},
+            "end": {"segment_id": "seg000002", "transcript_quote": "she left",
+                    "speaker": "unknown", "boundary_type": "coda", "reason": "x"},
+            "story_ids": ["S1"], "tellers": ["unknown"],
+            "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}],
+            stories=[{
+                "story_id": "S1", "event_id": "SE1",
+                "start": {"segment_id": "seg000001", "transcript_quote": "can't",
+                          "speaker": "unknown", "reason": "x"},
+                "end": {"segment_id": "seg000001", "transcript_quote": "can't do it",
+                        "speaker": "unknown", "reason": "x"},
+                "tellers": ["unknown"], "summary": "s",
+                "story_evidence": ["one represented event"],
+                "evidence_segment_ids": ["seg000001"], "confidence": "high", "notes": ""}])
+        validated = validate_response(payload, request)
+        story = validated.stories[0]
+        # "can't" starts at the "can" that was split out of it and ends at the "'t".
+        assert story["start_time"] == pytest.approx(3.2)
+        assert story["start_time_precision"] == "word"
+        assert story["end_time"] == pytest.approx(4.0)
+        assert story["end_time_precision"] == "word"
+
+    def test_an_unaligned_edge_word_falls_back_to_the_segment_not_a_neighbour(self) -> None:
+        """WhisperX aligned ``twelve``; the transcript says ``12`` — so no time is borrowed.
+
+        The end of ``is 12`` must not become the end of ``is`` (word precision it has not
+        earned) nor the end of ``twelve`` (a word the quote does not contain). It is the
+        cited segment's own end, labelled ``segment``.
+        """
+        segments = [segment(1, text="the value is 12"), segment(2, text="she left")]
+        words = [
+            {"segment_id": "seg000001", "word": "the", "start_time": 3.0, "end_time": 3.2},
+            {"segment_id": "seg000001", "word": "value", "start_time": 3.2, "end_time": 3.4},
+            {"segment_id": "seg000001", "word": "is", "start_time": 3.4, "end_time": 3.6},
+            {"segment_id": "seg000001", "word": "twelve", "start_time": 3.6, "end_time": 3.8},
+            {"segment_id": "seg000002", "word": "she", "start_time": 6.0, "end_time": 6.2},
+            {"segment_id": "seg000002", "word": "left", "start_time": 6.2, "end_time": 6.4},
+        ]
+        request = request_for(segments, words=words)
+        payload = answer(events=[{
+            "event_id": "SE1",
+            "start": {"segment_id": "seg000001", "transcript_quote": "the value is 12",
+                      "speaker": "unknown", "boundary_type": "pre_telling", "reason": "x"},
+            "end": {"segment_id": "seg000002", "transcript_quote": "she left",
+                    "speaker": "unknown", "boundary_type": "coda", "reason": "x"},
+            "story_ids": ["S1"], "tellers": ["unknown"],
+            "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}],
+            stories=[{
+                "story_id": "S1", "event_id": "SE1",
+                "start": {"segment_id": "seg000001", "transcript_quote": "the value is 12",
+                          "speaker": "unknown", "reason": "x"},
+                "end": {"segment_id": "seg000001", "transcript_quote": "is 12",
+                        "speaker": "unknown", "reason": "x"},
+                "tellers": ["unknown"], "summary": "s",
+                "story_evidence": ["one represented event"],
+                "evidence_segment_ids": ["seg000001"], "confidence": "high", "notes": ""}])
+        validated = validate_response(payload, request)
+        event = validated.events[0]
+        story = validated.stories[0]
+        assert event["start_time"] == pytest.approx(3.0)
+        assert event["start_time_precision"] == "word"
+        assert story["end_time"] == pytest.approx(5.5)  # the segment's own end
+        assert story["end_time_precision"] == "segment"
+        assert story["end_time"] != pytest.approx(3.6)  # not the "is" that precedes it
+        assert story["end_time"] != pytest.approx(3.8)  # not the "twelve" it never said
+
+    def test_inverted_marks_do_not_hide_the_edge_word(self) -> None:
+        """``¿Qué`` is the token ``Qué``: the mark is at the edge, not part of the word."""
+        segments = [segment(1, text="¿Qué pasa aquí?"), segment(2, text="nada")]
+        words = [
+            {"segment_id": "seg000001", "word": "Qué", "start_time": 3.0, "end_time": 3.2},
+            {"segment_id": "seg000001", "word": "pasa", "start_time": 3.2, "end_time": 3.4},
+            {"segment_id": "seg000001", "word": "aquí", "start_time": 3.4, "end_time": 3.6},
+            {"segment_id": "seg000002", "word": "nada", "start_time": 6.0, "end_time": 6.2},
+        ]
+        rows = prepare_segments(segments, words, [], speaker_source="none")
+        assert [token["start_time"] for token in rows[0]["tokens"]] == [
+            pytest.approx(3.0), pytest.approx(3.2), pytest.approx(3.4)]
+        request = build_requests(rows, video_id="v", max_segments_per_request=None,
+                                 context_segments=0)
+        assert quote_occurrences("¿Qué pasa!", "¿Qué pasa!") == [(1, 9)]
 
     def test_a_word_the_text_does_not_contain_gets_no_timing(self) -> None:
         words = [dict(row, word="GONE") if row["segment_id"] == "seg000001" else row
@@ -791,13 +935,68 @@ class TestValidation:
             validate_response(answer(events=[event_payload(request, tellers=["narrator"])],
                                      stories=[story_payload(request)]), request)
 
-    def test_an_invented_story_evidence_id_is_refused(self) -> None:
+    @pytest.mark.parametrize("evidence", [None, [], ["   "], "one explanation", [1],
+                                           ["", "an explanation"]])
+    def test_story_evidence_is_required_and_every_entry_is_an_explanation(
+            self, evidence: Any) -> None:
+        request = request_for()
+        payload = answer(events=[event_payload(request)],
+                         stories=[story_payload(request, story_evidence=evidence)])
+        with pytest.raises(ValidationError, match="story_evidence"):
+            validate_response(payload, request)
+
+    def test_story_evidence_explanations_are_stored_verbatim(self) -> None:
+        request = request_for()
+        validated = validate_response(honest_answer(request), request)
+        evidence = json.loads(validated.stories[0]["story_evidence"])
+        assert evidence == ["a wedding ring rolling away is one represented event",
+                            "the speaker's embarrassment evaluates that experience"]
+
+    def test_a_story_without_evidence_segment_ids_is_refused(self) -> None:
+        request = request_for()
+        story = story_payload(request)
+        story.pop("evidence_segment_ids")
+        with pytest.raises(ValidationError, match="evidence_segment_ids is required"):
+            validate_response(answer(events=[event_payload(request)], stories=[story]),
+                              request)
+
+    def test_an_evidence_id_outside_the_story_range_is_refused(self) -> None:
+        """Evidence for a story that spans seg000001..seg000002 cannot be seg000003."""
         request = request_for()
         payload = answer(events=[event_payload(request)],
                          stories=[story_payload(request,
-                                                story_evidence=["seg000001", "nope"])])
-        with pytest.raises(ValidationError, match="story_evidence"):
+                                                evidence_segment_ids=["seg000003"])])
+        with pytest.raises(ValidationError, match="outside the story's own"):
             validate_response(payload, request)
+
+    def test_an_invented_evidence_segment_id_is_refused(self) -> None:
+        request = request_for()
+        payload = answer(events=[event_payload(request)],
+                         stories=[story_payload(request,
+                                                evidence_segment_ids=["seg000001",
+                                                                      "nope"])])
+        with pytest.raises(ValidationError, match="not in this transcript"):
+            validate_response(payload, request)
+
+    def test_an_ambiguous_quote_is_a_breach_that_asks_for_more_words(self) -> None:
+        """A quote that occurs twice says nothing about where the boundary is."""
+        segments = [segment(1, text="that was that"), segment(2, text="then she left")]
+        request = request_for(segments, words=word_rows(segments))
+        payload = answer(events=[{
+            "event_id": "SE1",
+            "start": {"segment_id": "seg000001", "transcript_quote": "that",
+                      "speaker": "unknown", "boundary_type": "pre_telling",
+                      "reason": "which one?"},
+            "end": {"segment_id": "seg000002", "transcript_quote": "then she left",
+                    "speaker": "unknown", "boundary_type": "coda", "reason": "x"},
+            "story_ids": [], "tellers": ["unknown"],
+            "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}])
+        with pytest.raises(ValidationError, match="occurs 2 times") as excinfo:
+            validate_response(payload, request)
+        assert "quote more surrounding words" in str(excinfo.value)
+        # The retry the message asks for is the answer that passes.
+        payload["storytelling_events"][0]["start"]["transcript_quote"] = "that was that"
+        assert len(validate_response(payload, request).events) == 1
 
     def test_an_interruption_outside_the_event_window_ids_is_refused(self) -> None:
         request = request_for()
@@ -883,8 +1082,10 @@ class TestWindowedDrops:
         payload = answer(events=[event_payload(request)], stories=[story_payload(request)])
         validated = validate_response(payload, request)
         assert validated.events == [] and validated.stories == []
-        assert {item["kind"] for item in validated.dropped} == {"event", "story"}
-        assert any("seg000003" in item["reason"] for item in validated.dropped)
+        # One dropped event, carrying one story: the group is one gap in the answer.
+        assert [item["kind"] for item in validated.dropped] == ["event"]
+        assert validated.dropped[0]["child_story_ids"] == ["S1"]
+        assert "seg000003" in validated.dropped[0]["reason"]
 
     def test_an_event_inside_the_window_is_kept(self) -> None:
         request = self.windowed()[0]
@@ -896,6 +1097,41 @@ class TestWindowedDrops:
         validated = validate_response(payload, request)
         assert len(validated.events) == 1 and len(validated.stories) == 1
         assert validated.dropped == []
+
+    def test_a_cross_window_event_with_a_context_interruption_is_dropped_not_rejected(
+            self) -> None:
+        """A neighbouring window's event is a counted gap, not a reason to retry forever."""
+        request = self.windowed()[0]  # seg000001..seg000002, context seg000003
+        payload = answer(events=[event_payload(request, interruptions_or_resumptions=[{
+            "start_segment_id": "seg000003", "end_segment_id": "seg000003",
+            "transcript_quote": SEGMENTS[2]["text"],
+            "description": "a coda that belongs to the next window"}])],
+            stories=[story_payload(request)])
+        validated = validate_response(payload, request)
+        assert validated.events == [] and validated.stories == []
+        assert [item["kind"] for item in validated.dropped] == ["event"]
+        assert validated.dropped[0]["child_story_ids"] == ["S1"]
+        assert "seg000003" in validated.dropped[0]["reason"]
+
+    def test_the_dropped_event_is_counted_once_and_its_stories_apart(self) -> None:
+        request = self.windowed()[0]
+        payload = answer(events=[event_payload(request, story_ids=["S1", "S2"])],
+                         stories=[story_payload(request),
+                                  story_payload(request, story_id="S2",
+                                                summary="a second telling")])
+        validated = validate_response(payload, request)
+        assert _drop_counts(validated.dropped) == {"events": 1, "stories": 2,
+                                                  "uncertain_spans": 0}
+
+    def test_an_interruption_from_a_segment_nobody_was_shown_is_still_a_breach(self) -> None:
+        rows = prepared()
+        request = build_requests(rows, video_id="v", max_segments_per_request=2,
+                                 context_segments=0)[0]
+        payload = answer(events=[event_payload(request, interruptions_or_resumptions=[{
+            "start_segment_id": "seg000003", "end_segment_id": "seg000003",
+            "transcript_quote": SEGMENTS[2]["text"], "description": "invented visibility"}])])
+        with pytest.raises(ValidationError, match="not shown in this request"):
+            validate_response(payload, request)
 
     def test_an_uncertain_span_entirely_outside_the_window_is_dropped(self) -> None:
         request = self.windowed()[0]
@@ -935,6 +1171,70 @@ class TestSpeakerSources:
         rows = prepared(words=[], turns=turns, speaker_source="nemotron")
         assert [row["speaker_runs"].split("]")[0] + "]" for row in rows] == [
             "[speaker_0]", "[speaker_1]", "[speaker_0]"]
+
+    def test_allowed_labels_are_the_ones_the_runs_really_emitted(self) -> None:
+        """A word folded into a neighbour's run never shows its own label."""
+        segments = [segment(1, text="hello there"), segment(2, text="yes")]
+        words = [
+            {"segment_id": "seg000001", "word": "hello", "start_time": 3.0,
+             "end_time": 3.5, "speaker_id": "speaker_0"},
+            # Not a word of the text, so it is placed nowhere: it stays inside
+            # speaker_0's run and speaker_1 never appears in the prompt.
+            {"segment_id": "seg000001", "word": "GONE", "start_time": 3.5, "end_time": 4.0,
+             "speaker_id": "speaker_1"},
+            {"segment_id": "seg000001", "word": "there", "start_time": 4.0,
+             "end_time": 4.5, "speaker_id": "speaker_0"},
+            {"segment_id": "seg000002", "word": "yes", "start_time": 6.0, "end_time": 6.5,
+             "speaker_id": "speaker_0"},
+        ]
+        rows = prepared(segments, words=words, speaker_source="pyannote")
+        assert rows[0]["speaker_runs"] == "[speaker_0] hello there"
+        assert rows[0]["speaker_labels"] == ["speaker_0"]
+        request = build_requests(rows, video_id="v", max_segments_per_request=None,
+                                 context_segments=0)[0]
+        assert request.speaker_labels == frozenset({"speaker_0", "unknown"})
+        payload = answer(events=[{
+            "event_id": "SE1",
+            "start": {"segment_id": "seg000001", "transcript_quote": "hello there",
+                      "speaker": "speaker_1", "boundary_type": "pre_telling",
+                      "reason": "a label the prompt never showed"},
+            "end": {"segment_id": "seg000002", "transcript_quote": "yes",
+                    "speaker": "speaker_0", "boundary_type": "coda", "reason": "x"},
+            "story_ids": [], "tellers": ["speaker_0"],
+            "interruptions_or_resumptions": [], "confidence": "high", "notes": ""}])
+        with pytest.raises(ValidationError, match="speaker_1"):
+            validate_response(payload, request)
+
+    def test_a_context_label_is_visible_and_therefore_allowed(self) -> None:
+        rows = prepared(turns=[turn("speaker_0", 3.0, 5.5, index=1),
+                               turn("speaker_1", 6.0, 8.5, index=2),
+                               turn("speaker_2", 9.0, 11.5, index=3)],
+                        speaker_source="nemotron")
+        request = build_requests(rows, video_id="v", max_segments_per_request=2,
+                                 context_segments=1)[0]
+        assert request.requested_ids == ["seg000001", "seg000002"]
+        assert "speaker_2" in request.speaker_labels  # shown in the context only
+        payload = answer(events=[event_payload(
+            request, end={"segment_id": "seg000002", "transcript_quote": "sofa",
+                          "speaker": "speaker_1", "boundary_type": "coda",
+                          "reason": "ends here"},
+            tellers=["speaker_2"])],
+            stories=[story_payload(request, tellers=["speaker_2"])])
+        validated = validate_response(payload, request)
+        assert json.loads(validated.events[0]["tellers"]) == ["speaker_2"]
+
+    def test_pyannote_with_no_labels_at_all_is_used_none_and_says_so(self, context) -> None:
+        use_stage_config(context, speaker_source="pyannote")
+        seed_segments(context, [dict(row, speaker_id=None) for row in SEGMENTS])
+        seed_words(context, [dict(row, speaker_id=None) for row in WORDS])
+        messages = log_recorder(context)
+        run_stage(context)
+        recorded = summary(context)
+        assert recorded["speaker_source_requested"] == "pyannote"
+        assert recorded["speaker_source_used"] == "none"
+        assert {row["start_speaker"]
+                for row in rows_of(context, "storytelling_events")} == {"unknown"}
+        assert any("pyannote" in message for message in messages)
 
     def test_pyannote_uses_the_word_id_and_unknown_only_for_a_null_one(self) -> None:
         words = [dict(row, speaker_id=None) if row["segment_id"] == "seg000002" else row
@@ -1085,7 +1385,7 @@ class TestStageExecution:
         assert events[0]["start_time"] == pytest.approx(3.0)
         assert events[0]["end_time"] == pytest.approx(11.5)
         assert events[0]["start_time_precision"] == "word"
-        assert events[0]["schema_version"] == "2.0"
+        assert events[0]["schema_version"] == "2.1"
         assert rows_of(context, "uncertain_spans") == []
         assert extra["events_total"] == 1 and extra["stories_total"] == 1
         assert extra["uncertain_spans_total"] == 0
@@ -1127,12 +1427,15 @@ class TestStageExecution:
         messages = log_recorder(context)
         extra = run_stage(context, client)
         assert extra["windows"] == 2
-        assert extra["dropped_outside_window"] == 2  # the event and its story
+        assert extra["dropped_outside_window"] == 1  # the event, counted once
+        assert extra["dropped_stories_outside_window"] == 1  # and its story, apart
         assert rows_of(context, "storytelling_events") == []
         assert any("dropped" in message for message in messages)
         recorded = summary(context)
-        assert recorded["dropped_outside_window"] == 2
+        assert recorded["dropped_outside_window"] == 1
+        assert recorded["dropped_stories_outside_window"] == 1
         assert recorded["dropped_detail"][0]["window_index"] == 0
+        assert recorded["dropped_detail"][0]["child_story_ids"] == ["S1"]
 
     def test_the_raw_response_is_preserved_byte_identical(self, context) -> None:
         use_stage_config(context)
@@ -1239,6 +1542,88 @@ class TestStageExecution:
         assert extra["batches_reused"] == 0
         restored = list(context.artifact("stories_raw").glob("window_*.json"))
         assert restored and "seg999999" not in restored[0].read_text(encoding="utf-8")
+
+    def test_a_cache_entry_without_its_content_is_refetched(self, context) -> None:
+        """No original bytes, no reuse: a re-serialisation is not what the endpoint sent."""
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        content = envelope(honest_answer(request_for()))
+        run_stage(context, FakeClient([content]))
+        cache_files = list((context.artifact("stories_raw") / "cache").glob("*.json"))
+        entry = json.loads(cache_files[0].read_text(encoding="utf-8"))
+        entry.pop("content")
+        cache_files[0].write_text(json.dumps(entry), encoding="utf-8")
+        for raw in context.artifact("stories_raw").glob("window_*.json"):
+            raw.unlink()
+        client = FakeClient([content])
+        extra = run_stage(context, client)
+        assert client.request_count == 1, "a cache entry without content was reused"
+        assert extra["batches_reused"] == 0
+        restored = sorted(context.artifact("stories_raw").glob("window_*.json"))
+        assert [path.read_text(encoding="utf-8") for path in restored] == [content]
+
+    def test_a_raw_file_that_disagrees_with_the_cache_is_rewritten(self, context) -> None:
+        """The raw file beside a row must be the answer that row came from."""
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        content = envelope(honest_answer(request_for()))
+        run_stage(context, FakeClient([content]))
+        raw = sorted(context.artifact("stories_raw").glob("window_*.json"))
+        raw[0].write_text(envelope(answer()), encoding="utf-8")  # a different answer
+        client = FakeClient([content])
+        extra = run_stage(context, client)
+        assert client.request_count == 0 and extra["batches_reused"] == 1
+        assert raw[0].read_text(encoding="utf-8") == content
+        assert len(rows_of(context, "storytelling_events")) == 1
+
+    def test_a_raw_file_that_already_matches_keeps_its_original_bytes(self, context) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        # Same payload, deliberately different bytes: a reused window must not rewrite a
+        # byte-identical-in-content file, because the spacing is the model's own output.
+        content = envelope(honest_answer(request_for()))
+        respaced = json.dumps(honest_answer(request_for()), indent=2)
+        run_stage(context, FakeClient([content]))
+        raw = sorted(context.artifact("stories_raw").glob("window_*.json"))
+        raw[0].write_text(respaced, encoding="utf-8")
+        run_stage(context, FakeClient([content]))
+        assert raw[0].read_text(encoding="utf-8") == respaced
+
+    def test_rejected_answers_are_kept_beside_the_accepted_one(self, endpoint, tmp_path) -> None:
+        request = request_for()
+        rejected = "I cannot help with that."
+        server, _state = endpoint([(200, ok_body(rejected)),
+                                   (200, ok_body(envelope(answer())))])
+        client = stories_client(server, max_retries=2)
+        client.rejected_dir = tmp_path / "rejected"
+        client.rejected_dir.mkdir()
+        verdict = client.detect(request)
+        assert verdict.answer.empty
+        attempts = sorted(client.rejected_dir.glob("window_0_*_attempt1.txt"))
+        assert len(attempts) == 1, list(client.rejected_dir.iterdir())
+        stored = attempts[0].read_text(encoding="utf-8")
+        assert rejected in stored
+        assert "rejected answer (attempt 1 of 3)" in stored
+        assert "reason: ValueError" in stored
+
+    def test_the_stage_keeps_the_rejected_attempts_it_produces(self, context) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        stage = StoriesStage()
+        directory: list[Any] = []
+
+        class RejectingClient(FakeClient):
+            rejected_dir = None
+
+            def detect(self, request):
+                if self.rejected_dir is not None:
+                    directory.append(self.rejected_dir)
+                    self.rejected_dir.mkdir(parents=True, exist_ok=True)
+                return super().detect(request)
+
+        run_stage(context, RejectingClient([envelope(honest_answer(request_for()))]))
+        assert directory and directory[0] == context.artifact("stories_raw") / "rejected"
+        assert directory[0].is_dir()
 
     def test_a_reused_window_restores_a_deleted_raw_file(self, context) -> None:
         use_stage_config(context)
@@ -1410,6 +1795,29 @@ class TestValidate:
         with pytest.raises(ValidationError, match="outside its start segment"):
             StoriesStage().validate(context)
 
+    def test_an_empty_table_with_the_wrong_columns_is_refused(self, context) -> None:
+        """Zero rows read back as [] whatever the file was written with: check the schema."""
+        import pyarrow.parquet as pq
+
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(honest_answer(request_for()))]))
+        path = context.artifact("stories")
+        pq.write_table(pa.table({"schema_version": pa.array([], type=pa.string()),
+                                 "story_id": pa.array([], type=pa.string()),
+                                 "parent_id": pa.array([], type=pa.string())}), path)
+        with pytest.raises(ValidationError, match="columns do not match its schema"):
+            StoriesStage().validate(context)
+
+    def test_a_request_key_without_its_raw_window_file_is_refused(self, context) -> None:
+        use_stage_config(context)
+        seed_segments(context, SEGMENTS)
+        run_stage(context, FakeClient([envelope(honest_answer(request_for()))]))
+        for raw in context.artifact("stories_raw").glob("window_*.json"):
+            raw.unlink()
+        with pytest.raises(ValidationError, match="is missing"):
+            StoriesStage().validate(context)
+
     def test_a_summary_count_that_disagrees_with_the_table_is_refused(self, context) -> None:
         use_stage_config(context)
         seed_segments(context, SEGMENTS)
@@ -1438,7 +1846,8 @@ class TestSchemaAndWiring:
         assert "parent_id" not in names and "why_it_is_a_story" not in names
         assert {"start_segment_id", "end_segment_id", "start_quote", "end_quote",
                 "start_time_precision", "end_time_precision", "story_evidence",
-                "summary", "tellers", "confidence", "notes"} <= set(names)
+                "evidence_segment_ids", "summary", "tellers", "confidence",
+                "notes"} <= set(names)
 
     def test_the_event_schema_keeps_the_experts_field_names(self) -> None:
         names = [field.name for field in STORYTELLING_EVENTS_SCHEMA]
@@ -1507,6 +1916,25 @@ class TestClients:
         assert first.content == second.content
         assert [row["event_id"] for row in first.events] == ["w0-SE1"]
         assert [row["story_id"] for row in first.stories] == ["w0-S1"]
+
+    def test_the_mock_client_never_quotes_the_unknown_marker_or_a_blank(self) -> None:
+        """The ``[unknown]`` marker is a rendering artifact, not transcript text."""
+        segments = [segment(1, text=" "), segment(2, text="   "), segment(3, text="real one")]
+        request = request_for(segments, words=[], speaker_source="none")
+        verdict = MockStoriesClient().detect(request)
+        # One quotable segment cannot hold an event and a story, so the honest answer is
+        # the empty one rather than a quote of the marker.
+        assert verdict.answer.empty
+        assert "[unknown]" not in verdict.content
+
+    def test_the_mock_client_quotes_only_real_text(self) -> None:
+        segments = [segment(1, text=" "), segment(2, text="a real line here"),
+                    segment(3, text="another real line")]
+        request = request_for(segments, words=[], speaker_source="none")
+        verdict = MockStoriesClient().detect(request)
+        assert not verdict.answer.empty
+        assert "[unknown]" not in verdict.content
+        assert "a real line here" in verdict.content
 
     def test_the_mock_client_is_empty_below_two_segments(self) -> None:
         request = request_for(SEGMENTS[:1], words=WORDS)

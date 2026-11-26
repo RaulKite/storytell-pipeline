@@ -149,28 +149,50 @@ a story names its event, and one event may carry several stories.
 
 The model cites a `segment_id` and copies a `transcript_quote` from that one segment;
 it never reports times. The pipeline locates the quote in
-`speech/segments.parquet` and maps it to word times through `speech/words.parquet`,
-recording `*_time_precision` as `word` or, when no aligned word exists, `segment`.
-An invented segment id, a quote that is not verbatim, an enum value outside the
-closed vocabularies, a duplicate id, a story outside its event, or inconsistent
-`story_ids` rejects the whole answer and the batch is retried.
+`speech/segments.parquet` and maps its **first and last word** to times through
+`speech/words.parquet`, recording `*_time_precision` as `word` or, when the edge word
+has no exact alignment, `segment` — it never borrows a neighbouring word's time. A
+quote must cover whole words, so a one-letter quote cannot land inside a longer word;
+it must also occur exactly once in the cited segment, because a repeated quote does
+not say where the boundary is. An invented segment id, a quote that is not verbatim
+or is ambiguous, an enum value outside the closed vocabularies, a duplicate id, a
+story outside its event, inconsistent `story_ids`, a missing or blank `story_evidence`
+explanation, an `evidence_segment_ids` list that is empty or outside the story's own
+span, or a reference to a segment the prompt did not show rejects the whole answer and
+the batch is retried. `story_evidence` carries the model's short explanations of why
+the stretch is a story; the segments those explanations rest on are in
+`evidence_segment_ids`.
 
-Speaker labels beside each word come from automatic diarization — Nemotron by
+The prompt shows each segment in three lines — `segment_id`/`start`/`end`, then the
+segment's own `text:`, then its `speakers:` runs — and quotes are copied from `text:`
+only. Speaker labels beside each word come from automatic diarization — Nemotron by
 default — and are rendered as `[speaker_0] words … [unknown] words` runs.
 `stories.speaker_source` selects `nemotron`, `pyannote` or `none`. Nemotron's turns
 overlap, so a word is attributed only when one speaker covers at least
-`stories.speaker_min_coverage` of it and no other covers at least
-`stories.speaker_max_competing`; otherwise it is `unknown`. A missing selected
-source labels everything `unknown` and is recorded in `stories_summary.json` as
-`speaker_source_requested`/`speaker_source_used`; the stage never falls back to the
-other engine. Labels are arbitrary ids, not identities.
+`stories.speaker_min_coverage` of it — measured as the union of that speaker's turns,
+so being diarized twice over one instant is not two instants — and no other covers at
+least `stories.speaker_max_competing`; otherwise it is `unknown`. A selected source
+with nothing to read (no Nemotron turns, or pyannote labels absent from both word rows
+and segments) labels everything `unknown` and is recorded in `stories_summary.json` as
+`speaker_source_requested`/`speaker_source_used: none`; the stage never falls back to
+the other engine. A label the answer names must be one the rendered prompt showed,
+including labels that appear only in the context segments. Labels are arbitrary ids,
+not identities.
 
 Empty arrays are a legitimate, expected answer and are counted per window; a video
 with no transcript segments skips the stage. The default is the whole transcript in
-one request; setting `stories.max_segments_per_request` restores windowing, and an
-event whose boundaries straddle a window is dropped *and counted* with its stories,
-so absence is not a recall result. Raw responses and cache entries make claims
-auditable; low temperature alone does not make service responses deterministic.
+one request; setting `stories.max_segments_per_request` restores windowing. An event
+whose boundary — or whose marked interruption — straddles a window is dropped and
+counted **once**, with the number of stories it took with it counted separately
+(`dropped_outside_window`, `dropped_stories_outside_window`), so absence is not a
+recall result; references to the visible context segments are evidence, not a reason to
+reject the answer. Raw responses and cache entries make claims auditable: the raw
+window is the endpoint's exact bytes, every rejected attempt is kept beside it under
+`stories/raw/rejected/`, and a cache entry keyed by the rendered prompt and posted
+request body (so `extra_body` and prompt changes both invalidate it) is reused only
+with the response text that produced it. Validation checks the three tables' columns
+against their schemas and that every `request_key` in them still has its raw window
+file. Low temperature alone does not make service responses deterministic.
 
 There is no validated ground truth or accuracy guarantee here. **Storytelling events
 and stories are not exported as an ELAN tier**. Transcript evidence supports auditing

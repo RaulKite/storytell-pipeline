@@ -328,10 +328,15 @@ DIR_GUIDES: dict[str, Guide] = {
         "event may hold several stories, and a story's boundaries need not coincide with "
         "its event's.",
         "Every boundary names a `segment_id` and the `transcript_quote` the model copied "
-        "from that one segment; the times here were **computed** from "
-        "`speech/words.parquet`, never typed by the model. `start_time_precision` / "
-        "`end_time_precision` say whether a time came from word alignment (`word`) or had "
-        "to fall back to the cited segment's own boundary (`segment`).",
+        "from that one segment's text; the times here were **computed** from the quote's "
+        "first and last word through `speech/words.parquet`, never typed by the model. "
+        "`start_time_precision` / `end_time_precision` say whether a time came from word "
+        "alignment (`word`) or had to fall back to the cited segment's own boundary "
+        "(`segment`) because the edge word had no exact alignment — a quote must cover "
+        "whole words and must occur once in its segment, or the answer is refused.",
+        "`stories.story_evidence` holds the model's short explanations of why the stretch "
+        "is a story; `evidence_segment_ids` names the segments of the story itself that "
+        "carry that evidence.",
         "Speakers come from automatic diarization — Nemotron by default — so they are "
         "arbitrary ids, not identities, and `unknown` means the diarizer could not decide "
         "that word. `stories_summary.json` records which source was requested and which "
@@ -341,9 +346,11 @@ DIR_GUIDES: dict[str, Guide] = {
         "zero rows on purpose.",
     )),
     "stories/raw": Guide("Preserved story responses (optional)", RAW_NOTES + (
-        "One file per window, named by window and request identity, plus a cache and "
-        "`stories_summary.json`; the summary's window count is what the tables are "
-        "validated against, because an empty window has no rows to count.",
+        "One file per window, named by window and request identity, plus a cache, a "
+        "`rejected/` directory holding each attempt the validator refused (with its "
+        "reason) and `stories_summary.json`; the summary's window count is what the tables "
+        "are validated against, because an empty window has no rows to count, and every "
+        "`request_key` in the tables must still have its window file.",
     )),
     "elan": Guide("ELAN export", (
         "`annotations.eaf` is built from the tables and rewrites nothing. It is a "
