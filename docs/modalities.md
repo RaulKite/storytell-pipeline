@@ -157,45 +157,31 @@ becomes a `segment_id` + `transcript_quote` citation the pipeline resolves itsel
 Prompts that paraphrase a domain expert's criteria are the failure this avoids.
 
 The model cites a `segment_id` and copies a `transcript_quote` from that one segment;
-it never reports times. The pipeline locates the quote in
-`speech/segments.parquet` and maps its **first and last word** to times through
-`speech/words.parquet`, recording `*_time_precision` as `word` or, when the edge word
-has no exact alignment, `segment` — it never borrows a neighbouring word's time. A
-quote must cover whole words, so a one-letter quote cannot land inside a longer word.
-When a quote occurs more than once in the cited segment the boundary must carry
-`occurrence` (1 = first) choosing which; quotation cannot always be made unique (a
-segment that says "no no" has no longer unique quote), so the selection is what keeps
-a correct answer expressible and a retry convergent. An alignment row that holds no
-word (a separately tokenized `¿`) never times an edge, character offsets from
-`words.parquet` are honoured only when they slice exactly that word out of the text,
-and quote matching folds case one character to one character so `sa` does not match
-inside `ßa`. An invented segment id, a quote that is not verbatim, a repeated quote
-without a usable `occurrence`, a reference to a real segment the prompt never showed
-(the answer cites text it cannot have read), an enum value outside the closed
-vocabularies, a duplicate id, a story outside its event, inconsistent `story_ids`,
-a missing or blank `story_evidence` explanation — or one that is only segment ids —
-an `evidence_segment_ids` list that is empty or outside the story's own span rejects
-the whole answer, and the next attempt is a repair: the same prompt, the rejected
-answer as an `assistant` message and the problems as a follow-up question. A
-transport failure is retried unchanged, and an answer with no message content is
-treated as a model error, not as a broken endpoint. `story_evidence` carries the
-model's short explanations of why the stretch is a story; the segments those
-explanations rest on are in `evidence_segment_ids`.
+it never reports times. The pipeline finds the quote (whole words only, case folded one
+character to one character) in `speech/segments.parquet` and times its **first and last
+word** through `speech/words.parquet`. `*_time_precision` is `word`, or `segment` when the
+edge word has no exact alignment; a neighbouring word's time is never borrowed, and
+character offsets are used only when they slice exactly that word. A quote that occurs
+more than once in its segment needs `occurrence` (1 = first), because a segment such as
+"no no" has no longer unique quote. The whole answer is rejected for an invented or
+unshown segment id, a non-verbatim or unresolved quote, an enum value outside the closed
+vocabularies, a duplicate id, a story outside its event, inconsistent `story_ids`, a
+missing `story_evidence` explanation (or one made only of segment ids), or
+`evidence_segment_ids` that are empty or outside the story's span. The retry is a repair:
+the same prompt, the rejected answer and the list of problems. Transport failures are
+retried unchanged. `story_evidence` holds the model's explanations of why the stretch is
+a story; `evidence_segment_ids` names the segments they rest on.
 
-The prompt shows each segment in three lines — `segment_id`/`start`/`end`, then the
-segment's own `text:`, then its `speakers:` runs — and quotes are copied from `text:`
-only. Speaker labels beside each word come from automatic diarization — Nemotron by
-default — and are rendered as `[speaker_0] words … [unknown] words` runs.
-`stories.speaker_source` selects `nemotron` (the only diarizer) or `none`. Nemotron's turns
-overlap, so a word is attributed only when one speaker covers at least
-`stories.speaker_min_coverage` of it — measured as the union of that speaker's turns,
-so being diarized twice over one instant is not two instants — and no other covers at
-least `stories.speaker_max_competing`; otherwise it is `unknown`. A selected source
-with nothing to read (no Nemotron turns) labels everything `unknown` and is recorded in
-`stories_summary.json` as `speaker_source_requested`/`speaker_source_used: none`; the
-stage never reads the max-overlap `speaker_id` on segments or words instead. A label the answer names must be one the rendered prompt showed,
-including labels that appear only in the context segments. Labels are arbitrary ids,
-not identities.
+Each segment is shown as `segment_id`/`start`/`end`, its own `text:` (the only place
+quotes come from) and its `speakers:` runs, e.g. `[speaker_0] words … [unknown] words`.
+`stories.speaker_source` is `nemotron` (the only diarizer, default) or `none`. Nemotron's
+turns overlap, so a word gets a label only when one speaker's merged turns cover at least
+`stories.speaker_min_coverage` of it and no other covers `stories.speaker_max_competing`;
+otherwise it is `unknown`. Without Nemotron turns everything is `unknown`, recorded as
+`speaker_source_requested`/`speaker_source_used` in `stories_summary.json`; the
+max-overlap `speaker_id` on segments and words is never read instead. An answer may only
+name labels the prompt showed (context included). Labels are arbitrary ids, not
+identities. Where the transcript itself names a speaker, the model says so in `notes`.
 
 Empty arrays are a legitimate, expected answer and are counted per window; a video
 with no transcript segments skips the stage. The default is the whole transcript in
@@ -205,16 +191,13 @@ counted **once**, with the number of stories it took with it counted separately
 (`dropped_outside_window`, `dropped_stories_outside_window`), and an uncertain span
 that touches a context segment is dropped and counted the same way, so absence is not a
 recall result; references to the *visible* context segments are evidence, not a reason
-to reject the answer. Raw responses and cache entries make claims auditable: the raw
-window is the endpoint's exact bytes, every rejected attempt is kept beside it under
-`stories/raw/rejected/` with a unique name (UTC timestamp plus append-only numbering)
-and the configured credential redacted out, and a cache entry keyed by the rendered
-prompt and posted request body (so `extra_body` and prompt changes both invalidate it)
-is reused only with the response text that produced it — rewriting the raw file when its
-bytes differ from that text. `stories_summary.json` lists every window's raw file,
-empty windows included, and `validate()` reads each one back: it parses the response,
-re-runs the same validation against the current transcript, and requires the event and
-story ids to be the rows the tables attribute to that window. Low temperature alone
+to reject the answer. Raw responses make claims auditable: the
+raw window holds the endpoint's exact bytes, every rejected attempt is kept under
+`stories/raw/rejected/` with a unique name and the credential redacted, and the cache
+(keyed by the rendered prompt and posted request body) restores those exact bytes on
+reuse. `stories_summary.json` lists every window's raw file, empty windows included;
+`validate()` re-parses and re-validates each one against the current transcript and
+compares the recomputed rows field by field with the table rows of that request. Low temperature alone
 does not make service responses deterministic.
 
 There is no validated ground truth or accuracy guarantee here. **Storytelling events

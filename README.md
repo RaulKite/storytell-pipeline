@@ -30,7 +30,7 @@ tool output and stage caches, a log and provenance, times in seconds from video 
 | Acoustics | Praat/Parselmouth pitch, intensity, formants and segment statistics | `acoustic/frame_features.parquet` |
 | Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks | `pose/body.parquet`, `persons/tracks.parquet` |
 | Speakers | Optional TalkNet visible-face activity and audio–visual agreement | `speaker/active_speaker_frames.parquet` |
-| Stories | Transcript-bound LLM narrative candidates, not validated detections | `stories/stories.parquet` |
+| Stories | LLM candidates for storytelling events and the stories told inside them, following the expert's [annotation guidelines](docs/modalities.md#storytelling-events-and-stories); quote-anchored, Nemotron speaker labels or `unknown`, not validated detections | `stories/storytelling_events.parquet`, `stories/stories.parquet` |
 | Inspection | ELAN `.eaf` files written with pympi-ling (requires a transcript), HTML preview, corpus-specific bundle | `elan/annotations.eaf` |
 
 <picture>

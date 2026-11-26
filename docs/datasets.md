@@ -1,12 +1,10 @@
 # Datasets and analysis
 
-Start from the manifest to discover outputs, then read the typed Parquet tables.
-This guide maps the files and explains the clocks, identifiers and missing values
-that matter when combining modalities.
+Start from the manifest to discover outputs, then read the typed Parquet tables. This guide
+maps the files and explains the clocks, identifiers and missing values that matter when
+combining modalities. Commands use repository-relative paths: run them from the repository root.
 
 Back to the overview: [Storytel Pipeline](../README.md).
-
-Commands use repository-relative paths: run them from the repository root.
 
 ## Contents
 
@@ -96,8 +94,8 @@ Presence is determined by the manifest, not this inventory.
 | `person_tracks` | `persons/tracks.parquet` | Body-track summaries and sighting gaps |
 | `speaker_fusion_pyannote` | `speaker/fusion_pyannote.parquet` | pyannote turn × face evidence agreement |
 | `speaker_fusion_nemotron` | `speaker/fusion_nemotron.parquet` | Nemotron turn × face evidence agreement |
-| `storytelling_events` | `stories/storytelling_events.parquet` | LLM storytelling-event boundaries (pre-telling/launch … coda/shift) with cited segment, verbatim quote and computed times |
-| `stories` | `stories/stories.parquet` | The represented "what" told inside an event, with its own start/end boundaries, the model's `story_evidence` explanations and the `evidence_segment_ids` they rest on |
+| `storytelling_events` | `stories/storytelling_events.parquet` | LLM storytelling-event boundaries (pre-telling/launch … coda/shift): cited segment, verbatim quote, computed times |
+| `stories` | `stories/stories.parquet` | Stories told inside an event: `event_id`, own boundaries, `story_evidence`, `evidence_segment_ids` |
 | `uncertain_spans` | `stories/uncertain_spans.parquet` | Stretches the LLM marked but could not place, with the stated reason |
 
 ### How the tables join
@@ -113,7 +111,7 @@ flowchart TB
     tok["linguistic/source/tokens.parquet<br/>token_id, segment_id,<br/>sentence_id"]
     acseg["acoustic/segment_features.parquet<br/>segment_id, start_time, end_time"]
     acfr["acoustic/frame_features.parquet<br/>timestamp only, Praat grid"]
-    st["stories/stories.parquet<br/>story_id, parent_id,<br/>evidence_segment_ids"]
+    st["stories/stories.parquet<br/>story_id, event_id,<br/>evidence_segment_ids"]
     seg -- "segment_id" --> words & en & acseg
     words -. "segment_id only:<br/>grouped at segment grain" .-> tok
     acfr -. "no key: interval overlap only" .-> acseg
