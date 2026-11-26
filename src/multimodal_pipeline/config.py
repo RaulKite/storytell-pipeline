@@ -213,30 +213,6 @@ class WhisperXConfig(_Model):
     extra_args: list[str] = Field(default_factory=list)
 
 
-class DiarizationConfig(_Model):
-    enabled: bool = True
-    uv_project: Path = Path("environments/diarization")
-    worker: Path = Path("workers/diarization_worker.py")
-    provider: str = "pyannote"
-    pipeline: str = "pyannote/speaker-diarization-community-1"
-    hf_token_env: str = "HF_TOKEN"
-    device: str = "cuda"
-    device_index: int = 0
-    use_exclusive_diarization_for_alignment: bool = True
-    min_speakers: int | None = None
-    max_speakers: int | None = None
-    num_speakers: int | None = None
-    python_version: str = "3.12"
-    extra_args: list[str] = Field(default_factory=list)
-
-    @field_validator("provider")
-    @classmethod
-    def _provider(cls, value: str) -> str:
-        if value != "pyannote":
-            raise ValueError("diarization.provider currently supports only 'pyannote'")
-        return value
-
-
 class DiarizationNemotronConfig(_Model):
     """NVIDIA Nemotron 3 Diarization — the pipeline's only speaker diarizer.
 
@@ -919,13 +895,35 @@ class LoggingConfig(_Model):
     progress_interval_seconds: float = 10.0
 
 
+#: Config sections this pipeline no longer has, and what to do about them.
+#:
+#: Named rather than left to ``extra="forbid"``: the generic error for an unknown key is one
+#: line of pydantic internals that says "unknown setting", and an operator whose
+#: ``config.local.yaml`` still carries a whole ``diarization:`` block needs to be told the
+#: engine is gone, not that a key is misspelled. Failing loudly is the point — silently
+#: ignoring the section would leave a run that looks configured for pyannote and produces
+#: Nemotron labels.
+REMOVED_SECTIONS: dict[str, str] = {
+    "diarization": (
+        "the `diarization:` section was removed and Nemotron (`diarization_nemotron:`) is "
+        "now the only diarizer. Delete the `diarization:` block; move any device, "
+        "max_speakers or token setting you still need into `diarization_nemotron:`, whose "
+        "environment is `environments/diarization_nemotron`."
+    ),
+    "speaker_fusion": (
+        "the `speaker_fusion:` section was removed with the diarization x TalkNet fusion "
+        "stage. Delete the `speaker_fusion:` block; `diarization_nemotron:` supplies the "
+        "speaker turns and `activespeaker:` still measures the faces."
+    ),
+}
+
+
 class PipelineConfig(_Model):
     input: InputConfig
     output: OutputConfig
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     ffmpeg: FFmpegConfig = Field(default_factory=FFmpegConfig)
     whisperx: WhisperXConfig = Field(default_factory=WhisperXConfig)
-    diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     diarization_nemotron: DiarizationNemotronConfig = Field(default_factory=DiarizationNemotronConfig)
     translation: TranslationConfig = Field(default_factory=TranslationConfig)
     stories: StoriesConfig = Field(default_factory=StoriesConfig)
@@ -943,11 +941,20 @@ class PipelineConfig(_Model):
     project_root: Path = Field(default_factory=Path.cwd)
     config_path: Path | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_sections(cls, data: Any) -> Any:
+        """Fail with an instruction when a config still carries a section we deleted."""
+        if isinstance(data, Mapping):
+            for name, message in REMOVED_SECTIONS.items():
+                if name in data:
+                    raise ValueError(message)
+        return data
+
     @property
     def stage_configs(self) -> dict[str, _Model]:
         return {
             "whisperx": self.whisperx,
-            "diarization": self.diarization,
             "diarization_nemotron": self.diarization_nemotron,
             "translation": self.translation,
             # No `uv_project` (it is an HTTP call, not a worker), so neither `tools.json`'s

@@ -17,6 +17,8 @@ from multimodal_pipeline.config import (
     mask_secrets,
     stable_hash,
 )
+from pydantic import ValidationError
+
 from multimodal_pipeline.exceptions import ConfigError
 
 
@@ -39,7 +41,8 @@ class TestLoading:
     def test_minimal_config_gets_defaults(self, tmp_path: Path) -> None:
         config = load_config(write_config(tmp_path, base_payload(tmp_path)))
         assert config.whisperx.model == "large-v3"
-        assert config.diarization.pipeline == "pyannote/speaker-diarization-community-1"
+        assert config.diarization_nemotron.model == "nvidia/Nemotron-3-Diarization"
+        assert config.diarization_nemotron.enabled is True
         assert config.openpose.root == Path("/opt/openpose")
         assert config.acoustic.time_step == 0.01
         assert config.execution.gpu == 0
@@ -101,11 +104,38 @@ class TestValidationRules:
         with pytest.raises(Exception):
             load_config(write_config(tmp_path, payload))
 
-    def test_unknown_diarization_provider_rejected(self, tmp_path: Path) -> None:
+    def test_a_removed_diarization_section_is_refused_with_an_instruction(
+            self, tmp_path: Path) -> None:
+        """A config that still configures pyannote must not run as if it did.
+
+        `extra="forbid"` would reject the key anyway, but with pydantic's generic "unknown
+        setting" line; an operator holding a whole `diarization:` block needs to be told the
+        engine is gone and where its settings went.
+        """
         payload = base_payload(tmp_path)
-        payload["diarization"] = {"provider": "silero"}
-        with pytest.raises(Exception):
+        payload["diarization"] = {"provider": "pyannote"}
+        with pytest.raises(ValidationError) as excinfo:
             load_config(write_config(tmp_path, payload))
+        message = str(excinfo.value)
+        assert "diarization" in message
+        assert "diarization_nemotron" in message
+        assert "only diarizer" in message
+
+    def test_a_removed_speaker_fusion_section_is_refused_with_an_instruction(
+            self, tmp_path: Path) -> None:
+        payload = base_payload(tmp_path)
+        payload["speaker_fusion"] = {"enabled": True}
+        with pytest.raises(ValidationError) as excinfo:
+            load_config(write_config(tmp_path, payload))
+        message = str(excinfo.value)
+        assert "speaker_fusion" in message
+        assert "removed" in message
+
+    def test_the_removed_sections_are_not_pipeline_fields(self) -> None:
+        """The error above only fires while the fields stay gone; this pins that."""
+        known = set(PipelineConfig.model_fields)
+        assert "diarization" not in known
+        assert "speaker_fusion" not in known
 
 
 class TestEnvironmentInterpolation:
@@ -217,11 +247,11 @@ class TestShippedExampleMatchesTheModels:
 class TestMasking:
     def test_api_key_masked_in_dict(self) -> None:
         masked = mask_secrets({"translation": {"api_key": "sk-very-secret", "model": "m"},
-                               "diarization": {"hf_token_env": "HF_TOKEN"}})
+                               "diarization_nemotron": {"hf_token_env": "HF_TOKEN"}})
         assert masked["translation"]["api_key"] == "***masked***"
         assert masked["translation"]["model"] == "m"
         # The *name* of the env var is not a secret and must survive.
-        assert masked["diarization"]["hf_token_env"] == "HF_TOKEN"
+        assert masked["diarization_nemotron"]["hf_token_env"] == "HF_TOKEN"
 
     def test_masked_config_dict_hides_key(self, tmp_path: Path) -> None:
         payload = base_payload(tmp_path)
@@ -359,13 +389,13 @@ class TestCredentialsReachConfigFromDotenv:
         conf = root / "config" / "c.yaml"
         conf.write_text(
             "input:\n  directory: in\noutput:\n  directory: out\n"
-            "diarization:\n  hf_token_env: HF_TOKEN\n"
+            "diarization_nemotron:\n  hf_token_env: HF_TOKEN\n"
         )
         cfg = load_config(conf)
         # The stage reads the credential from the variable named in the config, so
         # the .env value has to be in the environment by the time it looks.
-        assert cfg.diarization.hf_token_env == "HF_TOKEN"
-        assert os.environ[cfg.diarization.hf_token_env] == "from-dotenv"
+        assert cfg.diarization_nemotron.hf_token_env == "HF_TOKEN"
+        assert os.environ[cfg.diarization_nemotron.hf_token_env] == "from-dotenv"
 
     def test_explicit_environment_beats_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HF_TOKEN", "from-shell")
@@ -375,10 +405,10 @@ class TestCredentialsReachConfigFromDotenv:
         conf = root / "config" / "c.yaml"
         conf.write_text(
             "input:\n  directory: in\noutput:\n  directory: out\n"
-            "diarization:\n  hf_token_env: HF_TOKEN\n"
+            "diarization_nemotron:\n  hf_token_env: HF_TOKEN\n"
         )
         cfg = load_config(conf)
-        assert os.environ[cfg.diarization.hf_token_env] == "from-shell"
+        assert os.environ[cfg.diarization_nemotron.hf_token_env] == "from-shell"
 
     def test_opt_out_variable_suppresses_the_implicit_read(self, tmp_path, monkeypatch):
         """The escape hatch the test suite relies on must be real, not incidental."""

@@ -50,7 +50,7 @@ def config_text(root: Path, video_dir: Path) -> str:
         "output": {"directory": str(root / "out")},
         "logging": {"level": "INFO", "console": False},
         "whisperx": {"enabled": False},
-        "diarization": {"enabled": False},
+        "diarization_nemotron": {"enabled": False},
         "translation": {"enabled": False},
         "spacy": {"enabled": False},
         "acoustic": {"enabled": False},
@@ -207,19 +207,22 @@ class TestHelpAndEnvironment:
         assert ".env:2" in combined and "Traceback" not in combined
 
     def test_dotenv_credentials_reach_the_run_without_export(self, fresh: Path) -> None:
-        """The documented workflow: write .env, run. No shell wrapper, no `source`."""
+        """The documented workflow: write .env, run. No shell wrapper, no `source`.
+
+        The HF token no longer disables a stage (the Nemotron checkpoint is not gated), so
+        the property under test is the loader's: the line in `.env` is accepted, no warning
+        claims a stage will skip for it, and its value is never echoed back.
+        """
         env = self._dotenv_env()
         env.pop("HF_TOKEN", None)
         (fresh / ".env").write_text("HF_TOKEN=hf_fromdotenvfile\n", encoding="utf-8")
         config = fresh / "config" / "config.yaml"
         payload = yaml.safe_load(config.read_text())
-        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        payload["diarization_nemotron"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
         result = cli("inspect-environment", "-c", str(config), cwd=fresh, env=env)
         warnings = stdout_json(result)["environment_warnings"]
-        # The token now exists, so the "will be skipped" warning must be gone.
         assert not [w for w in warnings if "HF_TOKEN" in w], warnings
-        # And its value must not be echoed anywhere in the report.
         assert "hf_fromdotenvfile" not in (result.stdout + result.stderr)
 
     def test_inspect_environment_reports_the_toolchain(self) -> None:
@@ -376,7 +379,6 @@ class TestFullRun:
         config_path = fresh / "config" / "config.yaml"
         payload = yaml.safe_load(config_path.read_text())
         payload["whisperx"] = {"enabled": False}
-        payload["diarization"] = {"enabled": False}
         payload["translation"] = {"enabled": False}
         payload["diarization_nemotron"] = {
             "enabled": True,
@@ -664,7 +666,7 @@ class TestSecrets:
         payload["translation"] = {"enabled": False, "provider": "openai-compatible",
                                  "base_url": "https://litellm.invalid/v1",
                                  "api_key": "sk-E2E-secret-do-not-write", "model": "m"}
-        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        payload["diarization_nemotron"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
         config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
         env = _env()
         env["HF_TOKEN"] = "hf_E2Esecrettoken"
@@ -687,7 +689,7 @@ class TestSecrets:
     def test_the_token_variable_name_survives_but_its_value_does_not(self, fresh: Path) -> None:
         config_path = fresh / "config" / "config.yaml"
         payload = yaml.safe_load(config_path.read_text())
-        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        payload["diarization_nemotron"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
         config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
         env = _env()
         env["HF_TOKEN"] = "hf_E2Esecrettoken"
@@ -698,7 +700,10 @@ class TestSecrets:
                             for path in (fresh / "out" / "alpha").rglob("*") if path.is_file())
         assert "hf_E2Esecrettoken" not in written
         # The operator still has to learn *which* variable to set; naming it is
-        # documentation, echoing its value would be a leak.
-        warnings = cli("inspect-environment", "-c", str(config_path))
-        assert "HF_TOKEN" in stdout_json(warnings)["environment_warnings"][0]
-        assert "hf_E2Esecrettoken" not in stdout_json(warnings)["environment_warnings"][0]
+        # documentation, echoing its value would be a leak. The record that names it is the
+        # masked config snapshot, because the token no longer gates a stage and therefore no
+        # longer appears in a warning.
+        provenance = next((fresh / "out" / "alpha" / "provenance").glob("config.json"))
+        recorded = provenance.read_text(encoding="utf-8")
+        assert "HF_TOKEN" in recorded
+        assert "hf_E2Esecrettoken" not in recorded

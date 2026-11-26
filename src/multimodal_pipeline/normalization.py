@@ -115,36 +115,12 @@ def _segment_confidence(segment: dict[str, Any]) -> float | None:
     return value if value is not None else _float(segment.get("avg_logprob"))
 
 
-def diarization_turn_rows(payload: dict[str, Any], video_id: str,
-                          diarization_type: str = "inclusive") -> list[dict[str, Any]]:
-    """Pyannote result (list of ``[start, end, speaker]``) → canonical turn rows."""
-    rows: list[dict[str, Any]] = []
-    turns = payload.get("turns") or payload.get(f"{diarization_type}_turns") or []
-    ordered = sorted(turns, key=lambda turn: (_float(turn[0]) or 0.0, _float(turn[1]) or 0.0))
-    for index, turn in enumerate(ordered):
-        if len(turn) < 3:
-            continue
-        start, end, speaker = _float(turn[0]), _float(turn[1]), str(turn[2])
-        rows.append({
-            "schema_version": WHISPERX_SCHEMA_VERSION,
-            "video_id": video_id,
-            "turn_id": f"turn{index + 1:06d}",
-            "speaker_id": speaker,
-            "start_time": start,
-            "end_time": end,
-            "duration": _duration(start, end),
-            "diarization_type": diarization_type,
-        })
-    return rows
-
-
 def nemotron_turn_rows(payload: dict[str, Any], video_id: str) -> list[dict[str, Any]]:
     """Nemotron worker document → canonical turn rows, with per-segment overlap measured.
 
-    Separate from :func:`diarization_turn_rows` because the shapes differ in two ways that
-    matter: Nemotron emits objects with a speaker *index* rather than `[start, end, name]`
-    triples, and its segments overlap across channels, so each row needs the seconds of
-    cross-speaker overlap it participates in.
+    The document's shape is the model's own: objects carrying a speaker *index* rather than
+    `[start, end, name]` triples, and segments that overlap across channels — so each row
+    needs the seconds of cross-speaker overlap it participates in.
 
     Zero-length segments are dropped rather than turned into a negative duration.
     ``extract_speaker_dict`` can emit a segment whose end equals its start when a speaker
@@ -194,22 +170,6 @@ def nemotron_turn_rows(payload: dict[str, Any], video_id: str) -> list[dict[str,
     for index, row in enumerate(kept):
         row["turn_id"] = f"turn{index + 1:06d}"
     return kept
-
-
-def parse_rttm(text: str) -> list[dict[str, Any]]:
-    """Speaker Turn RTTM → rows. Kept so a diarization rerun is reproducible from raw."""
-    rows: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        parts = line.split()
-        if len(parts) < 8 or parts[0] != "SPEAKER":
-            continue
-        try:
-            start, duration = float(parts[3]), float(parts[4])
-        except ValueError:
-            continue
-        rows.append({"speaker_id": parts[7], "start_time": start,
-                     "end_time": start + duration, "duration": duration})
-    return rows
 
 
 # ----------------------------------------------------------------- openpose

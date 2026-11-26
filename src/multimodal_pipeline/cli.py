@@ -236,10 +236,15 @@ def retry_failed(
     for source in sources:
         state = VideoState.load(VideoPaths(pipeline_config.output.directory / source.video_id),
                                source.video_id, str(source.path))
-        failed = [name for name in state.stage_order if state.stage(name).status == "failed"]
+        from .stages.base import STAGE_ORDER, dependants_of
+
+        # Only stages this pipeline still has. An output tree from before the pyannote and
+        # speaker_fusion stages were removed records them as `failed`, and retrying a name
+        # that no longer exists would print "Retrying 0 stage(s)" and run nothing.
+        failed = [name for name in state.stage_order
+                  if name in STAGE_ORDER and state.stage(name).status == "failed"]
         if not failed:
             continue
-        from .stages.base import dependants_of
 
         targets.append(source)
         for name in failed:
@@ -476,11 +481,10 @@ def _environment_warnings(config: PipelineConfig) -> list[str]:
     (a stage that will run with no language model, which produces empty linguistics that
     look like results).
     """
-    import os
-
     warnings: list[str] = []
-    if config.diarization.enabled and not os.environ.get(config.diarization.hf_token_env):
-        warnings.append(f"{config.diarization.hf_token_env} is not set: diarization will be skipped")
+    # The HF token is deliberately *not* warned about: the Nemotron checkpoint is not gated,
+    # so a missing token slows the download and disables nothing. Only a stage that will
+    # really skip belongs in this list.
     if config.translation.enabled and not config.translation.endpoint_configured:
         warnings.append("translation endpoint is not configured: translation will be skipped")
     # 'stories' is on by default and the only stage that spends tokens per video, so the

@@ -250,7 +250,7 @@ class TestContent:
     def test_each_directory_lists_the_files_registered_for_it(self, dataset: VideoPaths) -> None:
         guides.write_explanations(dataset)
         speech = guide_text(dataset, "speech")
-        for name in ("segments.parquet", "words.parquet", "speaker_turns.parquet"):
+        for name in ("segments.parquet", "words.parquet", "speaker_turns_nemotron.parquet"):
             assert name in speech
         assert "video_out.avi" in guide_text(dataset, "speaker/raw")
 

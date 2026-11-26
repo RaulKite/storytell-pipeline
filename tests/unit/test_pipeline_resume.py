@@ -483,3 +483,51 @@ class TestArtifactIntegrity:
         plan = {item.name: item for item in parquet_dag.plan()}
         assert plan["asr"].reason == "valid previous result"
         assert plan["post"].will_run
+
+
+class TestRetiredStagesInAnOldOutputTree:
+    """A `status.json` written by a pipeline with more stages still plans and resumes.
+
+    `diarization` and `speaker_fusion` were removed. Their records — and their files —
+    survive in every dataset produced before that, and neither loading nor planning nor a
+    resume may treat the unknown names as a reason to crash or to delete anything.
+    """
+
+    @staticmethod
+    def _add_retired_records(runner: VideoRunner) -> None:
+        from multimodal_pipeline.state import StageRecord
+
+        state = type(runner.state).load(runner.paths, runner.source.video_id)
+        for name in ("diarization", "speaker_fusion"):
+            state.stages[name] = StageRecord(name=name, status=STATUS_FAILED,
+                                             run_sequence=2,
+                                             output_artifacts=["speaker_turns"])
+            state.stage_order.append(name)
+        state.save()
+        stale = runner.paths.dataset_dir / "speaker" / "fusion_pyannote.parquet"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"legacy-bytes")
+
+    def test_plan_lists_the_current_stages_and_nothing_else(self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        self._add_retired_records(runner)
+        plan = [item.name for item in runner.plan()]
+        assert plan == [name for name, _ in FAKE_DAG]
+
+    def test_resume_does_not_crash_on_the_unknown_records(self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        baseline = dict(FakeStage.executions)
+        self._add_retired_records(runner)
+        result = runner.run()
+        assert result.status == "completed"
+        assert FakeStage.executions == baseline, "a retired record made live work rerun"
+
+    def test_the_legacy_file_is_left_alone(self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        self._add_retired_records(runner)
+        stale = runner.paths.dataset_dir / "speaker" / "fusion_pyannote.parquet"
+        runner.run()
+        assert stale.read_bytes() == b"legacy-bytes"

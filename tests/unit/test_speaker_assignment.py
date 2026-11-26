@@ -189,8 +189,8 @@ class TestCoverage:
 
     def test_triple_stack_counts_time_with_two_or_more_speakers(self) -> None:
         # Active speakers per second: 1,2,3,2,1 -> 6s have two or more speakers.
-        # Overlap is wall-clock time with concurrent speech (pyannote semantics),
-        # not speaker-seconds above the single-speaker baseline.
+        # Overlap is wall-clock time with concurrent speech, not speaker-seconds above
+        # the single-speaker baseline.
         turns = normalise_turns([(0.0, 6.0, "A"), (2.0, 8.0, "B"), (4.0, 10.0, "C")])
         report = coverage_report(turns, duration=10.0)
         assert report["speaker_seconds"] == pytest.approx(10.0)
@@ -260,19 +260,3 @@ class TestSilentVideoIsValid:
         SpeakerAssignmentStage().execute(context)
         meta = read_table(context.artifact("speech_segments")).schema.metadata
         assert meta is not None and meta[b"speaker_assignment"] == b"max_overlap"
-
-
-class TestDiarizationRttmWrittenWhenEmpty:
-    def test_stage_writes_empty_rttm_for_no_turns(self, context):
-        """The artifact split must preserve an empty RTTM, not treat falsy as absent."""
-        import json
-        from multimodal_pipeline.stages.diarization import DiarizationStage
-
-        raw = context.artifact("diarization_raw")
-        raw.parent.mkdir(parents=True, exist_ok=True)
-        raw.write_text(json.dumps({"video_id": context.video_id, "turns": [],
-                                   "exclusive_turns": [], "rttm": ""}), encoding="utf-8")
-        DiarizationStage().preserve_extra_raw(context, raw)
-        rttm = context.artifact("diarization_rttm")
-        assert rttm.is_file(), "a diarization with no turns still has an RTTM artifact"
-        assert rttm.read_text(encoding="utf-8") == ""

@@ -1,8 +1,9 @@
 """TalkNet-ASD active-speaker detection stage.
 
-Complements the two audio-only speaker signals: pyannote says *when* somebody is
-speaking and OpenPose says *where bodies are*; neither says *which visible face is
-producing the audio*. TalkNet answers that, scoring every face track per frame.
+Complements the audio-only speaker signal and the body detections: the diarizer says
+*when* somebody is speaking and OpenPose says *where bodies are*; neither says *which
+visible face is producing the audio*. TalkNet answers that, scoring every face track per
+frame.
 
 Facts verified on this machine (2026-09-24) rather than assumed:
 

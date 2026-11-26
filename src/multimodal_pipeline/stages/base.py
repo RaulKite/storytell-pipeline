@@ -35,9 +35,8 @@ STAGE_ORDER: tuple[str, ...] = (
     "metadata",
     "audio",
     "whisperx",
-    "diarization",
-    # Second diarization engine. Adjacent to the first for readability only: the DAG does
-    # not order these two against each other (see STAGE_DEPENDENCIES).
+    # The only diarizer. Sits beside `whisperx` because both read the extracted audio and
+    # `speaker_assignment` joins them; the DAG does not order them against each other.
     "diarization_nemotron",
     "speaker_assignment",
     "translation",
@@ -72,7 +71,6 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "metadata": (),
     "audio": ("metadata",),
     "whisperx": ("audio",),
-    "diarization": ("audio",),
     # Deliberately independent of `speaker_assignment`: a diarization failure must not cost
     # the transcript labels of a stage that reads the same audio, and either side can be off
     # in a dataset whose subject is the other one.

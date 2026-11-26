@@ -183,3 +183,69 @@ class TestStageBinding:
     def test_unknown_stage_autocreates(self, paths: VideoPaths) -> None:
         state = load(paths)
         assert state.status_of("not_declared") == STATUS_PENDING
+
+
+class TestRetiredStagesInAnExistingOutputTree:
+    """An output directory from an earlier run must still load and plan.
+
+    `diarization` (pyannote) and `speaker_fusion` were removed from the pipeline. Every
+    dataset produced before that carries their `status.json` records, and possibly their
+    files. Loading must not treat the names as a schema violation, must not drop the
+    history (a reader comparing an old tree to a new one needs to see what ran), and must
+    not delete anything: the operator's data is not the pipeline's to remove.
+    """
+
+    @staticmethod
+    def _legacy_tree(paths: VideoPaths) -> None:
+        import json
+
+        stale = paths.dataset_dir / "speaker" / "fusion_pyannote.parquet"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"legacy-fusion-bytes")
+        paths.status.write_text(json.dumps({
+            "schema_version": "1.0",
+            "video_id": "vid",
+            "source": {"path": "/src/vid.mp4"},
+            "overall_status": "completed",
+            "sequence": 7,
+            "stage_order": ["metadata", "diarization", "speaker_fusion", "finalization"],
+            "stages": {
+                "metadata": {"status": "completed", "config_hash": "mh", "run_sequence": 1,
+                             "output_artifacts": ["metadata"]},
+                "diarization": {"status": "completed", "config_hash": "dh",
+                                "run_sequence": 2, "output_artifacts": ["speaker_turns"],
+                                "output_row_counts": {"speaker_turns": 3}},
+                "speaker_fusion": {"status": "completed", "config_hash": "fh",
+                                   "run_sequence": 3,
+                                   "output_artifacts": ["speaker_fusion_pyannote"]},
+                "finalization": {"status": "completed", "config_hash": "nh",
+                                 "run_sequence": 4},
+            },
+        }), encoding="utf-8")
+
+    def test_the_retired_records_load_and_are_kept(self, paths: VideoPaths) -> None:
+        self._legacy_tree(paths)
+        state = VideoState.load(paths, "vid", "/src/vid.mp4")
+        state.bind_stages(["metadata", "audio", "whisperx"])
+        assert state.stage("diarization").status == STATUS_COMPLETED
+        assert state.stage("speaker_fusion").status == STATUS_COMPLETED
+        # History survives a save, next to the stages the pipeline still has.
+        state.save()
+        reloaded = VideoState.load(paths, "vid")
+        assert reloaded.stage("diarization").status == STATUS_COMPLETED
+        assert "audio" in reloaded.stage_order
+
+    def test_the_sequence_counter_never_restarts_below_a_recorded_run(
+            self, paths: VideoPaths) -> None:
+        self._legacy_tree(paths)
+        state = VideoState.load(paths, "vid", "/src/vid.mp4")
+        assert state.sequence == 7
+        assert state.next_sequence() == 8
+
+    def test_no_legacy_file_is_deleted_by_loading_or_saving(self, paths: VideoPaths) -> None:
+        self._legacy_tree(paths)
+        stale = paths.dataset_dir / "speaker" / "fusion_pyannote.parquet"
+        state = VideoState.load(paths, "vid", "/src/vid.mp4")
+        state.bind_stages(["metadata", "audio"])
+        state.save()
+        assert stale.read_bytes() == b"legacy-fusion-bytes"

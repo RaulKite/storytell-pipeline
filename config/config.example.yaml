@@ -46,23 +46,6 @@ whisperx:
   # align_model: null            # override the per-language wav2vec2 alignment model
   python_version: "3.12"
 
-diarization:
-  enabled: true
-  uv_project: environments/diarization
-  worker: workers/diarization_worker.py
-  provider: pyannote
-  pipeline: pyannote/speaker-diarization-community-1
-  hf_token_env: HF_TOKEN         # read from the environment, never from this file
-  device: cuda
-  device_index: 0
-  # Community-1 also returns an *exclusive* timeline (one speaker per instant);
-  # preferring it makes transcript/speaker reconciliation well-defined.
-  use_exclusive_diarization_for_alignment: true
-  # min_speakers: 1
-  # max_speakers: 8
-  # num_speakers: 2              # set only when the count is genuinely known
-  python_version: "3.12"
-
 # The speaker diarizer. It writes speech/speaker_turns_nemotron.parquet, and
 # speaker_assignment labels the transcript from that table -- there is no second engine.
 # On by default because it is the only one; it skips cleanly (never fails) when its uv

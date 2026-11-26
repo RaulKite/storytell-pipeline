@@ -851,7 +851,7 @@ FRAME_MIN_FILL = 0.5
 # an afternoon: `gloss_en` is a *segment-level* translation although its name says "gloss"
 # (which means a word-by-word gloss to anyone who has read a linguistics interlinear); the
 # score on `face_tracks` is a TalkNet logit-like number and not a probability; and the id spaces
-# that really are unrelated — each diarizer's `speaker_id` and YOLO's `person_id` — can print
+# that really are unrelated — the diarizer's `speaker_id` and YOLO's `person_id` — can print
 # equal digits for different things (§20.2). Putting this in the document rather than only in
 # the README is what makes the claim travel with the file. It is one property, kept to a few
 # clauses, and it describes only tiers this module actually writes.
@@ -1046,18 +1046,15 @@ def translation_rows(item: TierInput) -> list[dict[str, Any]]:
 
 
 def turn_rows_factory(engine: str) -> Callable[[TierInput], list[dict[str, Any]]]:
-    """One builder for both diarizers' turn tables.
+    """Build the diarization turn tier from ``speaker_turns_nemotron``.
 
-    ``engine`` is passed in rather than read off the filename because the two tables are
-    produced by two stages and the tier name is the thing that says which is which; a
-    builder that sniffed ``path.name`` would silently label Nemotron turns "pyannote" the
-    week one of the two files was renamed.
-
-    The label says ``speaker <id>`` rather than printing a bare id because pyannote's
-    ``SPEAKER_00`` and Nemotron's arrival-ordered ``speaker_0`` are unrelated clusters over
-    unrelated channels, and a tier label is the one part of the file that leaves it — into a
-    screenshot or a quote — without the tier header that names the engine. The word is the
-    namespace marker; the id itself is copied through untouched.
+    ``engine`` is passed in rather than read off the filename, for the reason the fusion
+    tiers once needed the same discipline: a builder that sniffed ``path.name`` would label
+    a table by the shape of its filename, and the tier label is the part of the file that
+    leaves it — into a screenshot or a quote — without the tier header that names the
+    producer. The word ``speaker`` before the id is the namespace marker, because
+    Nemotron's arrival-ordered ``speaker_0`` and TalkNet's face ``track_id`` are unrelated
+    id spaces (§20.2); the id itself is copied through untouched.
     """
 
     def build(item: TierInput) -> list[dict[str, Any]]:
@@ -1873,7 +1870,6 @@ TIERS: tuple[TierSpec, ...] = (
     TierSpec("words", "speech_words", words_rows, "word-level transcript"),
     TierSpec("segments_src", "speech_segments", segments_rows, "source-text segments"),
     TierSpec("gloss_en", "translation_segments", translation_rows, "English gloss"),
-    TierSpec("turns_pyannote", "speaker_turns", turn_rows_factory("pyannote"), "engine 1 turns"),
     TierSpec("turns_nemotron", "speaker_turns_nemotron", turn_rows_factory("nemotron"),
              "diarization turns"),
     TierSpec("asd_speaking", "active_speaker_frames", asd_speaking_rows, "ASD blocks"),

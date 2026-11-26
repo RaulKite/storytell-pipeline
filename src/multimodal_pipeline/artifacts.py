@@ -20,16 +20,12 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "audio": "audio/audio.wav",
     "frame_index": "source/frame_index.parquet",
     "whisperx_raw": "speech/raw/whisperx.json",
-    "diarization_raw": "speech/raw/diarization.json",
-    "diarization_rttm": "speech/raw/diarization.rttm",
-    "exclusive_diarization_raw": "speech/raw/exclusive_diarization.json",
     "speech_segments": "speech/segments.parquet",
     "speech_words": "speech/words.parquet",
-    "speaker_turns": "speech/speaker_turns.parquet",
-    # Second-engine diarization. Separate raw file and separate table on purpose:
-    # `speaker_turns` keeps meaning "pyannote only", so every dataset produced before this
-    # stage existed keeps its meaning, and a reviewer comparing engines is comparing two
-    # files rather than one file with a mode column.
+    # Nemotron's own diarization: the raw worker document and the turn table the transcript
+    # is labelled from. The artifact name keeps the `_nemotron` suffix every dataset already
+    # produced has; renaming it would make a re-run of an old output directory write a
+    # second, empty table beside the populated one.
     "nemotron_diarization_raw": "speech/raw/nemotron_diarization.json",
     "speaker_turns_nemotron": "speech/speaker_turns_nemotron.parquet",
     "translation_raw": "translation/raw",
@@ -91,7 +87,6 @@ STAGE_LOG_NAMES = (
     "metadata",
     "audio",
     "whisperx",
-    "diarization",
     "diarization_nemotron",
     "speaker_assignment",
     "translation",

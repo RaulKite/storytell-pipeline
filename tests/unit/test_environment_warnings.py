@@ -45,15 +45,13 @@ def base_config(tmp_path: Path) -> PipelineConfig:
     filters by needle instead of comparing whole lists.
     """
     (tmp_path / "videos").mkdir()
-    for name in ("whisperx", "diarization", "diarization_nemotron", "spacy", "acoustic",
-                 "activespeaker"):
+    for name in ("whisperx", "diarization_nemotron", "spacy", "acoustic", "activespeaker"):
         (tmp_path / "environments" / name).mkdir(parents=True)
     return PipelineConfig.model_validate(
         {
             "project_root": str(tmp_path),
             "input": {"directory": str(tmp_path / "videos")},
             "output": {"directory": str(tmp_path / "out")},
-            "diarization": {"enabled": False},
             "diarization_nemotron": {"enabled": False},
             "translation": {"enabled": False},
             "openpose": {"enabled": False},
@@ -298,24 +296,30 @@ class TestUvProjectsWarnOnlyWhenAbsent:
     ) -> None:
         """A stage the operator switched off does not need its environment.
 
-        The warning loop today walks every stage config regardless of `enabled`, so a
-        config with diarization disabled still reports its missing uv project. That is
-        noise that buries the warnings which matter.
+        The warning loop walks every stage config regardless of `enabled`, so a config with
+        the diarizer switched off still reports its missing uv project. That is noise that
+        buries the warnings which matter.
         """
-        shutil.rmtree(tmp_path / "environments" / "diarization")
-        config = base_config.model_copy(deep=True)  # diarization already disabled
-        assert not warnings_containing(_environment_warnings(config), "diarization")
+        shutil.rmtree(tmp_path / "environments" / "diarization_nemotron")
+        config = base_config.model_copy(deep=True)  # the diarizer is already disabled
+        assert not warnings_containing(_environment_warnings(config), "diarization_nemotron")
 
 
 class TestWarningOrder:
-    def test_credential_warning_stays_first(self, base_config: PipelineConfig) -> None:
-        """tests/e2e/test_cli_smoke.py asserts environment_warnings[0] names HF_TOKEN."""
+    def test_endpoint_warning_stays_first(self, base_config: PipelineConfig) -> None:
+        """A credential-free ordering: the endpoint the operator must supply comes first.
+
+        The HF token used to be the first warning. It is not a warning any more — the
+        Nemotron checkpoint is not gated — so the translation endpoint, which really does
+        make a stage skip, leads the list.
+        """
         config = base_config.model_copy(deep=True)
-        object.__setattr__(config.diarization, "enabled", True)
+        object.__setattr__(config.translation, "enabled", True)
         object.__setattr__(config.activespeaker, "enabled", True)
         object.__setattr__(config.spacy, "enabled", True)
         warnings = _environment_warnings(config)
-        assert "HF_TOKEN" in warnings[0], warnings
+        assert "translation endpoint" in warnings[0], warnings
+        assert not [w for w in warnings if "HF_TOKEN" in w], warnings
 
 
 class TestReportStaysMachineReadable:

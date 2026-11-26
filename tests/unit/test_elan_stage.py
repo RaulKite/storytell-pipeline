@@ -100,10 +100,10 @@ class TestStageWiring:
         eaf_text = ctx.artifact("elan_annotations").read_text(encoding="utf-8")
         root = ET.fromstring(eaf_text)
         assert summary["tiers"] == len(real_tier_names(root))
-        assert summary["tier_counts"] == {"words": 3, "turns_pyannote": 1, "asd_speaking": 3,
+        assert summary["tier_counts"] == {"words": 3, "turns_nemotron": 1, "asd_speaking": 3,
                                           "face_tracks": 1, "pose_presence": 2}
         assert summary["annotations"] == 10
-        assert summary["skipped_tiers"] == ["segments_src", "gloss_en", "turns_nemotron",
+        assert summary["skipped_tiers"] == ["segments_src", "gloss_en",
                                             "person_tracks",
                                             "voiced_blocks", "f0_blocks", "intensity_blocks",
                                             "formant_blocks"]
@@ -184,7 +184,7 @@ class TestStageWiring:
         # `words` is absent from the census entirely rather than reported as 0: a tier whose
         # file was never produced is skipped, which is the difference between "this dataset has
         # no words" and "the words table exists and is empty".
-        assert summary["tier_counts"] == {"segments_src": 1, "turns_pyannote": 1,
+        assert summary["tier_counts"] == {"segments_src": 1, "turns_nemotron": 1,
                                          "asd_speaking": 3, "face_tracks": 1,
                                          "pose_presence": 2}
         assert "words" in summary["skipped_tiers"]
@@ -722,7 +722,7 @@ class TestConfigAndRegistry:
         assert "elan_annotations" in MANIFEST_ARTIFACTS
         assert "activespeaker_video_raw" in MANIFEST_ARTIFACTS
         assert "pose_skeleton_video" in MANIFEST_ARTIFACTS
-        assert len(MANIFEST_ARTIFACTS) == 46
+        assert len(MANIFEST_ARTIFACTS) == 42
 
     def test_the_registered_path_lives_in_its_own_directory(self) -> None:
         assert ARTIFACT_LAYOUT["elan_annotations"] == "elan/annotations.eaf"
@@ -961,7 +961,7 @@ class TestRecordReportsWhatWasLeftOut:
         summary = record_of(stage, ctx)
         assert summary["dropped_rows"] == {}
         assert summary["projected_tiers"] == {}
-        assert len(summary["coverage"]) == 21
+        assert len(summary["coverage"]) == 20
 
 
 class TestValidateChecksCoverageAgainstTheDocument:
@@ -1277,10 +1277,10 @@ class TestValidateChecksCoverageAgainstTheDocument:
         stage = ElanStage()
         ctx = stage_context(stage_config, dataset["dir"], dataset["video"])
         summary = record_of(stage, ctx)
-        assert len(summary["coverage"]) == 21, "the inventory stopped covering the 21 tables"
+        assert len(summary["coverage"]) == 20, "the inventory stopped covering the 20 tables"
         monkeypatch.setitem(artifacts_module.ARTIFACT_LAYOUT, "eye_gaze", "gaze/eye.parquet")
         assert len([key for key, relative in artifacts_module.ARTIFACT_LAYOUT.items()
-                    if relative.endswith(".parquet")]) == 22
+                    if relative.endswith(".parquet")]) == 21
         assert stage.validate(ctx)["tiers"] == 5
 
     @pytest.mark.parametrize("bad_tiers", [

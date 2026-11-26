@@ -243,8 +243,8 @@ class TestManifest:
 
     def test_missing_optional_artifacts_are_declared_not_promised(self, paths: VideoPaths) -> None:
         manifest = self.build(paths)
-        assert "speaker_turns" in manifest["artifacts_not_generated"]
-        assert "speaker_turns" not in manifest["artifacts"]
+        assert "speaker_turns_nemotron" in manifest["artifacts_not_generated"]
+        assert "speaker_turns_nemotron" not in manifest["artifacts"]
 
     def test_paths_are_relative_to_the_dataset(self, paths: VideoPaths) -> None:
         manifest = self.build(paths)

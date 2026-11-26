@@ -37,7 +37,6 @@ from multimodal_pipeline.schemas import (
     PERSON_FRAMES_SCHEMA,
     PERSON_TRACKS_SCHEMA,
     SPEAKER_TURNS_NEMOTRON_SCHEMA,
-    SPEAKER_TURNS_SCHEMA,
     TABLE_SCHEMAS,
 )
 from multimodal_pipeline.stages.persons import CONFIDENCE_REASONS, PersonsStage
@@ -309,7 +308,7 @@ class TestIDNamespacesCannotBeConfused:
 
     def test_no_person_schema_is_the_same_object_as_an_asd_or_speaker_schema(self):
         others = (ACTIVE_SPEAKER_FRAMES_SCHEMA, ACTIVE_SPEAKER_TRACKS_SCHEMA,
-                  SPEAKER_TURNS_SCHEMA, SPEAKER_TURNS_NEMOTRON_SCHEMA)
+                  SPEAKER_TURNS_NEMOTRON_SCHEMA)
         for person_schema in (PERSON_FRAMES_SCHEMA, PERSON_TRACKS_SCHEMA):
             for other in others:
                 assert person_schema is not other
@@ -481,7 +480,7 @@ class TestDagRegistration:
         from multimodal_pipeline.stages.base import dependants_of
 
         assert "persons" not in dependants_of("whisperx")
-        assert "persons" not in dependants_of("diarization")
+        assert "persons" not in dependants_of("diarization_nemotron")
         assert "persons" not in dependants_of("activespeaker")
         assert "persons" in dependants_of("metadata")
 
@@ -545,7 +544,7 @@ class TestSchemaRegistry:
         # The ASD tables are absent from this registry by pre-existing design (they are written
         # with their schema object passed explicitly); what is asserted here is that adding two
         # entries did not disturb the ones that were registered.
-        for name in ("pose_body", "pose_normalized", "speaker_turns", "frame_index"):
+        for name in ("pose_body", "pose_normalized", "speaker_turns_nemotron", "frame_index"):
             assert name in TABLE_SCHEMAS
 
 
@@ -565,7 +564,8 @@ class TestEnvironmentInventory:
             "project_root": str(tmp_path),
             "input": {"directory": str(tmp_path / "videos")},
             "output": {"directory": str(tmp_path / "out")},
-            "diarization": {"enabled": False}, "translation": {"enabled": False},
+            "diarization_nemotron": {"enabled": False},
+            "translation": {"enabled": False},
             "openpose": {"enabled": False}, "activespeaker": {"enabled": False},
             "spacy": {"enabled": False}, "whisperx": {"enabled": False},
             "acoustic": {"enabled": False}, "persons": {"enabled": True},
@@ -583,7 +583,8 @@ class TestEnvironmentInventory:
             "project_root": str(tmp_path),
             "input": {"directory": str(tmp_path / "videos")},
             "output": {"directory": str(tmp_path / "out")},
-            "diarization": {"enabled": False}, "translation": {"enabled": False},
+            "diarization_nemotron": {"enabled": False},
+            "translation": {"enabled": False},
             "openpose": {"enabled": False}, "activespeaker": {"enabled": False},
             "spacy": {"enabled": False}, "whisperx": {"enabled": False},
             "acoustic": {"enabled": False},

@@ -67,16 +67,12 @@ FILE_BLURBS: dict[str, str] = {
                    "`frame_number` → `pts_seconds`",
     "audio": "the single extracted audio track every audio measurement descends from",
     "whisperx_raw": "native WhisperX transcript + word timestamps, untouched",
-    "diarization_raw": "native pyannote output, untouched",
-    "diarization_rttm": "the same diarization in standard RTTM form",
-    "exclusive_diarization_raw": "non-overlapping variant of the pyannote result, the "
-                                 "one alignment prefers when configured to",
     "speech_segments": "transcript segments with language and the assigned speaker",
     "speech_words": "words with alignment status and confidence",
-    "speaker_turns": "pyannote turn intervals",
-    "nemotron_diarization_raw": "native second-engine diarization, untouched",
-    "speaker_turns_nemotron": "Nemotron turn intervals — a different `speaker_id` "
-                              "namespace from `speaker_turns`",
+    "nemotron_diarization_raw": "native diarization output, untouched",
+    "speaker_turns_nemotron": "Nemotron turn intervals, with the overlap each turn "
+                              "measures against other speakers; `speaker_id` is this "
+                              "model's own namespace, not a face or person id",
     "translation_segments": "English gloss keyed by `segment_id`; a translation, not a "
                             "second transcript",
     "translation_raw": "preserved provider responses and the request-keyed cache",

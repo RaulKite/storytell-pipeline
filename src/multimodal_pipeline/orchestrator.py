@@ -1,7 +1,7 @@
 """Stage construction, DAG execution and resume decisions for one video.
 
 Execution is strictly sequential: one video at a time, one stage at a time,
-because every GPU-heavy stage (WhisperX, Pyannote, spaCy transformers,
+because every GPU-heavy stage (WhisperX, Nemotron diarization, spaCy transformers,
 OpenPose) would otherwise contend for the single RTX 4090.
 """
 
@@ -37,7 +37,6 @@ from .stages.base import (
     should_reuse,
     stage_selection,
 )
-from .stages.diarization import DiarizationStage
 from .stages.diarization_nemotron import DiarizationNemotronStage
 from .stages.finalization import FinalizationStage
 from .stages.elan import ElanStage
@@ -61,7 +60,6 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         MetadataStage,
         AudioStage,
         WhisperXStage,
-        DiarizationStage,
         DiarizationNemotronStage,
         SpeakerAssignmentStage,
         TranslationStage,
@@ -505,7 +503,6 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
     """
     mapping = {
         "whisperx": config.whisperx.enabled,
-        "diarization": config.diarization.enabled,
         "translation": config.translation.enabled,
         # Default-true, so its flag has to be listed or the status table calls a stage the
         # operator switched off "enabled" (the mapping defaults to True). Same reasoning as

@@ -98,7 +98,7 @@ class TestSummary:
     def test_stage_statuses_are_recorded(self, dataset: StageContext) -> None:
         manifest = finalize(dataset)
         assert manifest["processing"]["stages"]["whisperx"] == "completed"
-        assert manifest["processing"]["stages"]["diarization"] == "pending"
+        assert manifest["processing"]["stages"]["diarization_nemotron"] == "pending"
 
     def test_overall_status_is_the_states_aggregate(self, dataset: StageContext) -> None:
         assert finalize(dataset)["processing"]["status"] == dataset.state.overall_status
