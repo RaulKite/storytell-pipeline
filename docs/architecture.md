@@ -17,19 +17,26 @@ Back to the overview: [Storytel Pipeline](../README.md).
 
 ## System boundaries
 
-```text
-CLI → validated config + video discovery → VideoRunner
-                                            │
-                           Stage: enabled / prepare / run / validate
-                                            │
-                         ┌──────────────────┼─────────────────────┐
-                    in-process         uv worker             external binary
-                  Arrow transforms    isolated ML env        ffmpeg / OpenPose
-                         └──────────────────┼─────────────────────┘
-                              raw files + normalized Parquet
-                                            │
-                          finalization → ELAN → summary refresh
+```mermaid
+flowchart TB
+    cli["multimodal-pipeline CLI"] --> cfg["config YAML + .env<br/>validated, unknown keys rejected"]
+    cfg --> disc["discovery<br/>one video_id per input file"]
+    disc --> runner["VideoRunner<br/>one video and one stage at a time"]
+    runner --> contract["stage contract<br/>enabled, prepare, execute, validate"]
+    contract --> inproc["in-process<br/>Arrow transforms, fusion, ELAN writer"]
+    contract --> worker["uv worker<br/>environments/NAME project"]
+    contract --> binary["external binary<br/>ffmpeg, ffprobe, OpenPose"]
+    inproc --> out["preserved raw tool output<br/>and normalized Parquet tables"]
+    worker --> out
+    binary --> out
+    out --> fin["finalization<br/>manifest, provenance, cross-modal checks"]
+    fin --> eaf["elan stage<br/>elan/annotations.eaf"]
+    fin --> summary["explanation.md guides<br/>and batch_report.json"]
 ```
+
+The three execution columns are a boundary, not an implementation detail: a stage that
+needs a heavy model declares a `uv` project and a worker, so the orchestrator stays
+importable without torch, pyannote, spaCy or Parselmouth.
 
 | Responsibility | Source |
 |---|---|
@@ -48,6 +55,33 @@ Workers communicate through files and subprocess results, not shared model objec
 
 Rows follow `STAGE_ORDER`; dependencies are the direct edges of `STAGE_DEPENDENCIES`.
 An execution position does not imply a dependency on the preceding stage.
+
+```mermaid
+flowchart TD
+    metadata --> audio & openpose & activespeaker & persons
+    audio --> whisperx & diarization & diarization_nemotron & acoustic & activespeaker
+    openpose --> pose_normalized
+    whisperx --> speaker_assignment
+    diarization --> speaker_assignment & speaker_fusion
+    diarization_nemotron --> speaker_fusion
+    activespeaker --> speaker_fusion
+    speaker_assignment --> translation & spacy_source & acoustic & stories
+    translation --> spacy_english
+    subgraph producers["every other stage above"]
+        direction LR
+        whisperx; diarization; diarization_nemotron; speaker_assignment; translation
+        spacy_source; spacy_english; acoustic; openpose; pose_normalized
+        activespeaker; persons; speaker_fusion; stories
+    end
+    producers --> finalization
+    finalization --> elan
+    classDef optional stroke-dasharray: 6 4,color:#666
+    class diarization_nemotron,activespeaker,persons optional
+```
+
+Dashed nodes are disabled in `config/config.example.yaml` and need an extra install or
+checkout; that is a shipping default, not an unimplemented feature. See the
+[stage status matrix](getting-started.md#what-runs-by-default) for prerequisites.
 
 | Stage | Direct dependencies | Work |
 |---|---|---|
@@ -76,13 +110,31 @@ One video and one stage run at a time to keep GPU memory use predictable. A fail
 stage blocks its dependants, not unrelated branches: a transcription failure does
 not prevent `openpose` or `persons` from processing video frames.
 
-- **Disabled or unavailable optional input:** record a skip reason. A skipped
-  prerequisite is not automatically a failure; each consumer checks what it can use.
-- **Broken required installation:** fail with the tool error. Exceptions are
-  explicitly optional checks, such as Nemotron's missing environment directory.
+Every stage goes through the same decision, in `VideoRunner._run_stage`:
+
+```mermaid
+flowchart TD
+    visit(["each stage, in STAGE_ORDER"]) --> range{"in the selected range?"}
+    range -- no --> outside["skipped: outside requested stage range"]
+    range -- yes --> poison{"failed stage in its dependency chain?"}
+    poison -- yes --> blocked["skipped: upstream stage failed"]
+    poison -- no --> able{"enabled, and its optional inputs present?"}
+    able -- no --> disabled["skipped: recorded reason"]
+    able -- yes --> reuse{"forced, or five-part reuse test passed?"}
+    reuse -- "reusable" --> kept["completed: valid previous result reused"]
+    reuse -- "no" --> running["running: prepare, execute, validate"]
+    running -- "validate raises" --> failed["failed: error, log file, stderr tail"]
+    running -- "validate passes" --> done["completed: hashes, row counts, sequence"]
+```
+
+`skipped` and `failed` are different records on purpose: a skip names a reason the
+operator chose or a prerequisite that is absent, a failure names an error. A zero-row
+table is neither — it is a completed analysis that found nothing.
+
+- **Disabled or unavailable optional input:** record a skip reason; a skipped prerequisite is not automatically a failure.
+- **Broken required installation:** fail with the tool error, except for explicitly optional checks such as Nemotron's missing environment directory.
 - **Failed upstream:** dependent stages are skipped with the upstream named.
-- **Batch policy:** continue to the next video unless `execution.stop_on_video_error`
-  is enabled; failed/partial videos remain visible in the batch report.
+- **Batch policy:** continue to the next video unless `execution.stop_on_video_error` is enabled.
 
 `finalization` excludes `elan` from its dependencies to avoid a cycle. The runner's
 closing summary refresh includes the export after it has run; a manifest read
@@ -136,6 +188,23 @@ independent `uv` project under [`environments/`](../environments), launched by
 `uv run --project environments/<name> python workers/<name>_worker.py` (worker
 filenames are configured, not inferred from the environment name).
 
+```mermaid
+flowchart LR
+    wx["whisperx"] --> ewx["environments/whisperx<br/>workers/whisperx_worker.py"]
+    dia["diarization"] --> edia["environments/diarization<br/>workers/diarization_worker.py"]
+    nem["diarization_nemotron"] --> enem["environments/diarization_nemotron<br/>workers/nemotron_diarization_worker.py"]
+    sp["spacy_source, spacy_english"] --> esp["environments/spacy<br/>workers/spacy_worker.py"]
+    ac["acoustic"] --> eac["environments/acoustic<br/>workers/acoustic_worker.py"]
+    asd["activespeaker"] --> easd["environments/activespeaker<br/>workers/activespeaker_worker.py"]
+    pers["persons"] --> epers["environments/persons<br/>workers/persons_worker.py"]
+    op["openpose"] --> eop["external binary<br/>under openpose.root"]
+    meta["metadata, audio"] --> eff["ffmpeg and ffprobe on PATH"]
+    pure["speaker_assignment, translation, stories,<br/>speaker_fusion, pose_normalized,<br/>finalization, elan"] --> eroot["root project<br/>imported in-process"]
+```
+
+A stage with no worker is pure Python over Parquet or HTTP: it costs a re-read, not a
+model run.
+
 | Environment | Constraint worth preserving |
 |---|---|
 | `whisperx` | Its transcription/alignment torch stack |
@@ -146,7 +215,6 @@ filenames are configured, not inferred from the environment name).
 | `activespeaker` | torch 2.5.1: TalkNet's checkpoints use `torch.load()` without `weights_only=` |
 | `persons` | Ultralytics detection/tracking and its own torch stack |
 
-Exact pins and their failure rationale belong in each `pyproject.toml` and lockfile,
-not a duplicated version list in this guide. Read those comments before upgrading.
-See [Development](development.md) for checks and [Configuration](configuration.md)
-for the runtime settings that select these tools.
+Exact pins and their failure rationale belong in each `pyproject.toml` and lockfile, not
+a version list here: read those comments before upgrading. See [Development](development.md)
+for checks and [Configuration](configuration.md) for the settings that select these tools.
