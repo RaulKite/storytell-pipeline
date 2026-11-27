@@ -1468,6 +1468,48 @@ class TestEncoderCommand:
         assert not scratch_files(dest.parent), "an encoder scratch file was left behind"
 
 
+class TestEncoderScratchIsAlwaysReleased:
+    """The two reserved scratch names must not outlive a run that never encoded a frame.
+
+    Reviewer finding: running without ``ultralytics`` installed left both empty
+    ``.tracks-*`` files in the staged tree, so a failed run littered the dataset it was
+    supposed to leave untouched -- and the next failure added two more.
+    """
+
+    def test_a_model_that_cannot_be_built_leaves_no_scratch_behind(self, worker, tmp_path, clip,
+                                                                frame_index_file, fake_cv2,
+                                                                monkeypatch):
+        # Exactly the failure the reviewer hit: the heavy environment is missing, so the import
+        # inside track_video raises before any writer has been handed a frame. ``None`` in
+        # sys.modules makes that import fail even if ultralytics is installed here.
+        monkeypatch.setitem(sys.modules, "ultralytics", None)
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, dest=dest))
+        assert payload["status"] == "error"
+        assert "ultralytics" in payload["error"]
+        assert not dest.exists()
+        assert not scratch_files(dest.parent), \
+            f"the failed run left {scratch_files(dest.parent)} behind"
+
+    def test_a_model_that_raises_on_construction_also_leaves_no_scratch(
+            self, worker, tmp_path, clip, frame_index_file, fake_cv2, monkeypatch):
+        """A checkpoint that will not load fails in the same place, so it cleans up the same."""
+        def refuse(argument):
+            raise OSError(f"cannot load weights from {argument}")
+
+        monkeypatch.setattr(worker, "resolve_weights",
+                            lambda model, weights_dir: ("yolo11n.pt", None, "stub"))
+        monkeypatch.setitem(sys.modules, "ultralytics",
+                            types.SimpleNamespace(YOLO=refuse))
+        dest = tmp_path / "raw" / "tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, dest=dest))
+        assert payload["status"] == "error"
+        assert not scratch_files(dest.parent), \
+            f"the failed run left {scratch_files(dest.parent)} behind"
+
+
 class TestRenderOutputCannotAliasAnInput:
     """ffmpeg overwrites what it is told to write, and it writes it during the tracking pass.
 

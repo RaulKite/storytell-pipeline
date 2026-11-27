@@ -1297,11 +1297,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "; ".join(f"{a.out_flag} points at the {a.in_flag} {a.other_kind} "
                               f"({a.out_path})" for a in collisions)
                     + " -- refusing to let the render overwrite a path this run uses")
-        document, rows = track_video(
-            video=args.video, model_name=args.model, weights_dir=args.weights_dir,
-            device=args.device, tracker=args.tracker, conf=args.conf, classes=classes,
-            imgsz=args.imgsz, frame_index=frame_index, extra=[], writer=writer,
-        )
+        # Model construction happens *inside* track_video, before the loop that owns the
+        # encoder's cleanup, so a failure there (no ultralytics in the environment, a checkpoint
+        # that will not load) would leave both reserved scratch names empty on disk forever.
+        # Measured: running without ultralytics left ``.tracks-video-xxxx.mp4`` and
+        # ``.tracks-muxed-xxxx.mp4`` in the staged tree (reviewer finding).
+        try:
+            document, rows = track_video(
+                video=args.video, model_name=args.model, weights_dir=args.weights_dir,
+                device=args.device, tracker=args.tracker, conf=args.conf, classes=classes,
+                imgsz=args.imgsz, frame_index=frame_index, extra=[], writer=writer,
+            )
+        except BaseException:
+            if writer is not None:
+                # Idempotent: track_video aborts its own writer on every path it knows about,
+                # and abort() must stay safe when there is no process and no log yet.
+                writer.abort()
+            raise
         document["video_id"] = args.video_id
         write_json_atomic(args.output_json, document)
         payload.update({
