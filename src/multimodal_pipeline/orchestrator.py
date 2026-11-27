@@ -30,6 +30,7 @@ from .stages.acoustic import AcousticStage
 from .stages.audio import AudioStage
 from .stages.base import (
     STAGE_ORDER,
+    UPSTREAM_SKIPPED,
     Stage,
     StageContext,
     StageOutcome,
@@ -182,8 +183,35 @@ class VideoRunner:
                                          f"blocked by failed upstream: {', '.join(upstream_failed)}",
                                          config_hash, dependency_hash, forced))
                 continue
-            enabled, why_disabled = stage.enabled(context)
+            try:
+                enabled, why_disabled = stage.enabled(context)
+            except Exception as exc:  # noqa: BLE001 - a gate that raises is a per-stage defect
+                # A gate that raises used to escape the whole plan: one video's broken OpenPose
+                # install made ``status --plan`` exit 1 before it planned the six videos after
+                # it, so the plan could not even be read to find the defect. Recorded here as
+                # this stage's own failure, and its dependants are told they are blocked.
+                blocked.add(stage.name)
+                planned.append(StagePlan(stage.name, True, f"will fail: {_one_line(exc)}",
+                                         config_hash, dependency_hash, forced))
+                continue
             if not enabled:
+                # A skip caused by a missing upstream table is not a decision about this stage
+                # when that upstream is *scheduled to run in this same pass*: whisperx's
+                # transcript does not exist yet, will be written before this stage's turn, and
+                # the recorded "whisperx skipped" reason describes the previous run instead.
+                # Planning from the recorded state alone reported every transcript consumer as
+                # "disabled: upstream skipped: transcript unavailable" on a plan where whisperx
+                # was about to produce exactly that transcript.
+                pending_upstream = [name for name in dependency_chain(stage.name)
+                                    if name in pending]
+                if why_disabled.startswith(UPSTREAM_SKIPPED) and pending_upstream:
+                    counter += 1
+                    pending[stage.name] = (config_hash, counter)
+                    planned.append(StagePlan(
+                        stage.name, True,
+                        f"{why_disabled}; {', '.join(pending_upstream)} will run first in this "
+                        f"pass", config_hash, dependency_hash, forced))
+                    continue
                 planned.append(StagePlan(stage.name, False, f"disabled: {why_disabled}",
                                          config_hash, dependency_hash, forced))
                 continue
@@ -377,7 +405,25 @@ class VideoRunner:
 
         config_hash = self.config_hash_for(stage, context)
         dependency_hash = self.dependency_hash_for(stage, context)
-        enabled, why_disabled = stage.enabled(context)
+        try:
+            enabled, why_disabled = stage.enabled(context)
+        except Exception as exc:  # noqa: BLE001 - every failure becomes recorded state
+            # **Inside** the failure handling, which is the whole point: this call used to sit
+            # outside it, so a gate that raises — ``openpose`` discovering a binary without the
+            # execute bit is the case that was reported — aborted the entire stage loop. The run
+            # exited 2 with a traceback, the stage stayed ``pending``, and the independent stages
+            # after it (``activespeaker``, ``persons``, ``stories``) never ran although nothing
+            # they read was broken. A gate is part of the stage: its defect fails the stage, its
+            # dependants are blocked, and the rest of the DAG still executes.
+            error = {"type": type(exc).__name__, "message": str(exc)[:2000],
+                     "details": getattr(exc, "details", {}) or {},
+                     "log_file": str(self.paths.log(name)),
+                     "traceback": traceback.format_exc()[-4000:]}
+            self.state.mark_failed(name, error,
+                                   exit_code=getattr(getattr(exc, "result", None), "returncode", None))
+            self.progress(name, STATUS_FAILED, str(exc)[:80])
+            stage_log(f"failed in its own precondition: {exc}")
+            return StageOutcome(executed=False, status="failed", message=str(exc))
         if not enabled:
             self.state.mark_skipped(name, why_disabled or "disabled by configuration")
             self.progress(name, STATUS_SKIPPED, why_disabled or "disabled")
@@ -492,6 +538,16 @@ class _StageLogAdapter:
         self._stage_log(str(message))
         if level >= 30:
             log.warning(message)
+
+
+def _one_line(error: BaseException) -> str:
+    """A gate's exception as one plan-sized line.
+
+    The reason lands in a ``status --plan`` column, where a multi-line traceback would destroy
+    the table the reader is scanning. Truncated, never summarised away: the first 300 characters
+    of an ``UnusableOpenPose`` message name the path and the fix.
+    """
+    return " ".join(str(error).split())[:300] or type(error).__name__
 
 
 def _default_logger_factory(paths: VideoPaths):
