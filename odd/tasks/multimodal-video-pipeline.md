@@ -7,11 +7,11 @@ with [README](../../README.md), [Architecture](../../docs/architecture.md) and
 ## Delivered capabilities
 
 “Built” claims no accuracy, corpus regeneration, desktop usability or hosted CI. Output guides
-and the preview MP4 are contracts in [CLI](../../docs/cli.md) and [Datasets](../../docs/datasets.md).
+and the preview MP4s are contracts in [CLI](../../docs/cli.md) and [Datasets](../../docs/datasets.md).
 
 | Stage | State | Current contract |
 |---|---|---|
-| `persons` | built | Detections/tracks; IDs are not unique-human counts |
+| `persons` | built | Detections/tracks plus an opt-in drawn preview; IDs are not unique-human counts |
 | `stories` | built | Transcript-bound candidates, including legitimate empty answers |
 | `pose_normalized` | built | Separate body-centred table; measured pixels preserved |
 | `openpose` | built | Measured landmarks, opt-in skeleton JPGs and native MP4 |
@@ -23,91 +23,91 @@ and the preview MP4 are contracts in [CLI](../../docs/cli.md) and [Datasets](../
 - [ ] **Operator:** check the current 12-tier export in ELAN on a laptop/desktop — labels and media
   playback; a headless preview cannot close usability.
 - [ ] **Deferred:** committed non-English synthetic fixture and e2e coverage; historical Spanish
-  live-run evidence is not a reproducible CI fixture.
-- [ ] **Verification not established here:** hosted CI, whose unit-test workflow certifies no GPU
-  tool, corpus accuracy, desktop ELAN or hosted run.
-- [ ] **Deferred:** an ASD renderer over normalized selected-face labels; native TalkNet overlays
-  remain a distinct interpretation.
+  live-run evidence is not a CI fixture.
+- [ ] **Deferred:** an ASD renderer over normalized selected-face labels; native overlays stay distinct.
+- [ ] **Not established:** hosted CI, corpus accuracy, desktop ELAN.
+- [ ] **Deferred:** the persons preview's trim branch moves its audio clock by the trimmed amount
+  and fills a leftover gap with silence, but a gap *inside* it stays a timestamp — no measured
+  source shows one, and a resample there would be unverified work.
 
 ## Diarization: Nemotron only
 
-**Decision:** Nemotron (`diarization_nemotron`) is the only diarizer, enabled by default. The
-pyannote engine and the diarization × TalkNet fusion are removed from the code, the config schema,
-the artifact registry and the ELAN tiers. Assumption: the fusion mixes did not inform a labelling,
-and a second engine bought a comparison nobody acted on while doubling artifacts and id namespaces.
+**Decision:** Nemotron (`diarization_nemotron`) is the only diarizer, enabled by default; pyannote
+and the diarization × TalkNet fusion are gone from the code, config schema, artifact registry and
+ELAN tiers. Assumption: a second engine bought a comparison nobody acted on while doubling
+artifacts and id namespaces, and the fusion mixes informed no labelling.
 
 **Consequences:** `speaker_assignment` labels the transcript from
-`speech/speaker_turns_nemotron.parquet` by maximum overlap (`overlap_s` stays) and owns that column
-outright: a cached turn table is used even when the diarizer stage was skipped, and with no table
-it writes `speaker_id: null` plus `no_diarization` rather than leaving pyannote's `SPEAKER_00`
-behind (raw WhisperX untouched). The `_nemotron` artifact name stays: renaming it would leave old
-directories with a populated table beside an empty new one. A config carrying `diarization:` or
-`speaker_fusion:` fails naming the replacement, and `config/config.local.yaml` has both. `HF_TOKEN`
-stays optional. Alternative not taken: ship fusion disabled for a release — the code would keep
-two id namespaces.
+`speech/speaker_turns_nemotron.parquet` by maximum overlap and owns that column outright: a cached
+turn table is used even when the diarizer was skipped, and with no table it writes
+`speaker_id: null` plus `no_diarization` rather than leaving pyannote's `SPEAKER_00` behind. A
+config still carrying either section fails naming the replacement; `HF_TOKEN` stays optional.
 
 ## Every stage enabled by default
 
 **Decision:** every tool/analysis stage is on by default, in the code defaults and in
 `config/config.example.yaml`, so a config naming only input/output measures everything. Only
-preview rendering stays opt-in (`openpose.write_images`, `openpose.write_video`,
-`activespeaker.write_video`): it adds no analysis and each reruns its stage.
+preview rendering stays opt-in (`openpose.write_images` plus the three `write_video` switches): it
+adds no analysis and each reruns its stage.
 
-**Consequences:** `persons` flips to on and `activespeaker` is enabled in the example. To make
-that safe, `enabled()` separates *install state* from defects: a missing uv project, worker
-script, OpenPose binary, TalkNet checkout or `weights_dir` file skips naming the fix, while a
-present but broken tool fails loudly — as *that stage's* recorded failure, so `run` still
-finishes the DAG and `status --plan` still plans the remaining videos. Unchanged: an unset `weights_dir` may download on first
-use — the one prerequisite no pre-flight check sees.
+**Consequences:** `persons` flips to on and `activespeaker` is enabled in the example. `enabled()`
+separates *install state* from defects: a missing uv project, worker script, OpenPose binary,
+TalkNet checkout or `weights_dir` file skips naming the fix, while a present but broken tool fails
+loudly as that stage's recorded failure, so the DAG finishes and `status --plan` plans on.
+
+## Person track preview
+
+**Decision:** draw the boxes and ByteTracker ids in `workers/persons_worker.py`, inside the pass
+that measured them, and publish `persons/tracks.mp4` (`person_track_video`) under a new
+`persons.write_video`; the tables stay authoritative. A switch rather than a derived export, because
+a second decode pass could not prove it drew on these frames — so the render shares the tracking
+pass and its key joins the stage request.
+
+**Consequences:** frames reach ffmpeg as one argv list (`libx264`, `yuv420p`, odd sides padded to
+the chroma grid, source audio muxed only when the source had one) at the rate
+`source/frame_index.parquet` gives and `ffprobe` otherwise, and the decoded count must equal
+`frames_measured` exactly — OpenPose's three-frame slack serves upstream's renderer, while a short
+preview here slides every overlay off its frame. Published as one preflighted step, so a mid-pipe
+death keeps the prior run's files; a resume hashes the preview once and reruns on a mismatch.
+`extra_args` cannot carry `--output-video`, `--ffmpeg` or `--ffprobe`; disabling deletes nothing.
 
 ## Transcript contract, retired records and stale tables
 
 **Decision:** a missing transcript is an install state, and a label nobody produced is a defect.
-`whisperx` skipping now makes `translation`, `spacy_source`, `acoustic`, `stories` and
+`whisperx` skipping makes `translation`, `spacy_source`, `acoustic`, `stories` and
 `speaker_assignment` skip with `upstream skipped: transcript unavailable` (quoting whisperx's own
-reason) instead of failing on an absent table, which ended the video `partial` and exited 2 over
-an install state the run had already reported as a skip.
+reason) instead of failing on an absent table, which ended the video `partial` and exited 2.
 
-**Consequences:** *every* derived table that copies a speaker out of a segment —
-`translation_segments`, the four `linguistic/*` tables and `acoustic/segment_features` — is
-checked against the transcript on its `segment_id`, and a disagreeing one is `stale`: kept out
-of `artifacts`, recorded under `artifacts_not_generated` with the reason, file preserved,
-reported by `validate` under `results[].stale` with exit 0, and skipped as a tier by the ELAN
-export (coverage reads `present, not exported`) so no `.eaf` quotes two speakers for one
-segment. The deferred `linguistic/english/*` gap is closed by the same rule. A damaged turn
-table (reversed, past the audio, another `video_id`, other `audio_sha256`) **fails**
+**Consequences:** every derived table that copies a speaker out of a segment —
+`translation_segments`, the four `linguistic/*` tables and `acoustic/segment_features` — is checked
+against the transcript on `segment_id`, and a disagreeing one is `stale`: kept out of `artifacts`,
+recorded under `artifacts_not_generated`, reported by `validate` with exit 0, and skipped as an
+ELAN tier so no `.eaf` quotes two speakers for one segment; a damaged turn table fails
 `speaker_assignment` instead of nulling the transcript. Retired `diarization`/`speaker_fusion`
 records stay in `status.json`, but only the persisted `current_stage_order` decides
-`overall_status`. Skip reasons reach `batch_report.json` under `videos[].skipped`;
-`stages/elan.py` is in that stage's code digest, so new skip wording re-exports every `.eaf`
-once — seconds, unlike a model rerun.
+`overall_status`; `stages/elan.py` sits in that stage's code digest, so new skip wording
+re-exports every `.eaf` once — not a model rerun.
 
 ## Local full-output profile
 
-**Decision:** the ignored `config/config.local.yaml` adds the three preview switches the example
-leaves off (`openpose.write_images` at 640 px, `openpose.write_video`,
-`activespeaker.write_video`); every stage is on by default, so it adds rendering, not measurement.
-YAML installs no spaCy models and credentials stay in `.env`; “full” means artifact families, and
-`image_max_side: null` would request uncapped source-size images. **ASD decision:** preserve native
-`speaker/raw/video_out.avi` byte-identically with audio, toggle opt-in (enabling invalidates ASD
-reuse, disabling deletes nothing).
+**Decision:** the ignored `config/config.local.yaml` adds the four preview switches the example
+leaves off (`openpose.write_images` at 640 px plus the three `write_video` flags); every stage is
+on, so it adds rendering, not measurement. YAML installs no spaCy model, credentials stay in
+`.env`, `image_max_side: null` uncaps source-size images, and the native
+`speaker/raw/video_out.avi` stays byte-identical with its audio.
 
 ## Verification and recovery
 
-- Stable unit/e2e: **2108 passed, 12 skipped, 0 failed** — the 12 are GPU/download guards; the
-  four `test_elan` corpus tests ran read-only against an operator dataset, and each fix below was
-  broken once on purpose so its named test died. Earlier review found and rechecked failed-mux
-  data loss, symlink shell injection and false human-note claims.
-- Corpus-copy evidence (La-1 + `pipeline_demo`, stages run directly, no GPU work): a forced
-  `speaker_assignment` relabelled both to `speaker_0`/`speaker_1`, the six speaker-bearing derived
-  tables went `stale` and left the manifest, `gloss_en` was skipped so no `.eaf` carries
-  `SPEAKER_00`, and `speech/raw/*` stayed byte-identical. `status --plan` lists **7/7** videos with
-  the diarizer reusable, and a broken OpenPose binary is a per-stage `will fail:` instead of
-  exit 1. Nothing here establishes accuracy or desktop ELAN.
-- Native RDD remains ON; the review workload is split by work unit, not file type, and only
-  observed current authority establishes closure — this document proves none of it. Recovery:
-  `.git/resume-explanations-checkpoint/` holds the earlier diff, config backups and corpus backup;
-  no downloads, paid API requests, input edits or external script edits were made.
+- Stable unit/e2e after the rebase: **2248 passed, 12 skipped, 0 failed** (`-p no:randomly`; the
+  four `test_elan` corpus tests read-only against an operator dataset). One earlier run failed
+  `validate --json` in e2e and did not reproduce in the runs after it.
+- Person preview: real YOLO over the Kimmel clip copied to `/tmp` (read-only input): 126/126
+  decoded frames at the frame index's 29.97 fps, h264/yuv420p plus AAC at offset 0.0, `ffmpeg`
+  decode exit 0, `validate` ok, and a second run reused the published preview. Overlays were read
+  by pixels, not a vision model, and each guard was broken once on purpose so its test died.
+  Track accuracy and a regenerated corpus are not established; RDD stays ON and only observed
+  current authority establishes closure. No downloads, paid API requests or input edits were made.
+  `backup/persons-pre-rebase` is the pre-rebased branch.
 
 ## Known limitations and documentation policy
 
