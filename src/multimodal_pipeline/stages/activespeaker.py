@@ -51,14 +51,48 @@ OUTPUT_FPS = 25
 #: The two checkpoints TalkNet resolves against its own working directory, mirrored from
 #: ``workers/activespeaker_worker.py`` (``PRETRAIN_MODEL`` / ``S3FD_MODEL``), which cannot be
 #: imported here: that module pulls torch at import time, and the orchestrator never imports
-#: torch. The names are the *target* names the worker copies from ``weights_dir`` into the
-#: checkout, so a pre-flight check and the worker's own refusal name the same two files.
-TALKNET_WEIGHTS = ("pretrain_TalkSet.model", "sfd_face.pth")
+#: torch. Each pair is ``(path inside the checkout, basename an operator places in
+#: weights_dir)`` — the two are not the same string, because the face detector lives under
+#: ``model/faceDetector/s3fd/`` and only the basename is what ``place_weights`` copies.
+TALKNET_CHECKPOINTS: tuple[tuple[str, str], ...] = (
+    ("pretrain_TalkSet.model", "pretrain_TalkSet.model"),
+    ("model/faceDetector/s3fd/sfd_face.pth", "sfd_face.pth"),
+)
+
+#: The staged (basename) form of every checkpoint, in declaration order.
+TALKNET_WEIGHTS = tuple(staged for _relative, staged in TALKNET_CHECKPOINTS)
 
 
 def missing_weights(weights_dir: Path) -> list[str]:
-    """The configured checkpoints that are not in ``weights_dir``, in declaration order."""
+    """The configured checkpoints that are not in ``weights_dir``, in declaration order.
+
+    Kept for callers that ask about ``weights_dir`` alone (the worker's contract); the stage
+    itself asks :func:`unavailable_checkpoints`, which also counts what the checkout holds.
+    """
     return [name for name in TALKNET_WEIGHTS if not (weights_dir / name).is_file()]
+
+
+def unavailable_checkpoints(root: Path, weights_dir: Path | None) -> list[str]:
+    """Checkpoints nothing can supply, mirroring ``place_weights`` in the worker.
+
+    The three outcomes the worker has, in its order: a checkpoint already in the checkout is
+    used as it is; without a ``weights_dir`` a missing one is downloaded on first run and is
+    therefore not a reason to skip; with a ``weights_dir`` the file must be there to be
+    staged. The stage used to ask only the last question, so the operator's fully populated
+    checkout plus an empty or unset ``weights_dir`` was reported as "missing checkpoints" and
+    the stage skipped on every run. A gate that disagrees with the worker it gates is worse
+    than no gate: it hides a working install and explains nothing.
+    """
+    absent: list[str] = []
+    for relative, staged in TALKNET_CHECKPOINTS:
+        if (root / relative).is_file():
+            continue
+        if weights_dir is None:
+            continue  # the worker downloads it; an installed checkout is not required
+        if (weights_dir / staged).is_file():
+            continue
+        absent.append(staged)
+    return absent
 
 
 #: The closed set of `frame_reason` values, and the subset that carries no measurement.
@@ -157,12 +191,18 @@ class ActiveSpeakerStage(WorkerStage):
             # it here turns that refusal into a skip, which is the same reading ``persons``
             # gives a configured checkpoint that is not on disk: an uninstalled prerequisite,
             # not a defect in the video.
-            absent = missing_weights(ctx.config.resolve(cfg.weights_dir))
+            #
+            # Asked of *both* places, in the worker's own order: a checkout that already holds
+            # the checkpoints needs nothing from weights_dir, and gating on weights_dir alone
+            # skipped a fully installed TalkNet.
+            absent = unavailable_checkpoints(Path(cfg.talknet_root),
+                                             ctx.config.resolve(cfg.weights_dir))
             if absent:
                 return False, (
                     f"activespeaker.weights_dir is set but {', '.join(absent)} is missing "
-                    f"from {ctx.config.resolve(cfg.weights_dir)} — put the checkpoint(s) "
-                    f"there, or unset activespeaker.weights_dir to let TalkNet download them"
+                    f"from both {cfg.talknet_root} and {ctx.config.resolve(cfg.weights_dir)} "
+                    f"— put the checkpoint(s) in either place, or unset "
+                    f"activespeaker.weights_dir to let TalkNet download them"
                 )
         # Last: the checkout above costs nothing to check, and its reason is the one an
         # operator who has not installed TalkNet at all needs first.

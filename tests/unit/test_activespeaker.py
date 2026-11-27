@@ -23,6 +23,7 @@ from multimodal_pipeline.schemas import (
     write_table,
 )
 from multimodal_pipeline.stages.activespeaker import (
+    TALKNET_CHECKPOINTS,
     TALKNET_WEIGHTS,
     ActiveSpeakerStage,
     missing_weights,
@@ -228,6 +229,66 @@ class TestPrerequisites:
         context.config.activespeaker.weights_dir = None
         assert ActiveSpeakerStage().enabled(context) == (True, "")
         assert missing_weights(tmp_path / "nothing-here") == list(TALKNET_WEIGHTS)
+
+    def test_a_checkout_holding_its_own_checkpoints_is_not_gated_by_weights_dir(
+            self, context, tmp_path):
+        """``weights_dir`` stages the two files; a checkout that already has them needs nothing.
+
+        Reproduced against the operator's config: ``talknet_root`` holds both checkpoints
+        (TalkNet resolves them against its working directory) and ``weights_dir`` is unset or
+        an empty path. The old gate read ``weights_dir`` alone and skipped the stage, so a
+        fully installed TalkNet was reported as missing on every run.
+        """
+        root = install_checkout(context, tmp_path)
+        self.place_in_checkout(root)
+        context.config.activespeaker.weights_dir = tmp_path / "empty-weights"
+        assert ActiveSpeakerStage().enabled(context) == (True, "")
+
+    def test_weights_dir_only_fills_the_files_the_checkout_lacks(
+            self, context, tmp_path):
+        """Mirrors the worker's own order: installed first, ``weights_dir`` for the rest."""
+        root = install_checkout(context, tmp_path)
+        self.place_in_checkout(root, only=TALKNET_WEIGHTS[0])
+        weights = tmp_path / "weights"
+        weights.mkdir()
+        (weights / TALKNET_WEIGHTS[1]).write_bytes(b"not-a-checkpoint")
+        context.config.activespeaker.weights_dir = weights
+        assert ActiveSpeakerStage().enabled(context) == (True, "")
+
+    def test_a_file_missing_from_both_places_names_only_that_file(
+            self, context, tmp_path):
+        root = install_checkout(context, tmp_path)
+        self.place_in_checkout(root, only=TALKNET_WEIGHTS[0])
+        weights = tmp_path / "weights"
+        weights.mkdir()
+        context.config.activespeaker.weights_dir = weights
+        enabled, reason = ActiveSpeakerStage().enabled(context)
+        assert enabled is False
+        assert TALKNET_WEIGHTS[1] in reason
+        assert TALKNET_WEIGHTS[0] not in reason
+
+    def test_the_checkpoint_targets_are_the_ones_the_worker_stages(self):
+        """The disk layout is the worker's, not a copy of it: assert it against its source.
+
+        ``pretrain_TalkSet.model`` sits at the checkout root while the face detector lives
+        under ``model/faceDetector/s3fd/``. Keeping only the basenames would make the gate
+        look for the face detector at the root, where it never is.
+        """
+        import re
+
+        source = (REPO_ROOT / "workers" / "activespeaker_worker.py").read_text(encoding="utf-8")
+        targets = dict(re.findall(r'^(PRETRAIN_MODEL|S3FD_MODEL) = \("([^"]+)",', source, re.M))
+        assert set(targets.values()) == {relative for relative, _staged in TALKNET_CHECKPOINTS}
+
+    @staticmethod
+    def place_in_checkout(root: Path, only: str | None = None) -> None:
+        """Put the checkpoints where TalkNet resolves them, as the operator's does."""
+        for relative, staged in TALKNET_CHECKPOINTS:
+            if only is not None and staged != only:
+                continue
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"not-a-checkpoint")
 
     def test_the_mirrored_filenames_are_the_ones_the_worker_asks_for(self):
         """The stage cannot import the worker (that module pulls torch at import time), so
