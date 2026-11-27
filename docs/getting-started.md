@@ -39,7 +39,7 @@ of the corpus completes.
 | `pose_normalized` | on | OpenPose body output | `pose/normalized.parquet` | [Modalities](modalities.md#pose-coordinates) |
 | `activespeaker` | on | TalkNet-ASD checkout at `activespeaker.talknet_root`, its environment | `speaker/active_speaker_frames.parquet`, `speaker/active_speaker_tracks.parquet` | [Modalities](modalities.md#active-speaker-evidence) |
 | `persons` | on | its environment; a checkpoint under `persons.weights_dir`, or the worker downloads one | `persons/frames.parquet`, `persons/tracks.parquet` | [Modalities](modalities.md#person-tracks) |
-| `stories` | on | endpoint, key, model | `stories/stories.parquet` | [Modalities](modalities.md#story-candidates) |
+| `stories` | on | endpoint, key, model | `stories/storytelling_events.parquet`, `stories/stories.parquet` | [Modalities](modalities.md#storytelling-events-and-stories) |
 | `finalization` | always | — | `manifest.json`, `provenance/` | [Datasets](datasets.md#read-a-dataset) |
 | `elan` | on | a transcript (words or segments) | `elan/annotations.eaf` | [ELAN export](elan.md) |
 

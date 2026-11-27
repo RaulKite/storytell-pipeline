@@ -1,12 +1,10 @@
 # Datasets and analysis
 
-Start from the manifest to discover outputs, then read the typed Parquet tables.
-This guide maps the files and explains the clocks, identifiers and missing values
-that matter when combining modalities.
+Start from the manifest to discover outputs, then read the typed Parquet tables. This guide
+maps the files and explains the clocks, identifiers and missing values that matter when
+combining modalities. Commands use repository-relative paths: run them from the repository root.
 
 Back to the overview: [Storytel Pipeline](../README.md).
-
-Commands use repository-relative paths: run them from the repository root.
 
 ## Contents
 
@@ -32,7 +30,7 @@ Commands use repository-relative paths: run them from the repository root.
 ├── pose/               body, hands, face, normalized + raw/ and optional raw_images/
 ├── persons/            detections, tracks + raw/yolo_track.json
 ├── speaker/            active-speaker evidence + raw/
-├── stories/            candidates + raw responses/cache
+├── stories/            events, stories, uncertain spans + raw responses, summary, rejected attempts, cache
 ├── elan/               annotations.eaf
 ├── logs/               pipeline.log + <stage>.log
 └── provenance/         config.json, tools.json, processing.json
@@ -94,7 +92,9 @@ Presence is determined by the manifest, not this inventory.
 | `active_speaker_tracks` | `speaker/active_speaker_tracks.parquet` | TalkNet face-track summaries |
 | `person_frames` | `persons/frames.parquet` | YOLO detections and body-track IDs |
 | `person_tracks` | `persons/tracks.parquet` | Body-track summaries and sighting gaps |
-| `stories` | `stories/stories.parquet` | LLM candidates with transcript evidence and request identity |
+| `storytelling_events` | `stories/storytelling_events.parquet` | LLM storytelling-event boundaries (pre-telling/launch … coda/shift): cited segment, verbatim quote, computed times |
+| `stories` | `stories/stories.parquet` | Stories told inside an event: `event_id`, own boundaries, `story_evidence`, `evidence_segment_ids` |
+| `uncertain_spans` | `stories/uncertain_spans.parquet` | Stretches the LLM marked but could not place, with the stated reason |
 
 ### How the tables join
 
@@ -109,7 +109,7 @@ flowchart TB
     tok["linguistic/source/tokens.parquet<br/>token_id, segment_id,<br/>sentence_id"]
     acseg["acoustic/segment_features.parquet<br/>segment_id, start_time, end_time"]
     acfr["acoustic/frame_features.parquet<br/>timestamp only, Praat grid"]
-    st["stories/stories.parquet<br/>story_id, parent_id,<br/>evidence_segment_ids"]
+    st["stories/stories.parquet<br/>story_id, event_id,<br/>evidence_segment_ids"]
     seg -- "segment_id" --> words & en & acseg
     words -. "segment_id only:<br/>grouped at segment grain" .-> tok
     acfr -. "no key: interval overlap only" .-> acseg

@@ -96,7 +96,7 @@ a reason naming it rather than failing the video. See the
 | `pose_normalized` | `openpose` | Body-centred coordinates |
 | `activespeaker` | `metadata`, `audio` | TalkNet face activity |
 | `persons` | `metadata` | YOLO person detection/tracking |
-| `stories` | `speaker_assignment` | Narrative candidates from the source transcript |
+| `stories` | `speaker_assignment` | Storytelling events, the stories inside them, uncertain spans |
 | `finalization` | All producer stages above | Cross-modal validation, manifest and provenance |
 | `elan` | `finalization` | Annotation summary export |
 

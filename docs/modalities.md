@@ -13,7 +13,7 @@ Back to the overview: [Storytel Pipeline](../README.md).
 - [Active-speaker evidence](#active-speaker-evidence)
 - [Pose coordinates](#pose-coordinates)
 - [Person tracks](#person-tracks)
-- [Story candidates](#story-candidates)
+- [Storytelling events and stories](#storytelling-events-and-stories)
 
 ## Speech and language
 
@@ -136,20 +136,70 @@ The detection table contains sightings, not a complete sampled/empty-frame grid.
 An absent detection cannot prove that frame was inspected. YOLO person IDs, OpenPose
 per-frame person indices and TalkNet face tracks cannot be equated by matching digits.
 
-## Story candidates
+## Storytelling events and stories
 
-The `stories` stage asks an LLM for narrative windows in the source transcript.
-Rows retain model/prompt/request identity, times and JSON-encoded evidence segment
-IDs. IDs are namespaced by request window; parent links remain inside that namespace.
-Out-of-window evidence, invalid boundaries and broken parent relationships are
-rejected/countable rather than promoted to valid claims.
+The `stories` stage asks an LLM to mark **storytelling events** (the conversational
+activity of launching and telling: pre-telling, telling, coda) and, **separately**,
+the **stories** told inside them (the represented "what"), plus spans it could not
+place. The three tables are `storytelling_events`, `stories` and `uncertain_spans`;
+a story names its event, and one event may carry several stories.
 
-An empty answer with `no_story_reason` is legitimate and retained in raw response
-metadata; a video with no transcript segments skips the stage. A story whose evidence
-crosses request-window boundaries can be dropped, so absence is not a recall result.
-Raw responses and cache entries make claims auditable; low temperature alone does
-not make service responses deterministic.
+The prompt is the domain expert's own annotation prompt, quoted word for word in
+[stories annotation guidelines](stories-annotation-guidelines.md) — her goal,
+speaker-attribution limitation, working criteria, boundary guidance, multiple
+tellers rule and annotation rules are hers as she wrote them. Two of her sections are
+adapted, because they describe her input and her output rather than this stage's: her
+WhisperX JSON section becomes the input format below, and her `time_seconds` report
+becomes a `segment_id` + `transcript_quote` citation the pipeline resolves itself.
+Prompts that paraphrase a domain expert's criteria are the failure this avoids.
 
-There is no validated ground truth or accuracy guarantee here. **Story candidates
-are not exported as an ELAN tier**. Transcript evidence supports auditing a claim,
-not treating the LLM's title/confidence as a measurement of narrative truth.
+The model cites a `segment_id` and copies a `transcript_quote` from that one segment;
+it never reports times. The pipeline finds the quote (whole words only, case folded one
+character to one character) in `speech/segments.parquet` and times its **first and last
+word** through `speech/words.parquet`. `*_time_precision` is `word`, or `segment` when the
+edge word has no exact alignment; a neighbouring word's time is never borrowed, and
+character offsets are used only when they slice exactly that word. A quote that occurs
+more than once in its segment needs `occurrence` (1 = first), because a segment such as
+"no no" has no longer unique quote. The whole answer is rejected for an invented or
+unshown segment id, a non-verbatim or unresolved quote, an enum value outside the closed
+vocabularies, a duplicate id, a story outside its event, inconsistent `story_ids`, a
+missing `story_evidence` explanation (or one made only of segment ids), or
+`evidence_segment_ids` that are empty or outside the story's span. The retry is a repair:
+the same prompt, the rejected answer (omitted above `stories.repair_max_answer_chars`)
+and a bounded list of problems; a repair the endpoint refuses for size (HTTP 400/413) is
+resent as the plain question. Transport failures are retried unchanged. `story_evidence` holds the model's explanations of why the stretch is
+a story; `evidence_segment_ids` names the segments they rest on.
+
+Each segment is shown as `segment_id`/`start`/`end`, its own `text:` (the only place
+quotes come from) and its `speakers:` runs, e.g. `[speaker_0] words … [unknown] words`.
+`stories.speaker_source` is `nemotron` (default; the only diarizer stories read) or `none`. Nemotron's
+turns overlap, so a word gets a label only when one speaker's merged turns cover at least
+`stories.speaker_min_coverage` of it and no other covers `stories.speaker_max_competing`;
+otherwise it is `unknown`. Without Nemotron turns everything is `unknown`, recorded as
+`speaker_source_requested`/`speaker_source_used` in `stories_summary.json`; the
+max-overlap `speaker_id` on segments and words is never read instead. An answer may only
+name labels the prompt showed (context included). Labels are arbitrary ids, not
+identities. Where the transcript itself names a speaker, the model says so in `notes`.
+
+Empty arrays are a legitimate, expected answer and are counted per window; a video
+with no transcript segments skips the stage. The default is the whole transcript in
+one request; setting `stories.max_segments_per_request` restores windowing. An event
+whose boundary — or whose marked interruption — straddles a window is dropped and
+counted **once**, with the number of stories it took with it counted separately
+(`dropped_outside_window`, `dropped_stories_outside_window`), and an uncertain span
+that touches a context segment is dropped and counted the same way, so absence is not a
+recall result; references to the *visible* context segments are evidence, not a reason
+to reject the answer. Raw responses make claims auditable: the
+raw window holds the model's message text exactly as returned (not the HTTP envelope),
+every rejected attempt with message text is kept under `stories/raw/rejected/` with a
+unique name and credentials redacted (an empty message leaves no file), and the cache
+(keyed by the rendered prompt and posted request body) restores those exact bytes on
+reuse. `stories_summary.json` lists every window's raw file, empty windows included;
+`validate()` re-parses and re-validates each one against the current transcript and
+compares the recomputed rows field by field with the table rows of that request. Low temperature alone
+does not make service responses deterministic.
+
+There is no validated ground truth or accuracy guarantee here. **Storytelling events
+and stories are not exported as an ELAN tier**. Transcript evidence supports auditing
+a claim, not treating the LLM's summary or confidence as a measurement of narrative
+truth.

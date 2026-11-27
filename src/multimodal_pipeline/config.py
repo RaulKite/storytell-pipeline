@@ -334,10 +334,40 @@ class StoriesConfig(_Model):
     translation's: a fresh install reports both skips before the run rather than leaving
     the second one to be discovered in seven per-video status files.
 
-    ``max_segments_per_request`` is the limit that makes a long transcript honest. The
-    design does not window silently: a story whose evidence is not entirely inside one
-    window is dropped *and counted* (``dropped_outside_window``), so a clipped answer is a
-    recorded gap rather than a story that never existed.
+    ``prompt_version`` is ``v2`` and nothing else. v2 implements the domain expert's
+    definition of a storytelling event and of the story told inside it, with boundaries
+    cited as ``segment_id`` + verbatim quote; v1's "anecdote with a beginning and an end"
+    and its ``parent_id`` nesting are gone from the code (they stay in Git history). Asking
+    for ``v1`` fails at parse time with that sentence rather than silently rendering the
+    new prompt under an old name.
+
+    ``speaker_source`` chooses where the speaker labels shown to the model come from.
+    ``nemotron`` is the operator's decision: its turns may overlap, so a word whose
+    duration is not clearly dominated by one speaker is labelled ``unknown``
+    (``speaker_min_coverage`` / ``speaker_max_competing``), and ``none`` labels everything
+    ``unknown``. Nemotron is the only diarizer the pipeline keeps (2026-11-26), and the
+    max-overlap ``speaker_id`` on words/segments is never read here. A missing Nemotron
+    table is a supported state, is recorded in ``stories_summary.json`` as
+    ``speaker_source_requested``/``speaker_source_used``, and never falls back to another
+    label source.
+
+    ``repair_max_answer_chars`` bounds the retry a rejected answer earns. That retry is a
+    second request: the same prompt, the rejected answer as an assistant message and the
+    validator's problems, so a very long answer pushed it past the endpoint's context limit
+    and the sequence ended on a length error instead of resampling. Above this budget the
+    rejected answer is omitted and the problems alone are sent — the check that failed is
+    what the model needs, not the text it already wrote. The problem list is bounded
+    separately in code (30 items, 4000 characters), and a repair the endpoint still refuses
+    as too large (HTTP 400/413) is resent as the plain question and counted as
+    ``repair_fallbacks`` in ``stories_summary.json``.
+
+    ``max_segments_per_request`` is ``None`` — the whole transcript in one request — by
+    default, because a storytelling event and its coda can sit at opposite ends of a short
+    conversation and splitting it manufactures the boundary problem. Set it to a number to
+    restore windowing; the design still does not window silently: an event whose evidence
+    is not entirely inside one window is dropped *and counted*
+    (``dropped_outside_window``), so a clipped answer is a recorded gap rather than a story
+    that never existed.
     """
 
     enabled: bool = True
@@ -349,16 +379,24 @@ class StoriesConfig(_Model):
     timeout_seconds: float = 120.0
     max_retries: int = 3
     backoff_base_seconds: float = 1.0
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
     max_output_tokens: int | None = None
     cache: bool = True
-    #: Segments in one window. 60 is a cost decision measured on this corpus: a 1-4
-    #: segment clip costs ~600 prompt tokens, so a minute of transcript is one affordable
-    #: request. Lower it for denser transcripts at the price of more requests.
-    max_segments_per_request: int = 60
-    #: Neighbouring segments shown as CONTEXT. Larger than translation's 2 because a
-    #: narrative boundary often sits just outside the window being judged.
+    #: Segments in one request. ``None`` means the whole transcript (the default); 60 was
+    #: the v1 cost decision for a 1-4 segment clip, and is kept as the documented example
+    #: of a deliberate window rather than as the default.
+    max_segments_per_request: int | None = None
+    #: Neighbouring segments shown as CONTEXT when windowing is on. Larger than
+    #: translation's 2 because a narrative boundary often sits just outside the window
+    #: being judged. Unused when the whole transcript travels in one request.
     context_segments: int = 5
+    speaker_source: str = "nemotron"
+    speaker_min_coverage: float = 0.6
+    speaker_max_competing: float = 0.25
+    #: Largest rejected answer resent inside a repair. Above it the answer is omitted and
+    #: the retry carries only the problems, because a repair that exceeds the endpoint's
+    #: context window ends the sequence instead of fixing it.
+    repair_max_answer_chars: int = 20000
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("provider")
@@ -368,13 +406,68 @@ class StoriesConfig(_Model):
             raise ValueError("stories.provider must be 'openai-compatible' or 'mock'")
         return value
 
+    @field_validator("prompt_version")
+    @classmethod
+    def _prompt_version(cls, value: str) -> str:
+        if value != "v2":
+            raise ValueError(
+                "stories.prompt_version must be 'v2': v1's single-span story model "
+                "(anecdote with a beginning and an end, parent_id nesting) was replaced "
+                "by storytelling events plus the stories told inside them, and no v1 "
+                "code path remains. Historical v1 output stays in Git."
+            )
+        return value
+
     @field_validator("max_segments_per_request")
     @classmethod
-    def _window(cls, value: int) -> int:
+    def _window(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
         if value < 1:
             raise ValueError(
-                "stories.max_segments_per_request must be >= 1: it is how many segments "
-                "travel in one window, and 0 would send no transcript at all"
+                "stories.max_segments_per_request must be >= 1 or null: it is how many "
+                "segments travel in one window, and 0 would send no transcript at all"
+            )
+        return value
+
+    @field_validator("repair_max_answer_chars")
+    @classmethod
+    def _repair_budget(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError(
+                "stories.repair_max_answer_chars must be >= 1: it is a character budget for "
+                "the rejected answer resent inside a repair, and 0 would leave the repair "
+                "with no answer at all"
+            )
+        return value
+
+    @field_validator("speaker_source")
+    @classmethod
+    def _speaker_source(cls, value: str) -> str:
+        if value not in {"nemotron", "none"}:
+            raise ValueError(
+                "stories.speaker_source must be 'nemotron' or 'none' (Nemotron is the "
+                "only diarizer; pyannote labels are not used for stories)"
+            )
+        return value
+
+    @field_validator("speaker_min_coverage")
+    @classmethod
+    def _min_coverage(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError(
+                "stories.speaker_min_coverage is a fraction of a word's duration, so it "
+                "must be in (0, 1]"
+            )
+        return value
+
+    @field_validator("speaker_max_competing")
+    @classmethod
+    def _max_competing(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(
+                "stories.speaker_max_competing is a fraction of a word's duration, so it "
+                "must be in [0, 1] (0 refuses any competing coverage at all)"
             )
         return value
 

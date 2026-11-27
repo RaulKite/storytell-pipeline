@@ -90,8 +90,8 @@ translation:
   cache: true                    # completed batches are reused across runs
   # extra_body: {}               # gateway-specific request fields
 
-# Narrative windows found in the transcript. On by default like translation, and it is the
-# other stage that spends tokens per video, so `inspect-environment` announces an
+# Storytelling events and the stories told inside them. On by default like translation, and
+# it is the other stage that spends tokens per video, so `inspect-environment` announces an
 # unconfigured endpoint the same way it announces translation's. It has its own section
 # rather than sharing translation's object because it has its own prompt version, batching
 # and retry budget: editing the story prompt must not invalidate every cached translation,
@@ -103,19 +103,37 @@ stories:
   api_key: ${LITELLM_API_KEY:-}
   model: claude-sonnet-4-5
   temperature: 0.0               # deterministic: the same transcript should give the same
-                                 # windows, because they are compared across runs
+                                 # boundaries, because they are compared across runs
   timeout_seconds: 120
   max_retries: 3
   backoff_base_seconds: 1.0
-  prompt_version: v1
-  max_segments_per_request: 60   # segments judged per request; a story whose evidence
-                                 # straddles a window is dropped AND counted
-  context_segments: 5            # neighbours shown as context only (translation uses 2:
-                                 # a narrative boundary often sits just outside the window)
+  prompt_version: v2             # v2 only: storytelling events + the stories inside them,
+                                 # with boundaries cited as segment_id + verbatim quote.
+                                 # v1 (single span, parent_id nesting) is gone from the code.
+  max_segments_per_request: null # null = the whole transcript in ONE request (default):
+                                 # an event and its coda can sit at opposite ends of a
+                                 # conversation. A number restores windowing, and an event
+                                 # whose boundaries straddle a window is dropped AND counted.
+  context_segments: 5            # neighbours shown as context only when windowing is on
+  speaker_source: nemotron       # nemotron | none. Nemotron's turns overlap, so
+                                 # a word no single speaker dominates is labelled "unknown".
+                                 # Never falls back to other labels: a missing source is recorded
+                                 # in stories_summary.json as requested -> used.
+  speaker_min_coverage: 0.6      # fraction of a word's duration the dominant speaker must
+                                 # cover before the word is attributed to it
+  speaker_max_competing: 0.25    # and no other speaker may cover this much of it
+  repair_max_answer_chars: 20000 # largest rejected answer resent inside a repair. A
+                                 # retry carries the rejected answer plus the problems, and a
+                                 # very long answer could push it past the endpoint's context
+                                 # limit — which ended the sequence instead of fixing it. Above
+                                 # this budget the answer is omitted and only the problems are
+                                 # sent. A repair the endpoint still refuses (400/413) is
+                                 # resent as the plain question and counted as
+                                 # repair_fallbacks in stories_summary.json.
   cache: true                    # completed windows are reused across runs; the key covers
-                                 # the endpoint and the rendered prompt text, so editing the
-                                 # prompt invalidates them
-  # max_output_tokens: 2000
+                                 # the endpoint, the prompt text, the rendered speaker runs
+                                 # and the speaker-source settings
+  # max_output_tokens: 4000      # the v2 answer (three arrays) is larger than v1's
   # extra_body: {}               # gateway-specific request fields
 
 # Re-basing BODY_25 keypoints onto a person-centred frame, validated keypoint-for-keypoint

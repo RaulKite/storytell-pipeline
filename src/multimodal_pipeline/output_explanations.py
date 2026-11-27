@@ -114,8 +114,15 @@ FILE_BLURBS: dict[str, str] = {
                           "`source/frame_index.parquet` stays the authority on timing, and "
                           "each `id=` is a ByteTracker track id inside this video, not one "
                           "person's identity",
-    "stories": "narrative windows proposed by a language model, with the transcript "
-               "evidence each one cites — a proposal to read, not a labelling",
+    "storytelling_events": "a language model's proposal about where the conversational "
+                           "activity of telling starts and ends (`pre_telling`/"
+                           "`story_launch` … `coda`/`listener_acknowledgment`/"
+                           "`activity_shift`), with the segment and verbatim quote it "
+                           "based each boundary on",
+    "stories": "the represented \"what\" told inside a `storytelling_events` row, with "
+               "**separate** start/end boundaries — a proposal to read, not a labelling",
+    "uncertain_spans": "stretches the model marked but could not place, with the reason "
+                       "it could not decide",
     "stories_raw": "preserved per-window responses and the request-keyed cache",
     "elan_annotations": "the ELAN export: a human-facing summary built from the tables, "
                         "which rewrite nothing and lose detail on purpose",
@@ -306,15 +313,39 @@ DIR_GUIDES: dict[str, Guide] = {
         "`tracks.pckl` and `scores.pckl` are Python pickles: loading them executes code, "
         "so open only files this repository produced.",
     )),
-    "stories": Guide("Narrative candidates", (
-        "Rows are a language model's proposal about the transcript, each citing the "
-        "segments it came from. They are a reading to check against "
-        "`speech/segments.parquet`, never a labelling.",
+    "stories": Guide("Storytelling events and stories", (
+        "Three tables, because a storytelling event and the story told inside it are "
+        "different claims: `storytelling_events.parquet` marks the conversational activity "
+        "(launching, telling, coda), `stories.parquet` marks the represented \"what\" "
+        "inside it, and `uncertain_spans.parquet` marks what the model could not place. An "
+        "event may hold several stories, and a story's boundaries need not coincide with "
+        "its event's.",
+        "Every boundary names a `segment_id` and the `transcript_quote` the model copied "
+        "from that one segment's text; the times here were **computed** from the quote's "
+        "first and last word through `speech/words.parquet`, never typed by the model. "
+        "`start_time_precision` / `end_time_precision` say whether a time came from word "
+        "alignment (`word`) or had to fall back to the cited segment's own boundary "
+        "(`segment`) because the edge word had no exact alignment — a quote must cover "
+        "whole words and must occur once in its segment, or the answer is refused.",
+        "`stories.story_evidence` holds the model's short explanations of why the stretch "
+        "is a story; `evidence_segment_ids` names the segments of the story itself that "
+        "carry that evidence.",
+        "Speakers come from automatic diarization — Nemotron by default — so they are "
+        "arbitrary ids, not identities, and `unknown` means the diarizer could not decide "
+        "that word. `stories_summary.json` records which source was requested and which "
+        "was used.",
+        "These are readings to check against `speech/segments.parquet`, never a labelling, "
+        "and empty tables are a real answer: a clip with no storytelling event produces "
+        "zero rows on purpose.",
     )),
     "stories/raw": Guide("Preserved story responses (optional)", RAW_NOTES + (
-        "One file per window, named by window and request identity, plus a cache and "
-        "`stories_summary.json`; the summary's window count is what the table is "
-        "validated against, because an empty window has no rows to count.",
+        "One file per window, named by window and request identity, plus a cache, a "
+        "`rejected/` directory holding each attempt the validator refused (with its reason, "
+        "a unique name and the API key redacted) and `stories_summary.json`, which lists "
+        "every window's raw file. `validate` reads those files back: each response is parsed "
+        "and re-validated against the current transcript, and must yield the event and story "
+        "ids the tables attribute to its window, because existing on disk is not evidence "
+        "that the answer still says what the row does.",
     )),
     "elan": Guide("ELAN export", (
         "`annotations.eaf` is built from the tables and rewrites nothing. It is a "
