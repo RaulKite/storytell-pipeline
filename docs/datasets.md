@@ -135,8 +135,12 @@ flowchart TB
 ```
 
 Solid edges are id joins; dotted ones are overlap, a shared clock or a coarser-grain id.
-None is a declared foreign key; `finalization` checks only that translation rows cite an
-existing `segment_id` and that transcript `speaker_id`s appear in the diarizer's turns.
+None is a declared foreign key; `finalization` checks that translation rows cite an
+existing `segment_id`, that transcript `speaker_id`s appear in the diarizer's turns, and
+that a transcript citing speakers at all has a diarization table to justify them. A
+translation whose `speaker_id` disagrees with its source segment is reported as **stale**:
+it is listed under `artifacts_not_generated` with the reason, kept out of `artifacts`, and
+its file is preserved. `speaker_id` is null when no diarization timeline exists.
 
 The families meet through overlap and one shared id: the turn table overlaps the
 transcript, and the diarizer's labels land in the transcript's `speaker_id` column. Turns

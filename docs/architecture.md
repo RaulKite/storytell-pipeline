@@ -87,7 +87,7 @@ a reason naming it rather than failing the video. See the
 | `audio` | `metadata` | ffmpeg extraction |
 | `whisperx` | `audio` | Transcription and word alignment |
 | `diarization_nemotron` | `audio` | Nemotron speaker turns |
-| `speaker_assignment` | `whisperx`, `diarization_nemotron` | Apply Nemotron labels to segments/words |
+| `speaker_assignment` | `whisperx`, `diarization_nemotron` | Apply Nemotron labels, or clear foreign ones when no timeline exists |
 | `translation` | `speaker_assignment` | English translations |
 | `spacy_source` | `speaker_assignment` | Source-language annotations |
 | `spacy_english` | `translation` | English annotations |

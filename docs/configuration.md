@@ -58,6 +58,13 @@ The same applies independently to the `stories` section.
 | `elan` | Enable/disable derived annotation export |
 | `logging` | Level, console output and progress refresh interval |
 
+`diarization_nemotron.enabled: false` means "do not load the model", not "erase the
+labels". A `speech/speaker_turns_nemotron.parquet` already in the dataset is still used by
+`speaker_assignment`; with no such table the transcript's `speaker_id` is cleared to null
+with `speaker_assignment_method: no_diarization`, so a dataset never keeps a label no
+current diarizer produced. Reversible alternative if a label-free transcript beside a
+populated turn table is ever wanted: a separate switch, rather than overloading `enabled`.
+
 `diarization_nemotron.fallback_to_cpu` has two readings and they are not the same knob.
 With the default `true` the worker degrades `cuda` → `cpu` and records why in its raw
 document and log; with `false` a machine that cannot see a GPU fails loudly instead of
@@ -124,6 +131,9 @@ responses; retained responses and cache keys are the reproducibility evidence.
 | `libnvrtc.so.13` | Check the `diarization_nemotron` torch pin and re-sync; see the environment's comments |
 | Stage skipped: `… environment not installed at …` | Create that `environments/<name>` project and `uv sync` it; `inspect-environment` lists every missing one before a run |
 | Stage skipped: OpenPose not installed | Fix `openpose.root` or executable/model paths, or switch `openpose.enabled` off; inspect the environment report |
+| Stage failed: OpenPose binary found but not executable | A path that exists but cannot run is a defect, not an install state: restore its execute bit or fix `openpose.executable` |
+| Stage skipped: `upstream skipped: transcript unavailable` | WhisperX did not produce a transcript, so nothing that reads one can run; the reason quotes whisperx's own cause |
+| `translation_segments` reported as stale | Its speaker labels no longer match the transcript; re-run `translation`, which reinstates it in the manifest |
 | Stage skipped: TalkNet root missing / no `run_talknet.py` | Point `activespeaker.talknet_root` at a valid TalkNet-ASD checkout |
 | Stage skipped: `weights_dir` is set but a checkpoint is missing | Put the file there, or unset `weights_dir` and let the tool download it |
 | TalkNet `weights_only` / unpickling error | Preserve the torch 2.5.1 compatibility pin and re-sync its environment |

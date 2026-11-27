@@ -35,6 +35,15 @@ the runner-up is recorded in `runner_up_speaker_id`. There is no exclusive timel
 prefer. A channel is not proof of a distinct real person: two channels can be one voice
 bleeding, and an off-screen speaker can own a channel no face matches.
 
+`speaker_assignment` is the only stage that decides what `speaker_id` means, so it never
+leaves another engine's labels behind. A turn table already in the dataset is used even
+when `diarization_nemotron` was not re-run (its environment missing, or switched off);
+without one, the derived tables are rewritten with `speaker_id: null` and
+`speaker_assignment_method: no_diarization` — a recorded fact, not a gap. Transcripts
+produced under the removed pyannote engine therefore lose their `SPEAKER_00` labels on
+the next run instead of publishing a speaker no table in the dataset contains. The
+preserved raw WhisperX document is never rewritten.
+
 English translation is **segment-level translation**, not transliteration or
 interlinear glossing. Source and English spaCy annotations are separate. Their
 alignment/model-capability fields distinguish token timings, approximate timings
