@@ -573,11 +573,16 @@ class PersonsStage(WorkerStage):
             "weights_sha256": document.get("weights_sha256"),
         }
         if track_video is not None:
-            result["track_video"] = track_video
+            result["track_video"] = track_video["artifact"]
+            # Recorded in the stage's completion state, not just logged: the next resume
+            # compares the bytes on disk with this digest, which is the only way to notice a
+            # preview that was replaced by a same-length file -- the frame count and the rate
+            # can both survive a substitution that puts every overlay on the wrong instant.
+            result["track_video_sha256"] = track_video["sha256"]
         return result
 
     def _check_track_video(self, ctx: StageContext, document: dict[str, Any],
-                           problems: list[str]) -> str | None:
+                           problems: list[str]) -> dict[str, Any] | None:
         """Does the preview on disk belong to the run the tables came from?
 
         Only consulted when ``persons.write_video`` is on, because a raw document without a
@@ -588,18 +593,23 @@ class PersonsStage(WorkerStage):
         The document and the file have to tell the same story in both directions. A document
         with no ``render`` block beside a video means that video came from somewhere else, and
         passing it would make the preview evidence for a tracking run that never made one. The
-        frame count is checked with **no tolerance**: unlike the OpenPose preview, whose
+        frame count is **decoded**, not read from the container header -- a truncated file keeps
+        the header count -- and checked with no tolerance: unlike the OpenPose preview, whose
         renderer is upstream's black box and measurably loses one to three trailing frames, this
         encoder is ours and is driven by the count the worker already compared against the
-        frames it measured. A short preview here means the pipe and the tables disagree about
-        which frame is which, and every later overlay would sit on the wrong picture while the
-        file still played.
+        frames it measured. The rate and the encoded size come from the same render block, so a
+        same-length file running at a different clock, or one re-encoded at another size, is
+        refused as well.
+
+        Returns the artifact name and the file's digest, which ``validate`` records so the next
+        resume can compare bytes instead of trusting a count alone.
         """
         if not ctx.config.persons.write_video:
             return None
         # Imported here rather than at module scope: this module is imported by the stage
         # package that ``person_video`` itself reaches through ``stages.metadata``.
         from ..person_video import check_track_video
+        from .metadata import sha256_of
 
         render = document.get("render")
         if not isinstance(render, dict):
@@ -608,18 +618,47 @@ class PersonsStage(WorkerStage):
                 f"the preview at {ARTIFACT_LAYOUT['person_track_video']} was not produced by "
                 "the tracking run these tables describe")
             return None
+        expected_size = None
+        if render.get("encoded_width") and render.get("encoded_height"):
+            expected_size = (int(render["encoded_width"]), int(render["encoded_height"]))
+        path = ctx.artifact("person_track_video")
         try:
             check_track_video(
-                ctx.artifact("person_track_video"),
+                path,
                 ffprobe=ctx.config.ffmpeg.ffprobe,
                 expected_frames=document.get("frames_measured"),
+                expected_fps=render.get("fps"),
+                expected_size=expected_size,
                 require_audio=bool(render.get("has_audio")))
+            digest = sha256_of(path)
         except StageError as exc:
             # The checker names the reason and the file; keep both, but let the aggregate
             # ValidationError report every problem this dataset has, not just the first.
             problems.append(str(exc))
             return None
-        return ARTIFACT_LAYOUT["person_track_video"]
+        recorded = self._recorded_track_video_digest(ctx)
+        if recorded is not None and recorded != digest:
+            problems.append(
+                f"person track preview ({path.name}) is not the file this stage validated when "
+                f"it completed: its sha256 is {digest[:12]}…, recorded {recorded[:12]}…. The "
+                "preview was replaced, so it no longer shows the run the tables describe")
+            return None
+        return {"artifact": ARTIFACT_LAYOUT["person_track_video"], "sha256": digest}
+
+    def _recorded_track_video_digest(self, ctx: StageContext) -> str | None:
+        """The preview digest this stage recorded when it last completed, if any.
+
+        ``None`` is not a failure: a dataset completed before this check existed has no
+        recorded digest, and treating that as a mismatch would invalidate every one of them.
+        """
+        try:
+            recorded = ctx.state.stage(self.name).validation_result or {}
+        except Exception:  # noqa: BLE001 - a state file that cannot answer is no evidence
+            return None
+        if not isinstance(recorded, dict):
+            return None
+        digest = recorded.get("track_video_sha256")
+        return digest if isinstance(digest, str) and digest else None
 
     def _check_recorded_identity(self, ctx: StageContext,
                                 document: dict[str, Any]) -> list[str]:

@@ -935,22 +935,33 @@ def render_block(**overrides: Any) -> dict[str, Any]:
 
 
 def fake_ffprobe(tmp_path, *, nb_frames: int = 4, audio: bool = False,
-                 name: str = "ffprobe") -> str:
-    """An ffprobe that reports the frame count a container would carry.
+                 fps: str = "25/1", size: tuple[int, int] = (64, 48),
+                 declared: int | None = None, name: str = "ffprobe") -> str:
+    """An ffprobe that answers both of the checks ``person_video`` makes.
 
+    ``nb_frames`` is the *decoded* count (``nb_read_frames``), ``declared`` what the container
+    header claims; they are separate so a test can show that the decoded one is what decides.
     The stage's frame-count check has to be exercised with a *mismatched* count, and the only
     deterministic way to make one is to answer ffprobe differently — truncating a real render
     depends on where the truncation lands in the moov atom.
     """
-    answer = tmp_path / f"{name}-answer.json"
-    streams = [{"codec_type": "video", "nb_frames": str(nb_frames)}]
-    if audio:
-        streams.append({"codec_type": "audio"})
-    answer.write_text(json.dumps({"streams": streams}), encoding="utf-8")
+    counted: dict = {"streams": [{"codec_type": "video", "nb_read_frames": str(nb_frames),
+                                "avg_frame_rate": fps, "width": size[0],
+                                "height": size[1]}]}
+    if declared is not None:
+        counted["streams"][0]["nb_frames"] = str(declared)
+    kinds: dict = {"streams": [{"codec_type": "video"}]
+                   + ([{"codec_type": "audio"}] if audio else [])}
+    counted_path = tmp_path / f"{name}-counted.json"
+    kinds_path = tmp_path / f"{name}-kinds.json"
+    counted_path.write_text(json.dumps(counted), encoding="utf-8")
+    kinds_path.write_text(json.dumps(kinds), encoding="utf-8")
     script = tmp_path / name
     script.write_text(
         f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
-        f"sys.stdout.write(Path({json.dumps(str(answer))}).read_text())\n",
+        f"counted = Path({json.dumps(str(counted_path))})\n"
+        f"kinds = Path({json.dumps(str(kinds_path))})\n"
+        f"sys.stdout.write((counted if '-count_frames' in sys.argv else kinds).read_text())\n",
         encoding="utf-8")
     script.chmod(0o755)
     return str(script)
@@ -1155,8 +1166,61 @@ class TestRenderedValidation:
         rendering(context, tmp_path, nb_frames=4)
         RenderedStage().execute(context)
         context.config.ffmpeg.ffprobe = fake_ffprobe(tmp_path, nb_frames=3, name="short-probe")
-        with pytest.raises(ValidationError, match="has 3 frame.*expected 4"):
+        with pytest.raises(ValidationError, match="decodes to 3 frame.*expected 4"):
             PersonsStage().validate(context)
+
+    def test_a_same_length_replacement_at_another_clock_is_refused(self, context, tmp_path):
+        """The frame count can match while the file is not this run's render.
+
+        A 4-frame preview at 12.5 fps has the right count and the wrong duration, so every
+        overlay would sit at the wrong instant against ``frames.parquet``.
+        """
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        context.config.ffmpeg.ffprobe = fake_ffprobe(tmp_path, nb_frames=4, fps="50/1",
+                                                     name="other-clock-probe")
+        with pytest.raises(ValidationError, match="not the 25.000000 fps"):
+            PersonsStage().validate(context)
+
+    def test_a_preview_at_another_size_is_refused(self, context, tmp_path):
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        context.config.ffmpeg.ffprobe = fake_ffprobe(tmp_path, nb_frames=4, size=(32, 24),
+                                                     name="other-size-probe")
+        with pytest.raises(ValidationError, match=r"is 32x24, not the 64x48"):
+            PersonsStage().validate(context)
+
+    def test_the_validated_preview_digest_is_recorded_and_a_replacement_is_caught(
+            self, context, tmp_path):
+        """Resume has to be able to tell the file it validated from a lookalike.
+
+        The digest is recorded in the stage's completion state; replacing the preview with a
+        same-count, same-rate file of a different length would otherwise pass every other
+        check. ``None`` (a dataset written before this check) is no evidence, not a mismatch.
+        """
+        from multimodal_pipeline.state import STATUS_COMPLETED
+
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        validated = PersonsStage().validate(context)
+        assert len(validated["track_video_sha256"]) == 64
+        record = context.state.stage("persons")
+        record.status = STATUS_COMPLETED
+        record.validation_result = validated
+        context.state.save()
+
+        video = context.artifact("person_track_video")
+        video.write_bytes(b"a lookalike with the same frame count")
+        with pytest.raises(ValidationError, match="sha256"):
+            PersonsStage().validate(context)
+
+    def test_a_dataset_without_a_recorded_digest_still_validates(self, context, tmp_path, seeded):
+        rendering(context, tmp_path, nb_frames=4)
+        stage = PersonsStage()
+        seed_raw(context, stage, make_document(render=render_block()))
+        stage.normalize(context)
+        context.artifact("person_track_video").write_bytes(b"a preview from an older run")
+        assert stage.validate(context)["track_video"] == "persons/tracks.mp4"
 
     def test_a_raw_document_without_a_render_block_is_reported_when_the_toggle_is_on(self,
                                                                                    context,
