@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-labelledby="flow-t flow-d">
 <title id="flow-t">How one video becomes a dataset</title>
-<desc id="flow-d">Five steps: probe the video and extract audio with ffprobe and ffmpeg; run each tool in its own isolated uv environment or binary; normalize results to Parquet and retain tool output; validate and record status, manifest and provenance so valid results are reused; optionally export an ELAN file, with an HTML preview helper.</desc>
+<desc id="flow-d">Five steps: probe the video and extract audio with ffprobe and ffmpeg; run each tool in its own isolated uv environment or binary; normalize results to Parquet and retain tool output; validate and record status, manifest and provenance so valid results are reused; export an ELAN summary, with an HTML preview helper.</desc>
 
 <rect x="1" y="1" width="1198" height="298" rx="18" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
 <text x="32.0" y="46.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#e6edf3" text-anchor="start" letter-spacing="-0.4">How one video becomes a dataset</text>
@@ -20,7 +20,7 @@
 <circle cx="298" cy="140" r="15" fill="none" stroke="#58a6ff" stroke-width="2"/>
 <text x="298.0" y="145.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#58a6ff" text-anchor="middle">2</text>
 <text x="322.0" y="146.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#e6edf3" text-anchor="start">Run tools</text>
-<text x="286.0" y="184.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">7 isolated uv envs</text>
+<text x="286.0" y="184.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">6 isolated uv envs</text>
 <text x="286.0" y="204.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">+ OpenPose binary,</text>
 <text x="286.0" y="224.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">one at a time</text>
 <path d="M470 180.0 H496" stroke="#9198a1" stroke-width="1.6"/>
@@ -50,7 +50,7 @@
 <circle cx="1006" cy="140" r="15" fill="none" stroke="#58a6ff" stroke-width="2"/>
 <text x="1006.0" y="145.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#58a6ff" text-anchor="middle">5</text>
 <text x="1030.0" y="146.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#e6edf3" text-anchor="start">Inspect</text>
-<text x="994.0" y="184.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">optional ELAN .eaf,</text>
+<text x="994.0" y="184.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">ELAN .eaf summary,</text>
 <text x="994.0" y="204.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">HTML preview helper,</text>
 <text x="994.0" y="224.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="start">explanation guides</text>
 <text x="32.0" y="282.0" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#9198a1" text-anchor="start" font-style="italic">Stage graph, environments and reuse rules: docs/architecture.md</text>

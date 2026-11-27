@@ -27,9 +27,9 @@ Back to the overview: [Storytel Pipeline](../README.md).
 ├── translation/        English segments + raw responses/cache
 ├── linguistic/         source/ and english/ tokens, sentences + raw results
 ├── acoustic/           frame and segment features + raw JSONL
-├── pose/               body, hands, face, normalized + raw/ and optional raw_images/
-├── persons/            detections, tracks + raw/yolo_track.json
-├── speaker/            active-speaker evidence + raw/
+├── pose/               body, hands, face, normalized + raw/ and optional renderings
+├── persons/            detections, tracks + raw/yolo_track.json, optional tracks.mp4
+├── speaker/            active-speaker evidence + raw/, optional video_out.avi
 ├── stories/            events, stories, uncertain spans + raw responses, summary, rejected attempts, cache
 ├── elan/               annotations.eaf
 ├── logs/               pipeline.log + <stage>.log

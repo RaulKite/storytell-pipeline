@@ -172,7 +172,7 @@ def modalities(theme):
                   "Synthetic illustration with invented values, not a recording. Six lanes - speech, language, "
                   "acoustics, vision, speakers and stories - share one axis in seconds from video start. A marker "
                   "at 33 seconds reads every lane at the same moment, and the lanes feed one dataset directory of "
-                  "Parquet tables, retained tool output and stage caches, provenance and an optional ELAN export.",
+                  "Parquet tables, retained tool output and stage caches, provenance and the ELAN .eaf summary.",
                   "mod")]
     o.append(f'<rect x="1" y="1" width="{W-2}" height="{H-2}" rx="18" fill="{c["bg"]}" stroke="{c["plate_stroke"]}" stroke-width="1.5"/>')
     o.append(text(32, 46, "Six modalities, one clock", 24, c["text"], 700, extra=' letter-spacing="-0.4"'))
@@ -187,8 +187,8 @@ def modalities(theme):
         ("speech", "Speech", "WhisperX · Nemotron", "speech/words.parquet"),
         ("language", "Language", "spaCy · translation endpoint", "linguistic/source/tokens.parquet"),
         ("acoustics", "Acoustics", "Praat via Parselmouth", "acoustic/frame_features.parquet"),
-        ("vision", "Vision", "OpenPose · YOLO (optional)", "pose/body.parquet"),
-        ("speakers", "Speakers", "TalkNet (optional)", "speaker/active_speaker_frames.parquet"),
+        ("vision", "Vision", "OpenPose · YOLO", "pose/body.parquet"),
+        ("speakers", "Speakers", "TalkNet", "speaker/active_speaker_frames.parquet"),
         ("stories", "Stories", "LLM endpoint", "stories/stories.parquet"),
     ]
     rnd = random.Random(7)
@@ -214,7 +214,10 @@ def modalities(theme):
                 fill = col if spk == 0 else "none"
                 tc = c["bg"] if spk == 0 else col
                 o.append(f'<rect x="{X(a):.1f}" y="{top+20}" width="{(b-a)*10:.1f}" height="18" rx="5" fill="{fill}" stroke="{col}" stroke-width="1.3"/>')
-                o.append(text(X(a) + 6, top + 33, f"SPEAKER_0{spk}", 9.5, tc, 700, family=MONO))
+                # `speaker_0` is Nemotron's own arrival-ordered namespace, the labels the
+                # transcript carries; `SPEAKER_00` belonged to the removed pyannote engine and
+                # the picture has to name a label a dataset can still contain.
+                o.append(text(X(a) + 6, top + 33, f"speaker_{spk}", 9.5, tc, 700, family=MONO))
         elif key == "language":
             for (a, b, spk) in segments:
                 t = a + 0.3
@@ -278,7 +281,7 @@ def modalities(theme):
     o.append(text(RX + 46, ry + 30, "t = 33 s", 11, "#ffffff", 700, anchor="middle"))
     o.append(text(RX + 86, ry + 31, "one row per table", 12, c["text2"]))
     reads = [
-        ("speech", "SPEAKER_00 turn, aligned word"),
+        ("speech", "speaker_0 turn, aligned word"),
         ("language", "source tokens, EN segment"),
         ("acoustics", "f0 and intensity frame"),
         ("vision", "BODY_25 keypoints, track 1"),
@@ -297,14 +300,14 @@ def modalities(theme):
     o.append(f'<path d="M{RX-12} {dy+dh/2-5} L{RX-4} {dy+dh/2} L{RX-12} {dy+dh/2+5} Z" fill="{c["text2"]}"/>')
     o.append(text(RX + 16, dy + 26, "one dataset directory", 14, c["text"], 700))
     o.append(text(RX + 16, dy + 43, "<video_id>/", 10.5, c["text2"], family=MONO))
-    items = ["normalized Parquet tables", "tool output and stage caches", "manifest, status, provenance", "optional ELAN .eaf, last"]
+    items = ["normalized Parquet tables", "tool output and stage caches", "manifest, status, provenance", "ELAN .eaf summary, last"]
     for j, a in enumerate(items):
         yy = dy + 68 + j * 19
         o.append(f'<circle cx="{RX+21}" cy="{yy-4}" r="3" fill="{c["text2"]}"/>')
         o.append(text(RX + 32, yy, a, 12, c["text"]))
     # footer
     o.append(text(32, H - 22, "Synthetic illustration: invented values, no recording.", 11, c["text2"], style="italic"))
-    o.append(text(W - 32, H - 22, "Optional stages are marked; paths are dataset-relative.", 11, c["text2"], anchor="end"))
+    o.append(text(W - 32, H - 22, "Every stage is enabled by default; paths are dataset-relative.", 11, c["text2"], anchor="end"))
     o.append("</svg>\n")
     return "\n".join(o)
 
@@ -316,17 +319,17 @@ def flow(theme):
     o = [svg_open(W, H, "How one video becomes a dataset",
                   "Five steps: probe the video and extract audio with ffprobe and ffmpeg; run each tool in its own "
                   "isolated uv environment or binary; normalize results to Parquet and retain tool output; validate and "
-                  "record status, manifest and provenance so valid results are reused; optionally export an ELAN file, with an HTML preview helper.",
+                  "record status, manifest and provenance so valid results are reused; export an ELAN summary, with an HTML preview helper.",
                   "flow")]
     o.append(f'<rect x="1" y="1" width="{W-2}" height="{H-2}" rx="18" fill="{c["bg"]}" stroke="{c["plate_stroke"]}" stroke-width="1.5"/>')
     o.append(text(32, 46, "How one video becomes a dataset", 24, c["text"], 700, extra=' letter-spacing="-0.4"'))
     o.append(text(32, 70, "Sequential: one video, one stage at a time. Valid earlier results are reused, failures are recorded, not hidden.", 13, c["text2"]))
     steps = [
         ("1", "Probe", ["ffprobe metadata,", "frame index,", "ffmpeg WAV"], "speech"),
-        ("2", "Run tools", ["7 isolated uv envs", "+ OpenPose binary,", "one at a time"], "vision"),
+        ("2", "Run tools", ["6 isolated uv envs", "+ OpenPose binary,", "one at a time"], "vision"),
         ("3", "Normalize", ["typed Parquet,", "seconds from start,", "tool output retained"], "language"),
         ("4", "Validate", ["status.json, manifest,", "provenance; reuse", "what is still valid"], "acoustics"),
-        ("5", "Inspect", ["optional ELAN .eaf,", "HTML preview helper,", "explanation guides"], "speakers"),
+        ("5", "Inspect", ["ELAN .eaf summary,", "HTML preview helper,", "explanation guides"], "speakers"),
     ]
     n = len(steps)
     x0, bw, gapx, by, bh = 32, 196, 40, 100, 160

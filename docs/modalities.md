@@ -136,6 +136,12 @@ The detection table contains sightings, not a complete sampled/empty-frame grid.
 An absent detection cannot prove that frame was inspected. YOLO person IDs, OpenPose
 per-frame person indices and TalkNet face tracks cannot be equated by matching digits.
 
+`persons.write_video` optionally keeps those boxes and `id=` labels as a constant-rate
+`persons/tracks.mp4` preview, drawn inside the tracking pass. It is a rendering of the
+tables, not another measurement: each `id=` is a ByteTracker track id, and on a
+variable-frame-rate source a constant-rate clock drifts against the picture, so
+`source/frame_index.parquet` stays the timing authority.
+
 ## Storytelling events and stories
 
 The `stories` stage asks an LLM to mark **storytelling events** (the conversational

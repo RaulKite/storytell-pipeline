@@ -78,10 +78,10 @@ valid worktree is available — a routing fallback is acceptable, a stalled laun
   that normalizes away the original cannot be re-validated later.
 - **Every stage ships enabled** (`enabled: true` in the code defaults and in
   `config/config.example.yaml`); only preview rendering is opt-in (`openpose.write_images`,
-  `openpose.write_video`, `activespeaker.write_video`). New stages follow that default. A
-  stage whose prerequisite is missing — uv environment, worker script, OpenPose binary,
-  TalkNet checkout, configured checkpoint — must **skip with a reason naming the fix**, not
-  fail the video; put that gate in `enabled()`, beside the existing ones. A present but
+  `openpose.write_video`, `activespeaker.write_video`, `persons.write_video`). New stages follow
+  that default. A stage whose prerequisite is missing — uv environment, worker script, OpenPose
+  binary, TalkNet checkout, configured checkpoint — must **skip with a reason naming the fix**,
+  not fail the video; put that gate in `enabled()`, beside the existing ones. A present but
   broken install still fails loudly.
 - Tests that hide a bug behind a mock are worse than no test. Where the defect only
   appears against the real tool, run the real tool and record what it said.

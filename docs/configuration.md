@@ -54,7 +54,7 @@ The same applies independently to the `stories` section.
 | `openpose` | Root/executable/models, enabled keypoint modules, optional rendered images |
 | `pose_normalized` | Origin and basis keypoints; changing them changes coordinates |
 | `activespeaker` | TalkNet checkout/weights, device, threshold, smoothing and switch hysteresis |
-| `persons` | Model/weights, tracker, confidence, classes and input image size |
+| `persons` | Model/weights, tracker, confidence, classes and input image size; optional `write_video` preview |
 | `elan` | Enable/disable derived annotation export |
 | `logging` | Level, console output and progress refresh interval |
 
@@ -76,11 +76,13 @@ Every stage's `enabled` defaults to `true`, and so does every tool switch inside
 Switching one off is a supported way to say "never measure this"; leaving it on with the
 prerequisite absent is not an error — the stage skips with a reason naming what to install.
 
-OpenPose renderings are opt-in: `openpose.write_images: true` adds files under
-`pose/raw_images/`. Set `openpose.image_max_side` to bound their size. Changing
-render settings invalidates OpenPose; images can use substantial disk. Coordinates
-remain source pixels, not resized-image pixels. At least one drawing module must
-be enabled. Turning rendering off does not delete old renderings.
+Four previews are opt-in inside an enabled stage: `openpose.write_images: true` adds files
+under `pose/raw_images/` (set `openpose.image_max_side` to bound their size), and
+`openpose.write_video`, `activespeaker.write_video` and `persons.write_video` add
+`pose/skeletons.mp4`, `speaker/raw/video_out.avi` and `persons/tracks.mp4`. Changing render
+settings invalidates that stage, each one can use substantial disk, and coordinates remain
+source pixels, not resized-image pixels. At least one OpenPose drawing module must be
+enabled. Turning rendering off does not delete old renderings.
 
 YOLO's default class filter is people (`[0]`). Deliberately changing object classes
 requires disabling `persons.person_classes_only`; interpret such output as object

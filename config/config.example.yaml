@@ -11,7 +11,8 @@
 # a stage whose uv environment, binary, checkout or checkpoint is absent reports a skip
 # reason naming the missing prerequisite, and the rest of the corpus still completes.
 # Only rendering is opt-in (openpose.write_images, openpose.write_video,
-# activespeaker.write_video): those produce no analysis, and each one reruns its stage.
+# activespeaker.write_video, persons.write_video): those produce no analysis, and each one
+# reruns its stage.
 
 input:
   directory: /data/videos

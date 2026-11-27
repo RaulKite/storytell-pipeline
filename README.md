@@ -21,7 +21,7 @@ tool output and stage caches, a log and provenance, times in seconds from video 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/modalities-dark.svg">
-    <img alt="Synthetic illustration with invented values: six labelled lanes — speech, language, acoustics, vision, speakers and stories — share one axis in seconds from video start. A marker at 33 seconds reads every lane at once, inside an example story candidate span, and the lanes feed one dataset directory of Parquet tables, retained tool output, provenance and an optional ELAN export." src="docs/assets/brand/modalities-light.svg" width="100%"></picture></p>
+    <img alt="Synthetic illustration with invented values: six labelled lanes — speech, language, acoustics, vision, speakers and stories — share one axis in seconds from video start. A marker at 33 seconds reads every lane at once, inside an example story candidate span, and the lanes feed one dataset directory of Parquet tables, retained tool output, provenance and the ELAN .eaf summary." src="docs/assets/brand/modalities-light.svg" width="100%"></picture></p>
 
 | Layer | Tools and results | Output |
 |---|---|---|
@@ -35,9 +35,14 @@ tool output and stage caches, a log and provenance, times in seconds from video 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/flow-dark.svg">
-  <img alt="Five steps, run sequentially for one video: probe with ffprobe and ffmpeg; run each tool in its own uv environment or the OpenPose binary; normalize to Parquet and retain tool output; validate and record status, manifest and provenance so valid results are reused; inspect through an optional ELAN file, an HTML preview helper and explanation guides." src="docs/assets/brand/flow-light.svg" width="100%"></picture>
+  <img alt="Five steps, run sequentially for one video: probe with ffprobe and ffmpeg; run each tool in its own uv environment or the OpenPose binary; normalize to Parquet and retain tool output; validate and record status, manifest and provenance so valid results are reused; export an ELAN summary, with an HTML preview helper." src="docs/assets/brand/flow-light.svg" width="100%"></picture>
 
-Heavy tools live in `uv` environments the root sync does not install ([what runs by default](docs/getting-started.md#what-runs-by-default)); the full stage graph is in [Architecture](docs/architecture.md#stage-dependencies).
+In order: `metadata` → `audio` → `whisperx` → `diarization_nemotron` (the only diarizer) → `speaker_assignment` →
+`translation` / `spacy_source` → `spacy_english` → `acoustic` → `openpose` → `pose_normalized` → `activespeaker`
+(TalkNet) → `persons` (YOLO) → `stories` → `finalization` → `elan` ([dependencies](docs/architecture.md#stage-dependencies)),
+run from `uv` environments the root sync does not install ([what runs by default](docs/getting-started.md#what-runs-by-default)).
+Every stage ships enabled; only preview rendering ships off: `openpose.write_images`, `openpose.write_video`,
+`activespeaker.write_video` and `persons.write_video`, because each is a picture of a measurement, not a measurement.
 
 ## Quickstart
 
@@ -47,7 +52,7 @@ pose normalization, TalkNet, YOLO and ELAN — and installs none of their worker
 so sync each one you want the way [Install](docs/getting-started.md#install) shows
 (`cd environments/<name> && uv sync --python 3.12`). A stage whose environment, binary,
 checkout or checkpoint is absent **skips with a reason** instead of failing the video, so the
-first run reports what a full one would add. OpenPose, TalkNet, `HF_TOKEN` and an LLM endpoint
+first run reports what a full one would add; OpenPose, TalkNet, `HF_TOKEN` and an LLM endpoint
 are further [prerequisites](docs/getting-started.md#prerequisites).
 
 ```bash
@@ -63,7 +68,7 @@ uv run multimodal-pipeline run -c config/config.local.yaml   # the full configur
 
 Keep existing configuration and credentials instead of overwriting them; translation and stories send transcript text out, so they can cost money.
 
-<details><summary>What one video becomes: one <a href="docs/datasets.md#directory-layout">dataset directory</a> under <code>output.directory</code></summary>
+One video becomes one <a href="docs/datasets.md#directory-layout">dataset directory</a> under `output.directory`:
 
 ```text
 <video_id>/
@@ -71,7 +76,6 @@ Keep existing configuration and credentials instead of overwriting them; transla
 ├── source/ audio/ speech/ translation/ linguistic/ acoustic/ pose/ persons/ speaker/ stories/
 └── elan/ logs/ provenance/      ELAN summary, pipeline logs, config/tools/processing records
 ```
-</details>
 
 ## Documentation
 
@@ -106,13 +110,9 @@ declares it as the preferred citation, so GitHub's **Cite this repository** butt
 
 Developed for [STORYTEL](https://storytel.uni-koeln.de/), which studies spontaneous storytelling in face-to-face conversation through words, voice and bodily movement.
 
-<details><summary>Tools this pipeline drives</summary>
-
-WhisperX, NVIDIA Nemotron, [spaCy](https://spacy.io/),
-[Praat](https://www.fon.hum.uva.nl/praat/) via Parselmouth, [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose),
-[Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and [ELAN](https://archive.mpi.nl/tla/elan) are driven
-rather than reimplemented; their licences and terms stay with their authors. This is attribution, not endorsement.
-</details>
+The tools it drives — WhisperX, NVIDIA Nemotron, [spaCy](https://spacy.io/), [Praat](https://www.fon.hum.uva.nl/praat/) via Parselmouth,
+[OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose), [Ultralytics YOLO](https://docs.ultralytics.com/), TalkNet-ASD and
+[ELAN](https://archive.mpi.nl/tla/elan) — keep their own licences and terms. This is attribution, not endorsement.
 
 ---
 

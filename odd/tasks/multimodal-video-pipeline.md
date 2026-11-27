@@ -100,8 +100,8 @@ so it adds rendering, not measurement; credentials stay in `.env`. The native
 
 ## Verification and recovery
 
-- Unit/e2e after merging stories v2 and the persons preview: see the merge commit message for the
-  observed counts (`-p no:randomly`, `test_elan` corpus tests read-only).
+- Unit/e2e after this documentation pass: see that commit's message for the observed counts
+  (`-p no:randomly`, corpus tests read-only); brand SVGs come from the generator script.
 - Corpus copies: relabelling left no `SPEAKER_00` in the manifest or `.eaf`; a broken OpenPose
   binary is a per-stage `will fail:`. Earlier outputs were tests and will be rerun from scratch.
 - Person preview: real YOLO on the Kimmel clip (read-only input) rendered 126/126 decoded

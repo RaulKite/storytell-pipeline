@@ -30,7 +30,7 @@ of the corpus completes.
 | `audio` | always | ffmpeg | `audio/audio.wav` | [Datasets](datasets.md#directory-layout) |
 | `whisperx` | on | its environment | `speech/segments.parquet`, `speech/words.parquet` | [Modalities](modalities.md#speech-and-language) |
 | `diarization_nemotron` | on | its environment, model download | `speech/speaker_turns_nemotron.parquet` | [Modalities](modalities.md#speech-and-language) |
-| `speaker_assignment` | conditional | Nemotron turns and a transcript | rewrites the transcript tables with `speaker_id` | [Modalities](modalities.md#speech-and-language) |
+| `speaker_assignment` | conditional | a transcript; Nemotron's turn table too, when it exists | labels or clears `speaker_id` in the transcript tables | [Modalities](modalities.md#speech-and-language) |
 | `translation` | on | endpoint, key, model | `translation/segments_en.parquet` | [Modalities](modalities.md#speech-and-language) |
 | `spacy_source` | on | its environment; a trained model is optional | `linguistic/source/tokens.parquet`, `linguistic/source/sentences.parquet` | [Configuration](configuration.md#language-policy) |
 | `spacy_english` | on, if `spacy.process_english` | an English translation, its environment | `linguistic/english/tokens.parquet`, `linguistic/english/sentences.parquet` | [Configuration](configuration.md#language-policy) |
@@ -49,8 +49,8 @@ of the corpus completes.
   [`config/config.example.yaml`](../config/config.example.yaml), which is `true` for every
   stage. Nothing ships switched off.
 - `conditional` — no flag of its own; it runs when the input it reads exists.
-  `speaker_assignment` wants Nemotron's turns specifically, so a corpus with
-  `diarization_nemotron.enabled: false` leaves it skipped.
+  `speaker_assignment` needs a transcript, not a diarizer: with a turn table it applies
+  Nemotron's labels, with none it still clears `speaker_id` to null (`no_diarization`).
 - `on` is not a promise: `translation` and `stories` ship with a placeholder endpoint, so
   they skip until you configure them; every UV stage skips when its environment directory
   is missing; OpenPose skips when no binary is found under `openpose.root`; TalkNet skips
@@ -65,11 +65,11 @@ of the corpus completes.
   on first use, and that download is the one prerequisite no pre-flight check can foresee: a
   machine with no network fails there instead of skipping.
 
-Three outputs are opt-in inside an enabled stage: `openpose.write_images`,
-`openpose.write_video` and `activespeaker.write_video`. All default to off, none is needed
-for a table above, and each one both reruns its stage and costs disk — they render a preview
-of a measurement rather than producing one, which is why they are the only switches that
-stay off.
+Four outputs are opt-in inside an enabled stage: `openpose.write_images`,
+`openpose.write_video`, `activespeaker.write_video` and `persons.write_video`. All default to
+off, none is needed for a table above, and each one both reruns its stage and costs disk —
+they render a preview of a measurement rather than producing one, which is why they are the
+only switches that stay off.
 
 **Deferred, not shipped as stages:** a renderer for normalized selected-face labels
 and a non-English synthetic fixture with e2e coverage. Those are decisions and evidence gaps
