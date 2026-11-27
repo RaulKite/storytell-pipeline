@@ -1287,6 +1287,36 @@ class TestPublicationIsAllOrNothing:
             RenderedStage().execute(context)
         assert _snapshot(before) == before
         assert blocked.is_dir(), "the obstacle was removed instead of reported"
+    def test_a_failed_first_publication_reports_its_own_error_and_leaves_no_backup_dir(
+            self, context, tmp_path, monkeypatch):
+        """First publication: nothing to restore, so nothing can have failed to restore.
+
+        Reviewer finding: with no destination on disk yet, the rollback treated the absent file
+        as an unrestorable one and replaced the real error with "the previous files could not
+        all be put back ... their copies are kept at .previous-xxxx", where that directory was
+        empty. The operator read a data-loss message instead of the disk error that happened.
+        """
+        import os as os_module
+
+        rendering(context, tmp_path)
+        destination = context.artifact("person_frames")
+        assert not destination.exists(), "this test is about a dataset with nothing published"
+        real_replace = os_module.replace
+
+        def failing_replace(source, target, *args, **kwargs):
+            if Path(target) == destination:
+                raise OSError(28, "No space left on device", str(target))
+            return real_replace(source, target, *args, **kwargs)
+
+        monkeypatch.setattr(os_module, "replace", failing_replace)
+        with pytest.raises(OSError) as raised:
+            RenderedStage().execute(context)
+        monkeypatch.undo()
+        assert "No space left on device" in str(raised.value), \
+            "the rollback replaced the original error with its own"
+        assert not list(context.paths.dataset_dir.rglob(".previous-*")), \
+            "an empty backup directory was left behind"
+
     def test_a_rename_that_fails_in_the_middle_restores_what_it_displaced(self, context,
                                                                          tmp_path,
                                                                          monkeypatch):

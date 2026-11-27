@@ -1160,12 +1160,20 @@ class PersonsStage(WorkerStage):
         Best effort on purpose: the original error is what the operator needs to see, so a
         restore that fails does not replace it -- the caller names the files instead and keeps
         the copies beside the dataset.
+
+        A target this publication never displaced (``backup is None``) is undone by removing the
+        file it wrote -- and **a file that is already absent is undone**, not a failure. The
+        first publication of a dataset has no previous files at all, so every entry is of that
+        kind, and a rename that failed there left nothing to remove: treating the absent target
+        as an unrestorable file turned the first failure of a fresh dataset into "the previous
+        files could not all be put back" plus an empty ``.previous-*`` directory, hiding the
+        actual reason (reviewer finding).
         """
         unrestored: list[Path] = []
         for target, backup in reversed(replaced):
             try:
                 if backup is None:
-                    target.unlink()
+                    target.unlink(missing_ok=True)
                 else:
                     os.replace(backup, target)
             except OSError:
