@@ -1055,9 +1055,11 @@ class RenderedStage(PersonsStage):
     what the real worker does when ffmpeg exits non-zero.
     """
 
-    def __init__(self, *, render_ok: bool = True, write_result: bool = True) -> None:
+    def __init__(self, *, render_ok: bool = True, write_result: bool = True,
+                 preview: bytes = b"pretend preview bytes") -> None:
         self.render_ok = render_ok
         self.write_result = write_result
+        self.preview = preview
         self.argvs: list[list[str]] = []
 
     def run_model(self, ctx, request, raw_path, digest) -> None:
@@ -1084,7 +1086,7 @@ class RenderedStage(PersonsStage):
         stamp_raw(raw_path, request=request, digest=digest, worker=None)
         if destination is not None:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(b"pretend preview bytes")
+            destination.write_bytes(self.preview)
 
 
 def rendering(context, tmp_path, **probe: Any):
@@ -1356,14 +1358,19 @@ class TestRenderedValidation:
         with pytest.raises(ValidationError, match=r"is 32x24, not the 64x48"):
             PersonsStage().validate(context)
 
-    def test_the_validated_preview_digest_is_recorded_and_a_replacement_is_caught(
+    def test_the_validated_preview_digest_is_recorded_and_a_replacement_blocks_reuse(
             self, context, tmp_path):
         """Resume has to be able to tell the file it validated from a lookalike.
 
         The digest is recorded in the stage's completion state; replacing the preview with a
         same-count, same-rate file of a different length would otherwise pass every other
         check. ``None`` (a dataset written before this check) is no evidence, not a mismatch.
+
+        The comparison belongs to the *reuse* decision, not to ``validate``: a fresh render is a
+        different file by design (reviewer finding on the Kimmel clip, where a valid rerender at
+        ``conf`` 0.99 was refused for not matching the digest of the 0.25 render).
         """
+        from multimodal_pipeline.stages.base import should_reuse
         from multimodal_pipeline.state import STATUS_COMPLETED
 
         rendering(context, tmp_path, nb_frames=4)
@@ -1377,8 +1384,76 @@ class TestRenderedValidation:
 
         video = context.artifact("person_track_video")
         video.write_bytes(b"a lookalike with the same frame count")
-        with pytest.raises(ValidationError, match="sha256"):
-            PersonsStage().validate(context)
+        assert PersonsStage().outputs_present(context) is False, \
+            "a replaced preview was offered for reuse"
+        reusable, reason = should_reuse(PersonsStage(), context,
+                                        config_hash=record.config_hash,
+                                        dependency_hash=record.dependency_hash,
+                                        force=False)
+        assert reusable is False
+        assert "missing" in reason, reason
+
+    def test_a_rerender_after_a_config_change_is_not_refused_by_the_previous_digest(
+            self, context, tmp_path):
+        """A new render is validated on its own merits, and its digest is the one recorded.
+
+        Reproduced by the reviewer on the Kimmel clip: changing ``conf`` from 0.25 to 0.99
+        produced a complete 126-frame preview and the staged validation refused it against the
+        sha256 of the *previous* render, so the stage could never publish a changed render.
+        """
+        import hashlib
+
+        from multimodal_pipeline.state import STATUS_COMPLETED
+
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        first = PersonsStage().validate(context)
+        record = context.state.stage("persons")
+        record.status = STATUS_COMPLETED
+        record.validation_result = first
+        context.state.save()
+
+        context.config.persons.conf = 0.99
+        RenderedStage(preview=b"the 0.99 render, different bytes").execute(context)
+        second = PersonsStage().validate(context)
+        assert second["track_video_sha256"] == hashlib.sha256(
+            context.artifact("person_track_video").read_bytes()).hexdigest()
+        assert second["track_video_sha256"] != first["track_video_sha256"]
+        # And the completion record the orchestrator writes carries the new digest, so the next
+        # resume compares against this render rather than the one before it.
+        record.status = STATUS_COMPLETED
+        record.validation_result = second
+        context.state.save()
+        assert PersonsStage().outputs_present(context) is True
+
+    def test_a_resume_repairs_a_preview_that_was_replaced(self, context, tmp_path):
+        """The repair itself must not be refused for not being the file it replaces.
+
+        With the digest check inside ``validate``, a replaced preview made the stage rerun and
+        then fail in its own staged tree: unrecoverable without deleting the dataset by hand.
+        """
+        import hashlib
+
+        from multimodal_pipeline.state import STATUS_COMPLETED
+
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        first = PersonsStage().validate(context)
+        record = context.state.stage("persons")
+        record.status = STATUS_COMPLETED
+        record.validation_result = first
+        context.state.save()
+        context.artifact("person_track_video").write_bytes(b"not this run's preview")
+
+        assert PersonsStage().outputs_present(context) is False
+        RenderedStage(preview=b"the repaired render").execute(context)
+        repaired = PersonsStage().validate(context)
+        assert repaired["track_video_sha256"] == hashlib.sha256(
+            b"the repaired render").hexdigest()
+        record.status = STATUS_COMPLETED
+        record.validation_result = repaired
+        context.state.save()
+        assert PersonsStage().outputs_present(context) is True
 
     def test_a_dataset_without_a_recorded_digest_still_validates(self, context, tmp_path, seeded):
         rendering(context, tmp_path, nb_frames=4)

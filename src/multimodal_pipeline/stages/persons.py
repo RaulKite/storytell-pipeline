@@ -584,10 +584,11 @@ class PersonsStage(WorkerStage):
         }
         if track_video is not None:
             result["track_video"] = track_video["artifact"]
-            # Recorded in the stage's completion state, not just logged: the next resume
-            # compares the bytes on disk with this digest, which is the only way to notice a
-            # preview that was replaced by a same-length file -- the frame count and the rate
-            # can both survive a substitution that puts every overlay on the wrong instant.
+            # Recorded in the stage's completion state, not just logged: the next *reuse*
+            # decision compares the bytes on disk with this digest (`_preview_replaced`), which
+            # is the only way to notice a preview replaced by a same-length file -- the frame
+            # count and the rate can both survive a substitution that puts every overlay on the
+            # wrong instant. Compared nowhere else, so a fresh render is never held to it.
             result["track_video_sha256"] = track_video["sha256"]
         return result
 
@@ -611,8 +612,11 @@ class PersonsStage(WorkerStage):
         same-length file running at a different clock, or one re-encoded at another size, is
         refused as well.
 
-        Returns the artifact name and the file's digest, which ``validate`` records so the next
-        resume can compare bytes instead of trusting a count alone.
+        Returns the artifact name and the file's digest, which the orchestrator records in this
+        stage's completion state so the next *reuse* decision can compare bytes instead of
+        trusting a count alone (see :meth:`_preview_replaced`). The recorded digest is
+        deliberately not compared here: this method runs on a freshly staged render too, whose
+        whole point is that its bytes differ from the previous run's.
         """
         if not ctx.config.persons.write_video:
             return None
@@ -646,13 +650,6 @@ class PersonsStage(WorkerStage):
             # ValidationError report every problem this dataset has, not just the first.
             problems.append(str(exc))
             return None
-        recorded = self._recorded_track_video_digest(ctx)
-        if recorded is not None and recorded != digest:
-            problems.append(
-                f"person track preview ({path.name}) is not the file this stage validated when "
-                f"it completed: its sha256 is {digest[:12]}…, recorded {recorded[:12]}…. The "
-                "preview was replaced, so it no longer shows the run the tables describe")
-            return None
         return {"artifact": ARTIFACT_LAYOUT["person_track_video"], "sha256": digest}
 
     def _recorded_track_video_digest(self, ctx: StageContext) -> str | None:
@@ -660,6 +657,7 @@ class PersonsStage(WorkerStage):
 
         ``None`` is not a failure: a dataset completed before this check existed has no
         recorded digest, and treating that as a mismatch would invalidate every one of them.
+        Only the reuse decision (:meth:`_preview_replaced`) reads it.
         """
         try:
             recorded = ctx.state.stage(self.name).validation_result or {}
@@ -927,7 +925,43 @@ class PersonsStage(WorkerStage):
             video = ctx.artifact("person_track_video")
             if not video.is_file() or video.stat().st_size == 0:
                 return False
+            if self._preview_replaced(ctx, video):
+                return False
         return not self._foreign_frames(ctx)
+
+    def _preview_replaced(self, ctx: StageContext, video: Path) -> bool:
+        """Did something other than this stage write the preview it validated?
+
+        This is the **reuse** question, and it is asked here rather than in :meth:`validate`
+        because of what the recorded digest describes: the bytes of the *published* file at the
+        moment that run completed. Asking it while a fresh render is being validated compares a
+        new file against an old run -- a reviewer reproduced exactly that on the Kimmel clip,
+        where re-rendering with ``conf`` 0.25 -> 0.99 produced a complete, valid 126-frame
+        preview that the staged validation then refused for carrying a different sha256 than
+        the previous render, and a resume could never repair a replaced preview either, because
+        the repair itself was the file being refused.
+
+        So: a staged render is validated on its own merits and its digest travels through
+        publication into the completion record (``validate`` returns it, the orchestrator
+        records it), and only a *resume* of an existing published file compares bytes. A
+        recorded ``None`` (a dataset completed before this check existed) is no evidence and
+        never blocks reuse.
+        """
+        recorded = self._recorded_track_video_digest(ctx)
+        if recorded is None:
+            return False
+        from .metadata import sha256_of
+
+        digest = sha256_of(video)
+        if digest is None or digest == recorded:
+            # Unreadable is not "replaced": ``validate`` reports an unreadable preview properly,
+            # and a hash that could not be taken proves nothing about the bytes.
+            return False
+        ctx.log(f"person track preview ({video.name}) is not the file this stage validated when "
+                f"it completed: its sha256 is {digest[:12]}…, recorded {recorded[:12]}…. The "
+                f"preview was replaced, so the persons stage reruns to render it again",
+                logging.WARNING)
+        return True
 
     # ------------------------------------------------------- weights identity
 
