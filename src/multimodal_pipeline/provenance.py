@@ -136,10 +136,23 @@ def openpose_report(config: PipelineConfig) -> dict[str, Any]:
     ]
     resolved = next((Path(c) for c in candidates if Path(c).is_file()), None)
     report["executable"] = str(resolved) if resolved else None
+    # What discovery found *that is not usable*, kept apart from "nothing there". A directory
+    # named ``openpose.bin`` — an unpacked tarball, or a path an operator created with the wrong
+    # kind of entry — used to be reported as no binary at all, so the stage skipped with "not
+    # installed" over a checkout that is installed and broken. Discovery answers "is a usable
+    # file there"; this key is what lets the caller tell the two absences apart.
+    if resolved is None:
+        wrong_type = next((Path(c) for c in candidates if Path(c).exists()), None)
+        if wrong_type is not None:
+            report["executable_wrong_type"] = str(wrong_type)
     model_folder = config.openpose.model_folder
     model_candidates = [Path(model_folder)] if model_folder != "auto" else [root / "models", root / "share/openpose/models"]
     resolved_models = next((Path(m) for m in model_candidates if Path(m).is_dir()), None)
     report["model_folder"] = str(resolved_models) if resolved_models else None
+    if resolved_models is None:
+        wrong_model_type = next((Path(m) for m in model_candidates if Path(m).exists()), None)
+        if wrong_model_type is not None:
+            report["model_folder_wrong_type"] = str(wrong_model_type)
     if resolved_models:
         report["models"] = {
             "body_25_deploy": _first_existing(resolved_models / "pose/body_25/pose_deploy.prototxt"),

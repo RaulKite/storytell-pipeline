@@ -157,6 +157,22 @@ def fresh(project: Path) -> Path:
     return project
 
 
+def broken_openpose_config(fresh: Path, tmp_path: Path) -> str:
+    """The project's config with OpenPose enabled and pointed at an unusable binary.
+
+    Written outside the project so the ``fresh`` fixture's cleanup does not have to know about
+    it, and so a stray broken config cannot leak into another test's batch.
+    """
+    config = yaml.safe_load((fresh / "config" / "config.yaml").read_text(encoding="utf-8"))
+    binary = tmp_path / "openpose.bin"
+    binary.write_bytes(b"not a binary")
+    binary.chmod(0o644)
+    config["openpose"].update({"enabled": True, "executable": str(binary)})
+    path = tmp_path / "config.broken-openpose.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    return str(path)
+
+
 def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -539,6 +555,45 @@ class TestFullRun:
         assert result.returncode == 0, result.stderr[-2000:]
         assert "metadata" in result.stderr
         assert "valid previous result" in result.stderr
+
+    def test_the_plan_survives_a_broken_openpose_install(self, fresh: Path,
+                                                        tmp_path: Path) -> None:
+        """One video's broken install must not hide the plan for the rest of the batch.
+
+        Reproduced by pointing ``openpose.executable`` at a file without its execute bit:
+        ``status --plan`` exited 1 on a traceback before planning the second video, so the plan
+        could not be read to find out what was wrong.
+        """
+        # A plan needs the dataset to exist: ``audio``'s fingerprint reads metadata.json.
+        cli("run", "-c", str(fresh / "config" / "config.yaml"))
+        result = cli("status", "-c", broken_openpose_config(fresh, tmp_path), "--plan")
+        assert result.returncode == 0, result.stderr[-3000:]
+        output = result.stdout + result.stderr
+        assert output.count("will fail") >= 2, output[-3000:]
+        assert "alpha" in output and "beta" in output
+        assert "not executable" in output
+
+    def test_a_broken_openpose_install_is_a_failed_stage_not_a_crashed_batch(
+            self, fresh: Path, tmp_path: Path) -> None:
+        """``run`` records the defect, blocks its dependants and finishes the stage loop."""
+        result = cli("run", "-c", broken_openpose_config(fresh, tmp_path))
+        assert result.returncode == 2, result.stderr[-3000:]
+        state = load(fresh / "out" / "alpha" / "status.json")
+        stages = {name: record["status"] for name, record in state["stages"].items()}
+        assert stages["openpose"] == "failed"
+        assert "not executable" in state["stages"]["openpose"]["error"]["message"]
+        # Its dependant is blocked by the failure, not left running or pending.
+        assert stages["pose_normalized"] == "skipped"
+        assert "upstream stage failed: openpose" in (
+            state["stages"]["pose_normalized"].get("validation_result") or {}).get("reason", "")
+        # The loop reached the end: no stage is left half-executed behind the defect.
+        assert "pending" not in stages.values(), stages
+        # Both videos were processed; the batch did not stop at the first. Neither is
+        # ``failed`` overall — a completed dataset with one broken stage is ``partial``, which
+        # is the difference between "this video is unusable" and "one measurement is missing".
+        report = load(fresh / "out" / "batch_report.json")
+        assert report["summary"]["partial"] == 2, report["summary"]
+        assert [video["video_id"] for video in report["videos"]] == ["alpha", "beta"]
 
     def test_batch_report_counts_the_run(self, fresh: Path) -> None:
         cli("run", "-c", str(fresh / "config" / "config.yaml"))

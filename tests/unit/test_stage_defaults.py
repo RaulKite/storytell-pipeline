@@ -332,6 +332,48 @@ class TestPresentButUnusableFails:
         with pytest.raises(StageError, match="not a directory"):
             stage_named("openpose").enabled(context)
 
+    def test_a_directory_at_a_discovered_binary_path_fails_loudly(
+            self, context, tmp_path):
+        """Discovery says "no usable file"; the gate has to ask whether anything is there.
+
+        A checkout unpacked without its modes, or a path an operator created as a directory,
+        left ``openpose_report`` answering "no binary" — so the stage skipped with "not
+        installed" over an install that exists and cannot run, and the pose tables simply were
+        not produced. Explicit and discovered paths now classify a wrong file type the same way.
+        """
+        root = tmp_path / "openpose"
+        binary = root / "build/examples/openpose/openpose.bin"
+        binary.mkdir(parents=True)
+        (root / "models").mkdir()
+        context.config.openpose.root = str(root)
+        context.config.openpose.executable = "auto"
+        context.config.openpose.model_folder = "auto"
+        with pytest.raises(StageError, match="is not a file"):
+            stage_named("openpose").enabled(context)
+
+    def test_a_file_at_a_discovered_model_folder_path_fails_loudly(self, context, tmp_path):
+        root = tmp_path / "openpose"
+        binary = root / "build/examples/openpose/openpose.bin"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"stub")
+        binary.chmod(0o755)
+        (root / "models").write_bytes(b"not a directory")
+        context.config.openpose.root = str(root)
+        context.config.openpose.executable = "auto"
+        context.config.openpose.model_folder = "auto"
+        with pytest.raises(StageError, match="not a directory"):
+            stage_named("openpose").enabled(context)
+
+    def test_an_empty_discovered_root_still_skips(self, context, tmp_path):
+        """Nothing there at all stays an install state, not a defect."""
+        root = tmp_path / "openpose"
+        root.mkdir()
+        context.config.openpose.root = str(root)
+        context.config.openpose.executable = "auto"
+        context.config.openpose.model_folder = "auto"
+        enabled, reason = stage_named("openpose").enabled(context)
+        assert enabled is False and "not installed" in reason
+
     def test_an_auto_discovered_binary_without_the_execute_bit_fails_loudly(
             self, context, tmp_path, monkeypatch):
         """Discovery answers "is it there"; the gate has to ask "can it run"."""

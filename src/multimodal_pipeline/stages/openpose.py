@@ -199,6 +199,17 @@ class OpenPoseStage(Stage):
         discovery = openpose_report(ctx.config)
         candidate = discovery.get("executable")
         if not candidate:
+            # Something is at a discovery path and it is not a usable file. Classified the same
+            # way as an explicit path that is a directory or has lost its execute bit: a broken
+            # install fails loudly rather than reporting itself as "not installed", which is what
+            # an unpacked tarball whose modes were lost, or a directory created where the binary
+            # belongs, used to read as.
+            wrong_type = Path(discovery.get("executable_wrong_type") or "")
+            if discovery.get("executable_wrong_type"):
+                detail = "is not a file" if not wrong_type.is_file() else "is not executable"
+                raise UnusableOpenPose(
+                    f"OpenPose binary at a discovered path {detail}: {wrong_type} — fix the "
+                    f"install under {cfg.root} or set openpose.executable")
             raise StageError(
                 f"OpenPose binary not found under {cfg.root}. Expected e.g. "
                 f"{cfg.root}/build/examples/openpose/openpose.bin. Set openpose.executable explicitly."
@@ -228,6 +239,12 @@ class OpenPoseStage(Stage):
         discovery = openpose_report(ctx.config)
         candidate = discovery.get("model_folder")
         if not candidate:
+            wrong_type = Path(discovery.get("model_folder_wrong_type") or ".")
+            if discovery.get("model_folder_wrong_type"):
+                raise UnusableOpenPose(
+                    f"OpenPose model folder at a discovered path is not a directory: "
+                    f"{wrong_type} — fix the install under {cfg.root} or set "
+                    f"openpose.model_folder")
             raise StageError(f"OpenPose model folder not found under {cfg.root}/models")
         return Path(candidate)
 

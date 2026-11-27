@@ -131,7 +131,7 @@ responses; retained responses and cache keys are the reproducibility evidence.
 | `libnvrtc.so.13` | Check the `diarization_nemotron` torch pin and re-sync; see the environment's comments |
 | Stage skipped: `… environment not installed at …` | Create that `environments/<name>` project and `uv sync` it; `inspect-environment` lists every missing one before a run |
 | Stage skipped: OpenPose not installed | Fix `openpose.root` or executable/model paths, or switch `openpose.enabled` off; inspect the environment report |
-| Stage failed: OpenPose binary found but not executable | A path that exists but cannot run is a defect, not an install state: restore its execute bit or fix `openpose.executable` |
+| Stage failed: OpenPose binary found but not executable | A path that exists but cannot run is a defect, not an install state: restore its execute bit, or fix the directory that sits where the binary or `models/` belongs |
 | Stage skipped: `upstream skipped: transcript unavailable` | WhisperX did not produce a transcript, so nothing that reads one can run; the reason quotes whisperx's own cause |
 | A derived table reported as stale | Its speaker labels no longer match the transcript (translation, the spaCy tables, `acoustic_segments`); re-run the stage that wrote it, which reinstates it in the manifest and the `.eaf` |
 | Stage skipped: TalkNet root missing / no `run_talknet.py` | Point `activespeaker.talknet_root` at a valid TalkNet-ASD checkout |
