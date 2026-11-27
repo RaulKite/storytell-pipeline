@@ -56,7 +56,8 @@ preview rendering stays opt-in (`openpose.write_images`, `openpose.write_video`,
 **Consequences:** `persons` flips to on and `activespeaker` is enabled in the example. To make
 that safe, `enabled()` separates *install state* from defects: a missing uv project, worker
 script, OpenPose binary, TalkNet checkout or `weights_dir` file skips naming the fix, while a
-present but broken tool fails loudly. Unchanged: an unset `weights_dir` may download on first
+present but broken tool fails loudly — as *that stage's* recorded failure, so `run` still
+finishes the DAG and `status --plan` still plans the remaining videos. Unchanged: an unset `weights_dir` may download on first
 use — the one prerequisite no pre-flight check sees.
 
 ## Transcript contract, retired records and stale tables
@@ -67,15 +68,19 @@ use — the one prerequisite no pre-flight check sees.
 reason) instead of failing on an absent table, which ended the video `partial` and exited 2 over
 an install state the run had already reported as a skip.
 
-**Consequences:** a translation whose `speaker_id` disagrees with its source segment is `stale` —
-kept out of `artifacts`, recorded under `artifacts_not_generated` with the reason, its file
-preserved, reported by `validate` under `results[].stale` with exit 0. Retired
-`diarization`/`speaker_fusion` records stay in `status.json`, but only the persisted
-`current_stage_order` decides `overall_status`. Skip reasons reach `batch_report.json` under
-`videos[].skipped` and the closing summary; OpenPose's absent path skips while a present-but-
-unusable one fails. Deferred: `linguistic/english/*` derives from that table and is not marked
-stale with it. `stages/elan.py` is in that stage's code digest, so new skip wording re-exports
-every `.eaf` once — seconds, unlike a model rerun.
+**Consequences:** *every* derived table that copies a speaker out of a segment —
+`translation_segments`, the four `linguistic/*` tables and `acoustic/segment_features` — is
+checked against the transcript on its `segment_id`, and a disagreeing one is `stale`: kept out
+of `artifacts`, recorded under `artifacts_not_generated` with the reason, file preserved,
+reported by `validate` under `results[].stale` with exit 0, and skipped as a tier by the ELAN
+export (coverage reads `present, not exported`) so no `.eaf` quotes two speakers for one
+segment. The deferred `linguistic/english/*` gap is closed by the same rule. A damaged turn
+table (reversed, past the audio, another `video_id`, other `audio_sha256`) **fails**
+`speaker_assignment` instead of nulling the transcript. Retired `diarization`/`speaker_fusion`
+records stay in `status.json`, but only the persisted `current_stage_order` decides
+`overall_status`. Skip reasons reach `batch_report.json` under `videos[].skipped`;
+`stages/elan.py` is in that stage's code digest, so new skip wording re-exports every `.eaf`
+once — seconds, unlike a model rerun.
 
 ## Local full-output profile
 
@@ -89,15 +94,16 @@ reuse, disabling deletes nothing).
 
 ## Verification and recovery
 
-- Stable unit/e2e: **2047 passed, 12 skipped, 0 failed** — the 12 are GPU/download guards. The
-  four `test_elan` corpus tests pass read-only against an operator dataset and fail without one,
-  identically on `master`; each fix in this branch was observed RED then GREEN. Earlier review
-  found and rechecked failed-mux data loss, symlink shell injection and false human-note claims.
-- Corpus-copy evidence: with the Nemotron environment missing, `speaker_assignment` relabelled a
-  copied operator dataset to `speaker_0` from its cached turns; with the turn table removed it
-  cleared every `SPEAKER_00` to null while `speech/raw/whisperx.json` stayed byte-identical, the
-  stale translation left the manifest and `validate` exited 0. Earlier corpus validation reached
-  **7/7 OK**; nothing here establishes accuracy or desktop ELAN.
+- Stable unit/e2e: **2108 passed, 12 skipped, 0 failed** — the 12 are GPU/download guards; the
+  four `test_elan` corpus tests ran read-only against an operator dataset, and each fix below was
+  broken once on purpose so its named test died. Earlier review found and rechecked failed-mux
+  data loss, symlink shell injection and false human-note claims.
+- Corpus-copy evidence (La-1 + `pipeline_demo`, stages run directly, no GPU work): a forced
+  `speaker_assignment` relabelled both to `speaker_0`/`speaker_1`, the six speaker-bearing derived
+  tables went `stale` and left the manifest, `gloss_en` was skipped so no `.eaf` carries
+  `SPEAKER_00`, and `speech/raw/*` stayed byte-identical. `status --plan` lists **7/7** videos with
+  the diarizer reusable, and a broken OpenPose binary is a per-stage `will fail:` instead of
+  exit 1. Nothing here establishes accuracy or desktop ELAN.
 - Native RDD remains ON; the review workload is split by work unit, not file type, and only
   observed current authority establishes closure — this document proves none of it. Recovery:
   `.git/resume-explanations-checkpoint/` holds the earlier diff, config backups and corpus backup;
