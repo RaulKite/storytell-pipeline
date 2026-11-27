@@ -831,23 +831,28 @@ class TestFingerprint:
 
 
 class TestRequestIsMasterIdenticalWhenTheToggleIsOff:
-    """Off has to mean the request master (d266550) sent, not merely a similar one.
+    """Off has to mean the request the pipeline sent before this feature, not a similar one.
 
     The digest is the ``request_hash`` stamped into every preserved raw document. A key added
     to the request while the feature is off changes that hash for every completed dataset, so
     the upgrade alone reruns YOLO over the whole corpus to produce output identical to what is
-    already on disk. So the assertion is made against master's *own* source, extracted from Git
-    and executed -- a literal copy of the dict here could drift from it silently.
+    already on disk. So the assertion is made against the base commit's *own* source, extracted
+    from Git and executed -- a literal copy of the dict here could drift from it silently.
 
-    What this class does **not** claim: that a dataset master produced is reused. The worker's
+    What this class does **not** claim: that a dataset the base produced is reused. The worker's
     own source is part of ``digest_payload`` by design (a worker fix must invalidate cached raw
-    output), and this feature edits that worker, so a master-stamped sidecar stops matching the
+    output), and this feature edits that worker, so a base-stamped sidecar stops matching the
     moment the upgrade lands. That one-time YOLO rerun per clip is the deliberate price of the
     digest covering the worker, and the last test here pins it instead of hiding it behind a
-    master digest salted with *this* worker's bytes.
+    digest salted with *this* worker's bytes.
     """
 
-    BASE = "d266550"
+    #: The commit this branch was rebased onto (``master`` when the persons work started; it was
+    #: ``d266550``). Both name the same ``request`` and the same worker bytes -- master's 21
+    #: commits to ``f01b405`` touched neither -- so either proves the point, but the base is the
+    #: commit a *new* dataset would otherwise carry, and a stale literal here would compare
+    #: against a commit no longer on the path. Point it at the new base after another rebase.
+    BASE = "f01b405"
 
     def _master_request(self, stage, ctx):
         """Run master's ``PersonsStage.request`` against this context.
