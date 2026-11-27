@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1587,3 +1588,132 @@ class TestRenderedReuse:
         assert stage.outputs_present(context) is False, "a deleted preview was reusable"
         context.config.persons.write_video = False
         assert stage.outputs_present(context) is True, "off: a missing video must not force a run"
+
+    def test_a_successful_resume_hashes_the_preview_once(self, context, tmp_path, monkeypatch):
+        """Reuse asks two questions about one file; hashing it twice pays for both answers.
+
+        ``outputs_present`` compares the published bytes with the recorded digest and
+        ``validate`` records the digest again, so a 100 MB preview was read twice per resume.
+        The two now share one computation within the attempt -- and a *staged* render still
+        gets a fresh one, because the published file it replaces is a different file (see
+        :meth:`test_a_rerender_after_a_config_change_is_not_refused_by_the_previous_digest`
+        and :meth:`test_a_resume_repairs_a_preview_that_was_replaced`).
+
+        The completion record is seeded here instead of being produced by ``validate``, because
+        a resume is a *new process* looking at a dataset an earlier one finished: seeding it by
+        calling ``validate`` would leave this attempt's digest already computed and measure
+        nothing.
+        """
+        from multimodal_pipeline.stages import metadata
+        from multimodal_pipeline.stages.base import should_reuse
+        from multimodal_pipeline.state import STATUS_COMPLETED
+
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        video = context.artifact("person_track_video")
+        record = context.state.stage("persons")
+        record.status = STATUS_COMPLETED
+        record.validation_result = {
+            "track_video_sha256": hashlib.sha256(video.read_bytes()).hexdigest()}
+        context.state.save()
+
+        hashed: list[Path] = []
+        real = metadata.sha256_of
+
+        def counted(path):
+            hashed.append(Path(path))
+            return real(path)
+
+        monkeypatch.setattr(metadata, "sha256_of", counted)
+        reusable, reason = should_reuse(PersonsStage(), context,
+                                        config_hash=record.config_hash,
+                                        dependency_hash=record.dependency_hash,
+                                        force=False)
+        monkeypatch.undo()
+        assert reusable is True, reason
+        preview_reads = [path for path in hashed if path == video]
+        assert len(preview_reads) == 1, f"the preview was hashed {len(preview_reads)} times"
+
+
+#: A mode-000 file is unreadable to every non-root user and to none of root's, which is the
+#: only reason these checks are here at all: refusing to skip would make the suite fail on a
+#: machine running as root and give the wrong answer about the code.
+requires_an_unreadable_mode = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads a mode-000 file, so the mode cannot make the preview unreadable")
+
+
+@requires_an_unreadable_mode
+class TestUnreadablePreview:
+    """An unreadable preview is refused for reuse and reported, never crashed on.
+
+    The reviewer reproduced both halves with ``chmod 000`` on the published preview: ``run``
+    died *outside* stage execution because the reuse probe hashed the file (``should_reuse`` is
+    called before the stage's own error handling, in ``orchestrator``), and ``validate --json``
+    raised ``PermissionError`` instead of reporting a problem. Both are the same mistake --
+    assuming that a file which ``stat`` succeeds on can also be read.
+    """
+
+    def _published_unreadable(self, context, tmp_path) -> Path:
+        """A completed dataset whose published preview no process may read."""
+        from multimodal_pipeline.state import STATUS_COMPLETED
+
+        rendering(context, tmp_path, nb_frames=4)
+        RenderedStage().execute(context)
+        validated = PersonsStage().validate(context)
+        record = context.state.stage("persons")
+        record.status = STATUS_COMPLETED
+        record.validation_result = validated
+        context.state.save()
+        video = context.artifact("person_track_video")
+        video.chmod(0o000)
+        return video
+
+    def test_an_unreadable_preview_is_not_offered_for_reuse(self, context, tmp_path):
+        from multimodal_pipeline.stages.base import should_reuse
+
+        video = self._published_unreadable(context, tmp_path)
+        record = context.state.stage("persons")
+        try:
+            # The reuse probe must answer "no", not raise out of the caller.
+            assert PersonsStage().outputs_present(context) is False
+            reusable, reason = should_reuse(PersonsStage(), context,
+                                            config_hash=record.config_hash,
+                                            dependency_hash=record.dependency_hash,
+                                            force=False)
+        finally:
+            video.chmod(0o644)
+        assert reusable is False, "an unreadable preview was reported as reusable"
+        assert "output artifacts missing" in reason or "validation" in reason, reason
+
+    def test_the_stage_rerenders_a_preview_it_cannot_read(self, context, tmp_path):
+        """Rejected reuse has to be actionable: the rerun publishes a readable preview."""
+        video = self._published_unreadable(context, tmp_path)
+        try:
+            assert PersonsStage().outputs_present(context) is False
+            RenderedStage(preview=b"a render anybody can read").execute(context)
+            validated = PersonsStage().validate(context)
+        finally:
+            video.chmod(0o644)
+        assert video.read_bytes() == b"a render anybody can read"
+        assert validated["track_video_sha256"] == hashlib.sha256(
+            b"a render anybody can read").hexdigest()
+        # What the orchestrator does with that block: the completion record now names the
+        # re-render, so the next attempt reuses it.
+        record = context.state.stage("persons")
+        record.validation_result = validated
+        context.state.save()
+        assert PersonsStage().outputs_present(context) is True
+
+    def test_validate_reports_an_unreadable_preview_instead_of_raising_permission_error(
+            self, context, tmp_path):
+        """``validate --json`` aggregates problems; an OSError is one of them, not a crash."""
+        video = self._published_unreadable(context, tmp_path)
+        try:
+            with pytest.raises(ValidationError) as raised:
+                PersonsStage().validate(context)
+        finally:
+            video.chmod(0o644)
+        message = str(raised.value)
+        assert video.name in message, message
+        assert "cannot be read" in message or "unreadable" in message, message

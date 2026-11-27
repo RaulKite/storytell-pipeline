@@ -119,6 +119,10 @@ class PersonsStage(WorkerStage):
     PUBLISHED_OUTPUTS = ("person_frames", "person_tracks", "person_track_video",
                          "persons_raw")
 
+    #: Where one attempt's preview digest is kept in ``ctx.scratch``; see
+    #: :meth:`_preview_digest` for why the reuse decision shares it instead of hashing twice.
+    PREVIEW_DIGEST_SCRATCH_KEY = "persons_preview_digest"
+
     # ------------------------------------------------------------------ request
 
     def request(self, ctx: StageContext) -> dict[str, Any]:
@@ -623,7 +627,6 @@ class PersonsStage(WorkerStage):
         # Imported here rather than at module scope: this module is imported by the stage
         # package that ``person_video`` itself reaches through ``stages.metadata``.
         from ..person_video import check_track_video
-        from .metadata import sha256_of
 
         render = document.get("render")
         if not isinstance(render, dict):
@@ -644,11 +647,20 @@ class PersonsStage(WorkerStage):
                 expected_fps=render.get("fps"),
                 expected_size=expected_size,
                 require_audio=bool(render.get("has_audio")))
-            digest = sha256_of(path)
         except StageError as exc:
             # The checker names the reason and the file; keep both, but let the aggregate
             # ValidationError report every problem this dataset has, not just the first.
             problems.append(str(exc))
+            return None
+        try:
+            digest = self._preview_digest(ctx, path)
+        except OSError as exc:
+            # A file every check so far could stat and one ffprobe stub could describe, and
+            # that nothing may read (mode 000 on the published preview): reported as this
+            # artifact's problem, not raised as a PermissionError out of ``validate --json``.
+            problems.append(
+                f"person track preview at {path} cannot be read ({exc.strerror or exc}), so "
+                f"its bytes cannot be shown to be this run's render")
             return None
         return {"artifact": ARTIFACT_LAYOUT["person_track_video"], "sha256": digest}
 
@@ -950,18 +962,54 @@ class PersonsStage(WorkerStage):
         recorded = self._recorded_track_video_digest(ctx)
         if recorded is None:
             return False
-        from .metadata import sha256_of
-
-        digest = sha256_of(video)
-        if digest is None or digest == recorded:
-            # Unreadable is not "replaced": ``validate`` reports an unreadable preview properly,
-            # and a hash that could not be taken proves nothing about the bytes.
+        try:
+            digest = self._preview_digest(ctx, video)
+        except OSError as exc:
+            # Reproduced by the reviewer with mode 000 on the published preview: hashing it
+            # raised PermissionError out of ``outputs_present``, and ``should_reuse`` runs
+            # before the stage's own error handling, so an ordinary ``run`` died outside stage
+            # execution. A preview nothing can read cannot be shown to be the file this stage
+            # validated, so the answer is "rerun": the stage renders a readable one. Validate
+            # reports the unreadable file as well, for the runs that never get that far.
+            ctx.log(f"person track preview ({video.name}) cannot be read "
+                    f"({exc.strerror or exc}), so the persons stage reruns to render it again",
+                    logging.WARNING)
+            return True
+        if digest == recorded:
             return False
         ctx.log(f"person track preview ({video.name}) is not the file this stage validated when "
                 f"it completed: its sha256 is {digest[:12]}…, recorded {recorded[:12]}…. The "
                 f"preview was replaced, so the persons stage reruns to render it again",
                 logging.WARNING)
         return True
+
+    def _preview_digest(self, ctx: StageContext, video: Path) -> str:
+        """The preview's sha256, computed once per unmodified file and context.
+
+        The reuse decision asks about the same file twice -- :meth:`_preview_replaced` compares
+        its bytes with the recorded digest, and :meth:`_check_track_video` records them -- and a
+        preview is a full decoded video, so both questions cost a read of the whole file. The
+        cache key is the *file's* identity, not its name: publication replaces the file with a
+        staged one, which changes the inode and both timestamps, so a fresh render is always
+        hashed afresh. ``st_ctime_ns`` is in the key for the one metadata change that leaves
+        the content and mtime alone and still makes the file unreadable: ``chmod``. That is
+        exactly the property the two re-render tests pin, and nothing a fresh render can do
+        lands on the cached key.
+
+        ``OSError`` propagates on purpose: the two callers answer an unreadable preview
+        differently (rerun, and report), so the decision stays with them.
+        """
+        stat = video.stat()
+        key = (str(video), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
+               stat.st_ctime_ns)
+        cached = ctx.scratch.get(self.PREVIEW_DIGEST_SCRATCH_KEY)
+        if isinstance(cached, tuple) and cached[0] == key:
+            return str(cached[1])
+        from .metadata import sha256_of
+
+        digest = sha256_of(video)
+        ctx.scratch[self.PREVIEW_DIGEST_SCRATCH_KEY] = (key, digest)
+        return digest
 
     # ------------------------------------------------------- weights identity
 
