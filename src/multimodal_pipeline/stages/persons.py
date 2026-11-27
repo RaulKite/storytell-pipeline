@@ -123,7 +123,7 @@ class PersonsStage(WorkerStage):
 
     def request(self, ctx: StageContext) -> dict[str, Any]:
         cfg = ctx.config.persons
-        return {
+        payload: dict[str, Any] = {
             "stage": self.name,
             "provider": "ultralytics",
             "model": cfg.model,
@@ -140,17 +140,26 @@ class PersonsStage(WorkerStage):
             "conf": cfg.conf,
             "classes": list(cfg.classes),
             "imgsz": cfg.imgsz,
-            # The preview cannot be derived after the fact — the boxes are drawn during the
-            # tracking pass, over the frames that produced them — so asking for one is a
-            # different request, not a different view of the same run. Both directions
-            # invalidate: a document that carries a ``render`` block is not what a no-render
-            # configuration produced.
-            "write_video": cfg.write_video,
             "extra_args": cfg.extra_args,
             "uv_project": str(ctx.config.resolve(cfg.uv_project)),
             "worker": str(ctx.config.resolve(cfg.worker)),
             "source_sha256": self._source_digest(ctx),
         }
+        if cfg.write_video:
+            # Only when it is on, and that is the whole point of it being here at all. The key
+            # joins the request because the preview cannot be derived after the fact -- the
+            # boxes are drawn during the tracking pass, over the frames that produced them -- so
+            # asking for one is a different request rather than a different view of the same
+            # run.
+            #
+            # It is *absent*, not ``False``, when the toggle is off. The digest is the
+            # ``request_hash`` in every preserved raw document on disk, so a key that is always
+            # present and always false would make this branch's own upgrade rerun YOLO over
+            # every completed dataset to produce output identical to what is already there.
+            # tests/unit/test_persons_stage.py builds master's (d266550) request from its own
+            # source and asserts this one is byte-identical to it with the toggle off.
+            payload["write_video"] = True
+        return payload
 
     # ------------------------------------------------------------------ fingerprint
 

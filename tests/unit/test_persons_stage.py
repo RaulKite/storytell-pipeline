@@ -18,9 +18,11 @@ The worker's own logic and the real-model run are in ``test_persons_worker.py``.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -827,6 +829,81 @@ class TestFingerprint:
         assert raw_request_matches(raw, request_hash) is True
 
 
+class TestRequestIsMasterIdenticalWhenTheToggleIsOff:
+    """Off has to mean the request master (d266550) sent, not merely a similar one.
+
+    The digest is the ``request_hash`` stamped into every preserved raw document. A key added
+    to the request while the feature is off changes that hash for every completed dataset, so
+    the upgrade alone reruns YOLO over the whole corpus to produce output identical to what is
+    already on disk. So the assertion is made against master's *own* source, extracted from Git
+    and executed -- a literal copy of the dict here could drift from it silently.
+    """
+
+    BASE = "d266550"
+
+    def _master_request(self, stage, ctx):
+        """Run master's ``PersonsStage.request`` against this context.
+
+        The function body only touches ``ctx``, ``self`` and its own helpers, so compiling the
+        single method is enough. Its annotations are evaluated at def time, which is why the
+        namespace carries the two names they mention.
+        """
+        source = subprocess.run(
+            ["git", "show", f"{self.BASE}:src/multimodal_pipeline/stages/persons.py"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True).stdout
+        tree = ast.parse(source)
+        cls = next(node for node in tree.body
+                   if isinstance(node, ast.ClassDef) and node.name == "PersonsStage")
+        func = next(node for node in cls.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "request")
+        namespace: dict[str, Any] = {"Any": Any, "StageContext": object}
+        exec(compile(ast.Module(body=[func], type_ignores=[]), "<master>", "exec"),
+             namespace)
+        return namespace["request"](stage, ctx)
+
+    def test_the_request_is_byte_identical_to_masters(self, context, stage):
+        assert stage.request(context) == self._master_request(stage, context)
+
+    def test_the_digest_is_masters_apart_from_the_worker_it_runs(self, context, stage):
+        """Only ``_worker_code_sha256`` may differ, and a worker change is meant to differ."""
+        from multimodal_pipeline.config import stable_hash
+        from multimodal_pipeline.stages.base import worker_code_digest
+
+        master = dict(self._master_request(stage, context))
+        master["_worker_code_sha256"] = worker_code_digest(stage.worker_script(context))
+        assert stage.request_digest(context) == stable_hash(master, length=16)
+
+    def test_a_sidecar_stamped_by_masters_code_is_reused_not_rerun(self, context, stage):
+        """The end of the argument: the existing dataset is kept, the GPU pass is not paid.
+
+        The sidecar here is stamped exactly as master would have stamped it -- master's request
+        payload and the digest derived from it -- and the stage must then consider the preserved
+        raw document its own output. This is the decision ``WorkerStage.execute`` makes.
+        """
+        from multimodal_pipeline.config import stable_hash
+        from multimodal_pipeline.stages.base import raw_request_matches, worker_code_digest
+
+        raw = context.artifact("persons_raw")
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps(make_document()), encoding="utf-8")
+        master = dict(self._master_request(stage, context))
+        master_digest = stable_hash(
+            {**master, "_worker_code_sha256": worker_code_digest(stage.worker_script(context))},
+            length=16)
+        stamp_raw(raw, request=master, digest=master_digest, worker=None)
+        assert raw_request_matches(raw, stage.request_digest(context)) is True, \
+            "the upgrade alone invalidated a preserved YOLO run"
+
+    def test_turning_the_toggle_on_is_a_different_request(self, context, stage):
+        off_digest = stage.request_digest(context)
+        off = stage.request(context)
+        context.config.persons.write_video = True
+        assert "write_video" not in off, "the key is present while the feature is off"
+        assert stage.request(context)["write_video"] is True
+        assert stage.request_digest(context) != off_digest, \
+            "asking for a render did not invalidate the preserved raw run"
+
+
 class TestReuseAndWeightsIdentity:
     """§20.2's weights policy, as a reuse rule.
 
@@ -1155,7 +1232,9 @@ class TestRenderedExecution:
         context.artifact("frame_index").write_bytes(b"frame index fixture")
         PersonsStage().normalize(context)
         assert video.read_bytes() == b"from an earlier render"
-        assert PersonsStage().request(context)["write_video"] is False
+        # Absent, not false: with the toggle off the request has to be master's byte for byte,
+        # or the upgrade alone reruns YOLO over every completed dataset.
+        assert "write_video" not in PersonsStage().request(context)
 
 
 def _snapshot(paths) -> dict[Path, tuple[int, bytes]]:
