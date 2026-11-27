@@ -270,8 +270,29 @@ def _parse_rate(raw: Any) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
+def _parse_seconds(raw: Any) -> float | None:
+    """ffprobe's ``start_time``/``pts_time`` as a float, sign kept.
+
+    Deliberately not :func:`_parse_rate`: a start time may legitimately be negative (a stream
+    with a preroll offset) and zero is an ordinary value, while a rate of zero is not a rate.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def probe_media(ffprobe: str, video: Path) -> dict[str, Any]:
-    """``{has_audio, avg_frame_rate}`` for the source, from one argv-list ffprobe.
+    """``{has_audio, avg_frame_rate, audio_start}`` for the source, from one argv-list ffprobe.
+
+    ``audio_start`` is the audio stream's own ``start_time`` -- where the *sound* begins in the
+    source's clock, which is not always where the picture begins. Muxing the audio without it
+    puts a tone that starts 180 ms after the first frame at the preview's first frame instead
+    (measured; see ``audio_offset_seconds``).
 
     A failed probe is a refusal, not a silent ``has_audio=False``: quietly publishing a silent
     preview of a clip that has audio is the complaint already recorded against the OpenPose
@@ -292,11 +313,40 @@ def probe_media(ffprobe: str, video: Path) -> dict[str, Any]:
     except ValueError as exc:
         raise WorkerFailure(f"ffprobe produced unparseable JSON for {video.name}: {exc}") from exc
     video_streams = [stream for stream in streams if stream.get("codec_type") == "video"]
+    audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
     return {
-        "has_audio": any(stream.get("codec_type") == "audio" for stream in streams),
+        "has_audio": bool(audio_streams),
         "avg_frame_rate": (_parse_rate(video_streams[0].get("avg_frame_rate"))
                            if video_streams else None),
+        "audio_start": (_parse_seconds(audio_streams[0].get("start_time"))
+                        if audio_streams else None),
     }
+
+
+def audio_offset_seconds(media: Mapping[str, Any],
+                         frame_index: Mapping[int, float]) -> float:
+    """How far the source audio must move to stay where the source's picture puts it.
+
+    Positive means "the sound starts after the first picture" and the mux delays it; negative
+    means "the sound starts before it" and the mux trims the leading part. The reference is
+    ``frame_index[0]`` rather than 0, because the preview's first frame is the first frame
+    ultralytics decoded -- frame 0 of the index the metadata stage wrote -- and a source whose
+    picture itself starts at 0.5 s must not have that 0.5 s folded into the offset.
+
+    The frame index is the pipeline's timing authority, so the picture side of the subtraction
+    comes from it and not from a second ffprobe call. ``0.0`` when either side is unknown: an
+    offset that cannot be measured is not evidence of a shift, and guessing one would move
+    correctly-placed audio to make a number look computed.
+    """
+    audio_start = media.get("audio_start")
+    first_picture = frame_index.get(0)
+    if audio_start is None or first_picture is None:
+        return 0.0
+    offset = float(audio_start) - float(first_picture)
+    if not math.isfinite(offset):
+        return 0.0
+    # Microsecond resolution, the same rounding the tables use for timestamps.
+    return round(offset, 6)
 
 
 #: Colours stay in this band: below it a box disappears into a dark scene, above it a label
@@ -428,12 +478,16 @@ class TrackVideoWriter:
     """
 
     def __init__(self, *, ffmpeg: str, destination: Path, fps: float,
-                 audio_source: Path | None = None, fps_source: str | None = None) -> None:
+                 audio_source: Path | None = None, fps_source: str | None = None,
+                 audio_offset: float = 0.0) -> None:
         self.ffmpeg = ffmpeg
         self.destination = Path(destination)
         self.fps = float(fps)
         self.fps_source = fps_source
         self.audio_source = Path(audio_source) if audio_source is not None else None
+        #: Seconds the source audio has to move to sit where the source's picture puts it; see
+        #: :func:`audio_offset_seconds`. Positive delays the sound, negative trims it.
+        self.audio_offset = float(audio_offset)
         self.frames_written = 0
         self.width = 0
         self.height = 0
@@ -480,6 +534,37 @@ class TrackVideoWriter:
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart", str(self._partial)]
 
+    def _audio_filter(self) -> str:
+        """Place the source audio at the instant its own timestamps give it.
+
+        ``asetpts=PTS-STARTPTS`` comes first in every branch, and that is the fix rather than
+        decoration: the audio packets carry the container's own timestamps (an audio track that
+        starts 180 ms after the picture starts at 0.18), and leaving them alone let ffmpeg place
+        the sound wherever its input handling landed -- measured on such a clip, the tone came
+        out at **0.047 s** instead of 0.18, and a source whose *picture* started 200 ms late got
+        all 400 ms of its tone, the 200 ms before the first frame included. Resetting the
+        content clock to zero first makes the placement a number this code computed, not one
+        ffmpeg happened to pick.
+
+        Then one of three branches:
+
+        * ``offset > 0`` -- the sound starts after the first frame: ``adelay`` inserts that much
+          silence, quantised to the millisecond, which is 1/40th of a frame at 25 fps;
+        * ``offset < 0`` -- the sound starts before it: ``atrim`` drops the part no picture ever
+          covered, and the second reset puts what is left at zero;
+        * ``offset == 0``, including "could not be measured": nothing moves.
+
+        ``apad`` stays last in every branch: it is what makes ``-shortest`` end at the video
+        rather than at whatever the audio had left (see :meth:`_mux_argv`).
+        """
+        if self.audio_offset > 0:
+            delay = f"{int(round(self.audio_offset * 1000))}"
+            return f"asetpts=PTS-STARTPTS,adelay={delay}:all=1,apad"
+        if self.audio_offset < 0:
+            return (f"asetpts=PTS-STARTPTS,atrim=start={abs(self.audio_offset):.6f},"
+                    "asetpts=PTS-STARTPTS,apad")
+        return "asetpts=PTS-STARTPTS,apad"
+
     def _mux_argv(self) -> list[str]:
         """The second pass: copy the finished video, encode the audio, pad it to the video.
 
@@ -488,12 +573,14 @@ class TrackVideoWriter:
         audio infinite, so ``-shortest`` stops at the *video* and can only ever trim the audio
         this render does not measure. Short source audio can no longer shorten the picture, and
         long source audio is cut to the preview's length instead of stretching the container.
+        The audio is also rebased onto the first frame's PTS (:meth:`_audio_filter`), because the
+        two streams of one source do not have to start at the same instant.
         """
         return [self.ffmpeg, "-v", "error", "-nostdin", "-y",
                 "-i", str(self._partial), "-i", str(self.audio_source),
                 "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", "copy", "-c:a", "aac", "-af", "apad", "-shortest",
-                "-movflags", "+faststart", str(self._muxed)]
+                "-c:v", "copy", "-c:a", "aac", "-af", self._audio_filter(),
+                "-shortest", "-movflags", "+faststart", str(self._muxed)]
 
     def _stderr_text(self) -> str:
         if self._log is None:
@@ -696,6 +783,11 @@ class TrackVideoWriter:
             "encoded_width": self.encoded_width,
             "encoded_height": self.encoded_height,
             "has_audio": self.audio_source is not None,
+            # How far the source audio had to move so it sits where the source's own picture
+            # puts it: positive means its sound starts after the first frame and was delayed,
+            # negative that it starts earlier and was trimmed. Zero for a silent render and for
+            # a source whose two streams start together.
+            "audio_offset_seconds": round(self.audio_offset, 6),
         }
 
 
@@ -705,7 +797,10 @@ def make_render_writer(args: argparse.Namespace,
 
     The rate is chosen *before* the model runs: the frame index is already loaded, ffprobe has
     already been asked, and finding out after 126 decoded frames that no rate was available
-    would have cost a full detection pass to produce nothing.
+    would have cost a full detection pass to produce nothing. The same probe answers where the
+    source's audio begins, so the A/V offset is settled here too, from the frame index's frame 0
+    rather than from a second ffprobe call: ``frame_index[0]`` *is* the instant the preview's
+    first picture stands for.
     """
     media = probe_media(args.ffprobe, args.video)
     fps = derive_fps(frame_index)
@@ -721,7 +816,9 @@ def make_render_writer(args: argparse.Namespace,
             "fine doing it")
     return TrackVideoWriter(ffmpeg=args.ffmpeg, destination=args.output_video, fps=fps,
                             fps_source=source,
-                            audio_source=args.video if media["has_audio"] else None)
+                            audio_source=args.video if media["has_audio"] else None,
+                            audio_offset=(audio_offset_seconds(media, frame_index)
+                                          if media["has_audio"] else 0.0))
 
 
 # --------------------------------------------------------------- the tracking
@@ -1146,6 +1243,24 @@ def validate(args: argparse.Namespace) -> None:
         )
 
 
+def audio_note(render: Mapping[str, Any]) -> str:
+    """How the render's audio was treated, for the one log line that describes it.
+
+    The offset is named only when there was one, and named with its sign: "rebased +0.156 s"
+    says the sound was delayed to the instant the source put it, "trimmed -0.200 s" that the
+    part before the first picture was dropped. Silence about it would make a synchronised
+    preview and an unresynchronised one look identical in the log.
+    """
+    if not render.get("has_audio"):
+        return "absent"
+    offset = float(render.get("audio_offset_seconds") or 0.0)
+    if offset > 0:
+        return f"muxed (delayed {offset:.3f} s to the first frame)"
+    if offset < 0:
+        return f"muxed (trimmed {abs(offset):.3f} s before the first frame)"
+    return "muxed (streams start together)"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     # The result contract is written in a ``finally`` block, so a refusal would itself be
@@ -1220,7 +1335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{render['width']}x{render['height']} / {render['fps']} fps "
                 f"({render['fps_source']}), encoded "
                 f"{render['encoded_width']}x{render['encoded_height']}{padding}, audio "
-                f"{'muxed' if render['has_audio'] else 'absent'}")
+                f"{audio_note(render)}")
         if document["gmc_failure_count"]:
             log(f"WARNING: {document['gmc_failure_count']} frame(s) lost camera-motion "
                 f"compensation; ids may be fragmented by the harness, not the scene")

@@ -962,12 +962,17 @@ def write_fake_ffmpeg(tmp_path, *, exit_code: int = 0, body: bytes = b"fake-mp4"
 
 
 def write_fake_ffprobe(tmp_path, *, audio: bool = False, avg_frame_rate: str = "25/1",
-                       fail: bool = False, name: str = "fake-ffprobe"):
+                       fail: bool = False, name: str = "fake-ffprobe",
+                       audio_start: float | None = None):
     """A stand-in ffprobe answering with the streams a real clip would report."""
     streams: list[dict[str, Any]] = [{"index": 0, "codec_type": "video",
                                       "avg_frame_rate": avg_frame_rate}]
     if audio:
-        streams.append({"index": 1, "codec_type": "audio"})
+        entry: dict[str, Any] = {"index": 1, "codec_type": "audio"}
+        if audio_start is not None:
+            # The stream's own start_time, which is how a source says "my sound begins here".
+            entry["start_time"] = f"{audio_start:.6f}"
+        streams.append(entry)
     script = tmp_path / name
     payload = "not json at all" if fail else json.dumps({"streams": streams})
     script.write_text(
@@ -1064,7 +1069,7 @@ class TestRenderedPreviewIsOptIn:
         assert payload["status"] == "ok", payload.get("error")
         expected = {"fps": 25.0, "fps_source": "frame_index", "frames_written": 3,
                     "width": 64, "height": 48, "encoded_width": 64, "encoded_height": 48,
-                    "has_audio": False}
+                    "has_audio": False, "audio_offset_seconds": 0.0}
         assert payload["_document"]["render"] == expected
         assert payload["render"] == expected
 
@@ -1199,6 +1204,97 @@ class TestFrameAccounting:
             writer.finish(expected_frames=5)
 
 
+class TestAudioIsRebasedOntoTheFirstFrame:
+    """The preview's sound has to sit where the source's own picture puts it.
+
+    Reviewer finding: a tone starting 180 ms after the source picture landed somewhere else
+    entirely in the preview. The corpi here are arithmetic and argv; the end-to-end proof runs
+    against the real encoder in ``TestAgainstRealFfmpeg``, because a fake cannot show where
+    the sound ended up, only which flags were asked for.
+    """
+
+    def test_a_sound_that_starts_after_the_first_frame_is_delayed_by_the_difference(
+            self, worker):
+        media = {"has_audio": True, "avg_frame_rate": 25.0, "audio_start": 0.18}
+        assert worker.audio_offset_seconds(media, {0: 0.0, 1: 0.04}) == pytest.approx(0.18)
+
+    def test_a_sound_that_starts_before_the_first_frame_is_trimmed_by_the_difference(
+            self, worker):
+        """The reference is frame 0, not 0: a picture that itself starts late moves nothing."""
+        media = {"has_audio": True, "avg_frame_rate": 25.0, "audio_start": 0.0}
+        assert worker.audio_offset_seconds(media, {0: 0.2, 1: 0.24}) == pytest.approx(-0.2)
+        same = {"has_audio": True, "avg_frame_rate": 25.0, "audio_start": 0.5}
+        assert worker.audio_offset_seconds(same, {0: 0.5, 1: 0.54}) == 0.0
+
+    @pytest.mark.parametrize("media,index", [
+        ({"has_audio": True, "audio_start": None}, {0: 0.0}),
+        ({"has_audio": True, "audio_start": 0.18}, {}),
+        ({"has_audio": True}, {0: 0.0}),
+    ])
+    def test_an_unmeasurable_offset_moves_nothing(self, worker, media, index):
+        """Guessing would move audio that was already correct to make a number look computed."""
+        assert worker.audio_offset_seconds(media, index) == 0.0
+
+    def test_the_delay_branch_asks_ffmpeg_for_that_many_milliseconds(self, worker, tmp_path):
+        writer = worker.TrackVideoWriter(ffmpeg="ffmpeg", destination=tmp_path / "tracks.mp4",
+                                        fps=25.0, audio_source=tmp_path / "src.mp4",
+                                        audio_offset=0.156)
+        assert writer._audio_filter() == "asetpts=PTS-STARTPTS,adelay=156:all=1,apad"
+        writer.abort()
+
+    def test_the_trim_branch_asks_ffmpeg_to_drop_the_part_before_the_picture(
+            self, worker, tmp_path):
+        writer = worker.TrackVideoWriter(ffmpeg="ffmpeg", destination=tmp_path / "tracks.mp4",
+                                        fps=25.0, audio_source=tmp_path / "src.mp4",
+                                        audio_offset=-0.2)
+        assert writer._audio_filter() == (
+            "asetpts=PTS-STARTPTS,atrim=start=0.200000,asetpts=PTS-STARTPTS,apad")
+        writer.abort()
+
+    def test_a_source_whose_streams_start_together_still_resets_the_audio_clock(
+            self, worker, tmp_path):
+        """The reset is what makes the placement computed rather than inherited."""
+        writer = worker.TrackVideoWriter(ffmpeg="ffmpeg", destination=tmp_path / "tracks.mp4",
+                                        fps=25.0, audio_source=tmp_path / "src.mp4")
+        assert writer._audio_filter() == "asetpts=PTS-STARTPTS,apad"
+        writer.abort()
+
+    def test_the_source_audio_start_reaches_the_mux_command(self, worker, tmp_path, clip,
+                                                          frame_index_file, fake_cv2):
+        """The probe value has to arrive at the encoder, not merely at the render block."""
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        probe = write_fake_ffprobe(tmp_path, audio=True, audio_start=0.18)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=frame_index_file,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg, ffprobe=probe))
+        assert payload["status"] == "ok", payload.get("error")
+        mux = read_calls(log)[1]
+        _slice_index(mux["argv"], ["-af", "asetpts=PTS-STARTPTS,adelay=180:all=1,apad"])
+        assert payload["_document"]["render"]["audio_offset_seconds"] == pytest.approx(0.18)
+
+    def test_a_trim_of_the_leading_audio_reaches_the_mux_command(self, worker, tmp_path, clip,
+                                                               fake_cv2):
+        """A picture that starts late is the mirror case, and it trimmed instead of delaying."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        index = tmp_path / "late_frame_index.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array([0, 1, 2], type=pa.int64()),
+            "pts_seconds": pa.array([0.2, 0.24, 0.28], type=pa.float64()),
+        }), index)
+        FakeModel.results = [FakeResult(0, [1])]
+        ffmpeg, log = write_fake_ffmpeg(tmp_path)
+        probe = write_fake_ffprobe(tmp_path, audio=True, audio_start=0.0)
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index,
+                             extra=render_args(tmp_path, ffmpeg=ffmpeg, ffprobe=probe))
+        assert payload["status"] == "ok", payload.get("error")
+        mux = read_calls(log)[1]
+        _slice_index(mux["argv"], ["-af", "asetpts=PTS-STARTPTS,atrim=start=0.200000,"
+                                   "asetpts=PTS-STARTPTS,apad"])
+        assert payload["_document"]["render"]["audio_offset_seconds"] == pytest.approx(-0.2)
+
+
 class TestFrameRate:
     def test_the_clock_comes_from_the_frame_index_that_is_already_loaded(self, worker):
         """The corpus is 30000/1001; a 25 fps assumption drifts, and the index is on disk."""
@@ -1287,9 +1383,12 @@ class TestEncoderCommand:
         assert "-an" in encode["argv"] and "-shortest" not in encode["argv"]
         assert "-map" not in encode["argv"]
         # The mux copies the finished video and pads the audio so -shortest ends at the video.
+        # The filter always resets the audio's own clock first, so the placement is computed
+        # here rather than inherited from whatever ffmpeg does with the source's timestamps.
         _slice_index(mux["argv"], ["-i", encode["argv"][-1], "-i", str(clip),
                                     "-map", "0:v:0", "-map", "1:a:0",
-                                    "-c:v", "copy", "-c:a", "aac", "-af", "apad",
+                                    "-c:v", "copy", "-c:a", "aac", "-af",
+                                    "asetpts=PTS-STARTPTS,apad",
                                     "-shortest"])
         assert mux["frames"] is None, "the mux pass read the frame pipe"
 
@@ -1610,6 +1709,95 @@ class TestAgainstRealFfmpeg:
         audio = next(s for s in ffprobe_streams(dest)["streams"] if s["codec_type"] == "audio")
         assert float(audio["duration"]) >= 0.3, audio
 
+    def _two_stream_source(self, tmp_path, *, video_delay: float, audio_delay: float,
+                           name: str) -> Path:
+        """A 25 fps, 0.4 s clip whose two streams do not start at the same instant.
+
+        ``-itsoffset`` before an input shifts that stream's own start time, which is the state
+        a real clip reaches from an edit list or from a recorder that opened its audio device
+        late -- and what a mux that trusts ffmpeg's input handling silently misplaces.
+        """
+        clip = tmp_path / name
+        argv = ["ffmpeg", "-v", "error", "-y"]
+        if video_delay:
+            argv += ["-itsoffset", f"{video_delay}"]
+        argv += ["-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=0.4"]
+        if audio_delay:
+            argv += ["-itsoffset", f"{audio_delay}"]
+        argv += ["-f", "lavfi", "-i", "sine=frequency=1000:duration=0.3",
+                 "-map", "0:v:0", "-map", "1:a:0",
+                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                 "-c:a", "aac", str(clip)]
+        subprocess.run(argv, check=True, capture_output=True)
+        return clip
+
+    def test_audio_that_starts_after_the_first_frame_stays_after_it(
+            self, worker, tmp_path, fake_cv2):
+        """The late direction, measured after decoding: 0.18 s in, 0.18 s out.
+
+        The source's picture starts at 0.5 s (an edit list, or a recorder that opened late) and
+        its tone 180 ms after that. This construction came out right even before the rebase,
+        because ffmpeg rebases a *input* onto its earliest stream and here that is the picture;
+        it is kept as the guard on the other sign, because a rebase that trimmed where it should
+        delay (or delayed by the wrong reference) fails it immediately.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        clip = self._two_stream_source(tmp_path, video_delay=0.5, audio_delay=0.68,
+                                       name="late-audio.mp4")
+        index = tmp_path / "late_index.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array(list(range(10)), type=pa.int64()),
+            "pts_seconds": pa.array([0.5 + i * 0.04 for i in range(10)],
+                                    type=pa.float64()),
+        }), index)
+        FakeModel.results = [FakeResult(i, [1]) for i in range(10)]
+        dest = tmp_path / "raw" / "late-tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index, extra=[
+            "--output-video", str(dest), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+        assert payload["status"] == "ok", payload.get("error")
+        source_offset = av_offset(clip)
+        preview_offset = av_offset(dest)
+        assert abs(preview_offset - source_offset) <= 0.03, (
+            f"the preview's sound sits {preview_offset:.3f}s after its first picture; in the "
+            f"source it is {source_offset:.3f}s after the first picture")
+        assert payload["_document"]["render"]["audio_offset_seconds"] == pytest.approx(
+            source_offset, abs=0.05)
+        assert ffprobe_count_frames(dest) == 10
+
+    def test_audio_starting_before_the_first_frame_is_trimmed_to_it(
+            self, worker, tmp_path, fake_cv2):
+        """The mirror case: the sound is already running when the picture begins.
+
+        A 0.3 s tone whose picture starts 200 ms later must lose the 200 ms no picture covers,
+        or the preview plays sound against pictures that belong to something else. Before the
+        rebase the mux kept all 300 ms of it.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        clip = self._two_stream_source(tmp_path, video_delay=0.2, audio_delay=0.0,
+                                       name="late-picture.mp4")
+        index = tmp_path / "late_picture_index.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array(list(range(10)), type=pa.int64()),
+            "pts_seconds": pa.array([0.2 + i * 0.04 for i in range(10)], type=pa.float64()),
+        }), index)
+        FakeModel.results = [FakeResult(i, [1]) for i in range(10)]
+        dest = tmp_path / "raw" / "late-picture-tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index, extra=[
+            "--output-video", str(dest), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+        assert payload["status"] == "ok", payload.get("error")
+        first, last = audio_activity(dest)
+        assert first <= 0.05, f"the trimmed audio still starts at {first:.3f}s"
+        # The picture covers source 0.2..0.6 and the source tone covers 0..0.3, so 0.1 s of it
+        # is inside the picture. Anything near the source's full 0.3 s means nothing was
+        # trimmed, which is what the mux did before this fix.
+        assert last - first <= 0.15, f"the preview kept {last - first:.3f}s of the source tone"
+        assert payload["_document"]["render"]["audio_offset_seconds"] < -0.1
+        assert ffprobe_count_frames(dest) == 10
+
 
     def test_an_odd_frame_size_reaches_the_encoder_as_an_even_one(self, worker, tmp_path,
                                                                  fake_cv2):
@@ -1654,3 +1842,59 @@ def ffprobe_count_frames(path: Path) -> int:
         check=True, capture_output=True, text=True)
     streams = json.loads(completed.stdout)["streams"]
     return int(streams[0]["nb_read_frames"])
+
+
+def audio_activity(path: Path) -> tuple[float, float]:
+    """Where the file's audio is actually audible, in the file's own timeline.
+
+    Decoded PCM rather than a stream header: a container can claim any start time it likes, and
+    what a viewer experiences is when the sound begins. The raw sample stream starts at the
+    first decoded sample, so the audio stream's ``start_time`` is added back -- otherwise two
+    files whose first sample carries a different timestamp would look further apart than they
+    sound. 8 kHz mono is plenty for finding the first sample above a tenth of the peak.
+    """
+    import array
+
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0",
+                          "-f", "s16le", "-ac", "1", "-ar", "8000", "-"],
+                         check=True, capture_output=True).stdout
+    samples = array.array("h")
+    samples.frombytes(raw)
+    assert samples, f"{path} decoded to no audio samples"
+    threshold = max(200, max(abs(value) for value in samples) // 10)
+    first = next((index for index, value in enumerate(samples) if abs(value) > threshold), None)
+    last = next((len(samples) - 1 - index for index, value in
+                 enumerate(reversed(samples)) if abs(value) > threshold), None)
+    assert first is not None and last is not None, f"{path} carries no audible audio"
+    start = audio_stream_start(path)
+    return start + first / 8000.0, start + last / 8000.0
+
+
+def audio_stream_start(path: Path) -> float:
+    """The audio stream's own first-sample instant, in the file's timeline."""
+    completed = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=start_time", "-of", "json", str(path)],
+        check=True, capture_output=True, text=True)
+    stream = json.loads(completed.stdout)["streams"][0]
+    return float(stream.get("start_time") or 0.0)
+
+
+def first_video_frame_pts(path: Path) -> float:
+    """PTS of the file's first video frame, which is what a viewer sees first."""
+    completed = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "frame=pts_time", "-read_intervals", "%+#1", "-of", "json",
+         str(path)],
+        check=True, capture_output=True, text=True)
+    return float(json.loads(completed.stdout)["frames"][0]["pts_time"])
+
+
+def av_offset(path: Path) -> float:
+    """Seconds between a file's first picture and its first audible sound.
+
+    The one number an A/V defect shows up in, and the reason the tests below decode instead of
+    reading headers: a preview can carry the right streams, the right frame count and the right
+    rate while its sound sits 700 ms away from the pictures it belongs to.
+    """
+    return audio_activity(path)[0] - first_video_frame_pts(path)
