@@ -137,7 +137,7 @@ class PersonsStage(WorkerStage):
         `person_frames` and `person_tracks` happens here — the span summary, the confidence
         reasons, the gap arithmetic — and a change to any of it left a completed run looking
         "reusable" while the numbers it reported had moved. Same defect class as
-        `pose_normalized` and `speaker_fusion`; here the parent's payload needed extending,
+        `pose_normalized` and `speaker_assignment`; here the parent's payload needed extending,
         not replacing.
 
         It is extended at this hook rather than in `digest_payload`, and the difference is the
@@ -232,19 +232,17 @@ class PersonsStage(WorkerStage):
         *present but broken* environment is not screened here — it runs and fails loudly,
         because at that point silence would hide a real defect. Same three-state discipline
         as ``diarization_nemotron``.
+
+        The environment and worker gates are ``WorkerStage``'s own (``super()``), so the
+        message a missing install produces is the same for every worker stage; only the
+        checkpoint gate below is specific to this one.
         """
         cfg = ctx.config.persons
         if not cfg.enabled:
             return False, "persons.enabled = false"
-        project = self.uv_project(ctx)
-        if not project.is_dir():
-            return False, (
-                f"persons environment not installed at {project} — create it and run "
-                "`uv sync --python 3.12` there to enable person tracking"
-            )
-        worker = self.worker_script(ctx)
-        if not worker.is_file():
-            return False, f"persons worker script missing at {worker}"
+        installed, reason = super().enabled(ctx)
+        if not installed:
+            return False, reason
         if cfg.weights_dir is not None:
             # An explicit weights_dir is a promise about a file, so breaking it is reported
             # here rather than discovered by the worker on the first frame of the first

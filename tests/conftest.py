@@ -35,12 +35,12 @@ def hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     Two independent leaks are closed here:
 
     * ``load_config`` reads the project-root ``.env``, so a developer's real
-      ``HF_TOKEN`` would decide whether assertions such as "diarization skipped
-      because the token is missing" pass -- green on CI, red at the desk that has
-      credentials. The opt-out variable stops only that implicit read.
+      ``HF_TOKEN`` or LiteLLM key would decide whether assertions about a stage skipping
+      for a missing credential pass -- green on CI, red at the desk that has credentials.
+      The opt-out variable stops only that implicit read.
     * A test that loads a ``.env`` mutates ``os.environ`` in place, and pytest shares
       one process, so those values would leak into every later test in the same run --
-      including the e2e test that asserts an unset token is reported as unset.
+      including the e2e tests that assert a credential's value is never written.
     """
     monkeypatch.setenv("MULTIMODAL_PIPELINE_NO_DOTENV", "1")
     before = dict(os.environ)
@@ -69,7 +69,7 @@ def config_dict(project_root: Path) -> dict:
         "input": {"directory": str(project_root / "videos"), "recursive": False},
         "output": {"directory": str(project_root / "output")},
         "whisperx": {"uv_project": "environments/whisperx", "model": "large-v3"},
-        "diarization": {"uv_project": "environments/diarization"},
+        "diarization_nemotron": {"uv_project": "environments/diarization_nemotron"},
         "translation": {"provider": "mock", "model": "test-model", "api_key": "sk-secret-123456"},
         "spacy": {"uv_project": "environments/spacy"},
         "acoustic": {"uv_project": "environments/acoustic"},

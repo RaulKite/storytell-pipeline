@@ -213,49 +213,25 @@ class WhisperXConfig(_Model):
     extra_args: list[str] = Field(default_factory=list)
 
 
-class DiarizationConfig(_Model):
-    enabled: bool = True
-    uv_project: Path = Path("environments/diarization")
-    worker: Path = Path("workers/diarization_worker.py")
-    provider: str = "pyannote"
-    pipeline: str = "pyannote/speaker-diarization-community-1"
-    hf_token_env: str = "HF_TOKEN"
-    device: str = "cuda"
-    device_index: int = 0
-    use_exclusive_diarization_for_alignment: bool = True
-    min_speakers: int | None = None
-    max_speakers: int | None = None
-    num_speakers: int | None = None
-    python_version: str = "3.12"
-    extra_args: list[str] = Field(default_factory=list)
-
-    @field_validator("provider")
-    @classmethod
-    def _provider(cls, value: str) -> str:
-        if value != "pyannote":
-            raise ValueError("diarization.provider currently supports only 'pyannote'")
-        return value
-
-
 class DiarizationNemotronConfig(_Model):
-    """NVIDIA Nemotron 3 Diarization, as a second engine next to pyannote.
+    """NVIDIA Nemotron 3 Diarization — the pipeline's only speaker diarizer.
 
-    A parallel opinion, not a replacement: it reads ``audio/audio.wav`` and writes its own
-    raw JSON and its own table. ``speaker_assignment`` never reads either, so the existing
-    dataset meaning is untouched and the operator can compare the two tables and then
-    decide which engine to adopt.
+    It reads ``audio/audio.wav`` and writes its own raw JSON and
+    ``speech/speaker_turns_nemotron.parquet``; ``speaker_assignment`` labels the transcript
+    from that table, and ``finalization`` checks the cited speaker ids against it.
 
-    The model is **not gated**, so unlike pyannote community-1 there is no model-condition
-    acceptance step; ``hf_token_env`` is a rate-limit convenience, and the stage runs
-    without it. It is still read from the environment and never from YAML, because the
-    token would otherwise land in ``provenance/config.json``.
+    The model is **not gated**, so there is no model-condition acceptance step;
+    ``hf_token_env`` is a rate-limit convenience, and the stage runs without it. It is
+    still read from the environment and never from YAML, because the token would otherwise
+    land in ``provenance/config.json``.
+
+    Enabled by default because it is the only diarizer left: a config that switches it off
+    gets a corpus with no speaker labels at all, and ``speaker_assignment`` says so instead
+    of guessing. Its uv environment and checkpoint are still a large download, so the stage
+    skips cleanly (never fails) when ``environments/diarization_nemotron`` is not installed.
     """
 
-    #: Off by default. This is an extra engine whose environment is not part of the
-    #: default set a fresh clone syncs, and whose checkpoint is a large download from the
-    #: Hugging Face hub; a fresh clone must not start that download unasked. A corpus still
-    #: completes with this stage off, which is the point of a second opinion.
-    enabled: bool = False
+    enabled: bool = True
     uv_project: Path = Path("environments/diarization_nemotron")
     worker: Path = Path("workers/nemotron_diarization_worker.py")
     python_version: str = "3.12"
@@ -272,10 +248,8 @@ class DiarizationNemotronConfig(_Model):
     threshold: float = 0.5
     timeout_seconds: float | None = None
     #: When true, a worker that asks for cuda and cannot see a GPU degrades to cpu and
-    #: records why. When false it fails. The pyannote worker only ever degrades, which is
-    #: right there; here the second engine is optional, so a silent CPU run is worth being
-    #: able to forbid: an hour-long batch that quietly crawled on CPU is a worse outcome
-    #: than a fast failure.
+    #: records why. When false it fails. A silent CPU run is worth being able to forbid: an
+    #: hour-long batch that quietly crawled on CPU is a worse outcome than a fast failure.
     fallback_to_cpu: bool = True
     extra_args: list[str] = Field(default_factory=list)
 
@@ -712,76 +686,6 @@ class ActiveSpeakerConfig(_Model):
         return value
 
 
-class SpeakerFusionConfig(_Model):
-    """Fuse diarization turns with the per-frame active-speaker table (§20.1 / T13).
-
-    A *second* diarization result, kept beside the existing ones. Nothing here is read by
-    ``speaker_assignment``, so enabling it relabels no existing artifact — which is the
-    whole reason it is a new stage rather than a change to ``diarization``.
-
-    ``engines`` is the T20 requirement made explicit: the fusion core takes *which* turn
-    table to read as a parameter, so ``["pyannote"]`` and ``["pyannote", "nemotron"]`` are
-    two calls of the same code. Each selected engine is one output table.
-    """
-
-    enabled: bool = True
-    #: Turn tables to fuse, from ``fusion.TURN_TABLES``. Selecting ``nemotron`` costs
-    #: nothing but a table when the diarizer ran; a selected engine whose turn table is
-    #: absent is skipped with a logged reason rather than failing the stage.
-    engines: list[str] = Field(default_factory=lambda: ["pyannote"])
-    #: Share of a winning track's in-window frames that must be flagged active for a
-    #: ``face_matched`` verdict. Lower it to accept a face that talks intermittently.
-    min_active_ratio: float = 0.5
-    #: Frames a track must be flagged active on before it counts as evidence at all.
-    #: One frame is a sighting, not a match; raise it to require a sustained speaker.
-    min_face_frames: int = 2
-
-    @field_validator("engines")
-    @classmethod
-    def _engines(cls, value: list[str]) -> list[str]:
-        from .fusion import FUSION_ENGINES, TURN_TABLES
-
-        if not value:
-            raise ValueError(
-                "speaker_fusion.engines must name at least one turn table "
-                f"(allowed: {', '.join(FUSION_ENGINES)})"
-            )
-        unknown = [name for name in value if name not in TURN_TABLES]
-        if unknown:
-            raise ValueError(
-                f"speaker_fusion.engines has unknown entries {sorted(unknown)} "
-                f"(allowed: {', '.join(FUSION_ENGINES)})"
-            )
-        duplicates = sorted({name for name in value if value.count(name) > 1})
-        if duplicates:
-            # A repeated engine writes the same table twice and doubles the row counts in
-            # it, which validates fine and is simply wrong data.
-            raise ValueError(
-                f"speaker_fusion.engines lists {', '.join(duplicates)} more than once"
-            )
-        return list(value)
-
-    @field_validator("min_active_ratio")
-    @classmethod
-    def _min_active_ratio(cls, value: float) -> float:
-        if not 0.0 < value <= 1.0:
-            raise ValueError(
-                "speaker_fusion.min_active_ratio must be a share in (0, 1]: it is the "
-                "fraction of a turn's in-range frames that must be active"
-            )
-        return value
-
-    @field_validator("min_face_frames")
-    @classmethod
-    def _min_face_frames(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError(
-                "speaker_fusion.min_face_frames must be >= 1: a track needs at least one "
-                "active frame before it can be evidence at all"
-            )
-        return value
-
-
 class PoseNormalizedConfig(_Model):
     """Re-express BODY_25 keypoints in a body-centred frame (§20.4 / T14).
 
@@ -898,12 +802,15 @@ class PersonsConfig(_Model):
     when each one is on screen. Its ids live in their own namespace and are written to
     their own directory — see :data:`multimodal_pipeline.schemas.PERSON_FRAMES_SCHEMA`.
 
-    Off by default, like the other optional GPU stages. A fresh clone is not asked to sync
-    a fifth torch environment it may not want; with this off the pipeline completes and the
-    stage reports why it did not run.
+    On by default, like every other stage of the pipeline: the operator's decision is that a
+    default run measures everything the pipeline can measure, and a machine that has not
+    installed ``environments/persons`` says so per video instead of quietly producing a corpus
+    with one fewer signal. ``enabled()`` is what makes that safe — it skips (never fails) when
+    the environment, the worker or an explicitly configured checkpoint is missing, the same
+    three-state discipline ``diarization_nemotron`` uses.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     uv_project: Path = Path("environments/persons")
     worker: Path = Path("workers/persons_worker.py")
     python_version: str = "3.12"
@@ -1064,14 +971,15 @@ class ElanConfig(_Model):
     corpus. That is also why it is the last stage — it summarises every producer's output, so
     running it before a producer finished would export a dataset that had not.
 
-    ``enabled`` defaults **true**, which is the opposite of the other optional late stages,
-    and the difference is what they cost rather than how risky they are. ``persons`` and
-    ``diarization_nemotron`` default false because a fresh clone that left them on would sync a
-    torch environment and download a checkpoint nobody asked for, on a machine that may have no
-    GPU. This stage does neither: it is pure Python over files already on disk, using one small
-    pure-Python library in the root dependencies, and it costs seconds per video. A default of
-    false would mean the feature was off for everyone in exchange for nothing. Reversible
-    per-config, and switching it off deletes nothing.
+    ``enabled`` defaults **true**, as every stage of this pipeline now does: a default run
+    measures everything the pipeline can measure, and a stage whose prerequisite is missing
+    skips with a reason instead of failing the video. What differs between stages is the cost a
+    default run pulls in. This one is pure Python over files already on disk, using one small
+    pure-Python library in the root dependencies, so it costs seconds per video and nothing to
+    install. ``persons`` and ``diarization_nemotron`` are on by default too, but they *skip*
+    until their own uv environment exists, so a fresh clone pays no torch sync and no checkpoint
+    download it did not ask for. Reversible per-config, and switching a stage off deletes
+    nothing.
     """
 
     enabled: bool = True
@@ -1084,13 +992,35 @@ class LoggingConfig(_Model):
     progress_interval_seconds: float = 10.0
 
 
+#: Config sections this pipeline no longer has, and what to do about them.
+#:
+#: Named rather than left to ``extra="forbid"``: the generic error for an unknown key is one
+#: line of pydantic internals that says "unknown setting", and an operator whose
+#: ``config.local.yaml`` still carries a whole ``diarization:`` block needs to be told the
+#: engine is gone, not that a key is misspelled. Failing loudly is the point — silently
+#: ignoring the section would leave a run that looks configured for pyannote and produces
+#: Nemotron labels.
+REMOVED_SECTIONS: dict[str, str] = {
+    "diarization": (
+        "the `diarization:` section was removed and Nemotron (`diarization_nemotron:`) is "
+        "now the only diarizer. Delete the `diarization:` block; move any device, "
+        "max_speakers or token setting you still need into `diarization_nemotron:`, whose "
+        "environment is `environments/diarization_nemotron`."
+    ),
+    "speaker_fusion": (
+        "the `speaker_fusion:` section was removed with the diarization x TalkNet fusion "
+        "stage. Delete the `speaker_fusion:` block; `diarization_nemotron:` supplies the "
+        "speaker turns and `activespeaker:` still measures the faces."
+    ),
+}
+
+
 class PipelineConfig(_Model):
     input: InputConfig
     output: OutputConfig
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     ffmpeg: FFmpegConfig = Field(default_factory=FFmpegConfig)
     whisperx: WhisperXConfig = Field(default_factory=WhisperXConfig)
-    diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     diarization_nemotron: DiarizationNemotronConfig = Field(default_factory=DiarizationNemotronConfig)
     translation: TranslationConfig = Field(default_factory=TranslationConfig)
     stories: StoriesConfig = Field(default_factory=StoriesConfig)
@@ -1098,7 +1028,6 @@ class PipelineConfig(_Model):
     acoustic: AcousticConfig = Field(default_factory=AcousticConfig)
     openpose: OpenPoseConfig = Field(default_factory=OpenPoseConfig)
     activespeaker: ActiveSpeakerConfig = Field(default_factory=ActiveSpeakerConfig)
-    speaker_fusion: SpeakerFusionConfig = Field(default_factory=SpeakerFusionConfig)
     pose_normalized: PoseNormalizedConfig = Field(default_factory=PoseNormalizedConfig)
     persons: PersonsConfig = Field(default_factory=PersonsConfig)
     elan: ElanConfig = Field(default_factory=ElanConfig)
@@ -1109,11 +1038,20 @@ class PipelineConfig(_Model):
     project_root: Path = Field(default_factory=Path.cwd)
     config_path: Path | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed_sections(cls, data: Any) -> Any:
+        """Fail with an instruction when a config still carries a section we deleted."""
+        if isinstance(data, Mapping):
+            for name, message in REMOVED_SECTIONS.items():
+                if name in data:
+                    raise ValueError(message)
+        return data
+
     @property
     def stage_configs(self) -> dict[str, _Model]:
         return {
             "whisperx": self.whisperx,
-            "diarization": self.diarization,
             "diarization_nemotron": self.diarization_nemotron,
             "translation": self.translation,
             # No `uv_project` (it is an HTTP call, not a worker), so neither `tools.json`'s
@@ -1125,7 +1063,6 @@ class PipelineConfig(_Model):
             "acoustic": self.acoustic,
             "openpose": self.openpose,
             "activespeaker": self.activespeaker,
-            "speaker_fusion": self.speaker_fusion,
             "pose_normalized": self.pose_normalized,
             # Carries `uv_project`, so `provenance/tools.json` inventories it and
             # `inspect-environment` warns a fresh clone that the environment is absent.

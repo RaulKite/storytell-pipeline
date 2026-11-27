@@ -1,8 +1,8 @@
 """Re-express BODY_25 keypoints in a body-centred frame instead of pixels (§20.4, T14).
 
-Pure maths, no Stage class, no pyarrow: the same split ``fusion.py`` / ``stages/
-speaker_fusion.py`` use, so the algebra is testable without the pipeline and the
-stage stays a thin reader/writer.
+Pure maths, no Stage class, no pyarrow: the same split ``speaker_assignment.py`` /
+``stages/speaker_assignment.py`` use, so the algebra is testable without the pipeline and
+the stage stays a thin reader/writer.
 
 Why this is a *new table* and not a column on ``pose/body.parquet``: the pixel
 coordinates are the measured quantity and every dataset already produced joins on

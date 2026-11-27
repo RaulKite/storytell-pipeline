@@ -97,7 +97,7 @@ def segment(index: int, *, text: str | None = None, speaker: str = "SPEAKER_00",
         "confidence": 0.9,
         "speaker_overlap_seconds": 0.0,
         "speaker_overlap_ratio": 0.0,
-        "speaker_assignment_method": "pyannote",
+        "speaker_assignment_method": "max_overlap",
     }
 
 
@@ -1675,6 +1675,19 @@ class TestSpeakerSources:
                 "input": {"directory": "/tmp/in"}, "output": {"directory": "/tmp/out"},
                 "stories": {"speaker_source": "pyannote"}})
 
+    def test_the_dependency_chain_reaches_no_diarizer_but_nemotron(self) -> None:
+        """A failure in a diarizer stories do not read must not block them.
+
+        `speech/segments.parquet` makes stories depend on `speaker_assignment`, so its
+        diarizer is upstream too; after the Nemotron-only refactor that is Nemotron, the
+        same turns the speaker labels come from.
+        """
+        from multimodal_pipeline.orchestrator import dependency_chain
+
+        chain = dependency_chain("stories")
+        assert "diarization_nemotron" in chain
+        assert not {"diarization", "speaker_fusion"} & set(chain)
+
     def test_none_labels_everything_unknown(self) -> None:
         rows = prepared(speaker_source="none")
         assert all(row["speaker_labels"] == ["unknown"] for row in rows)
@@ -2465,8 +2478,8 @@ class TestSchemaAndWiring:
                                  "stories_raw")
         assert stage.config_keys == ("stories",)
 
-    def test_it_is_numbered_after_speaker_fusion_and_before_finalization(self) -> None:
-        assert STAGE_ORDER.index("speaker_fusion") < STAGE_ORDER.index("stories")
+    def test_it_is_numbered_after_the_media_stages_and_before_finalization(self) -> None:
+        assert STAGE_ORDER.index("activespeaker") < STAGE_ORDER.index("stories")
         assert STAGE_ORDER.index("stories") < STAGE_ORDER.index("finalization")
 
     def test_it_depends_on_the_speaker_branch_only(self) -> None:

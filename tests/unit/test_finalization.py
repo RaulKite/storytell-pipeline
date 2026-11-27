@@ -98,7 +98,7 @@ class TestSummary:
     def test_stage_statuses_are_recorded(self, dataset: StageContext) -> None:
         manifest = finalize(dataset)
         assert manifest["processing"]["stages"]["whisperx"] == "completed"
-        assert manifest["processing"]["stages"]["diarization"] == "pending"
+        assert manifest["processing"]["stages"]["diarization_nemotron"] == "pending"
 
     def test_overall_status_is_the_states_aggregate(self, dataset: StageContext) -> None:
         assert finalize(dataset)["processing"]["status"] == dataset.state.overall_status
@@ -157,19 +157,19 @@ class TestValidation:
             stage.validate(dataset)
 
     def test_a_speaker_absent_from_diarization_is_caught(self, dataset: StageContext) -> None:
-        write_rows(dataset.artifact("speaker_turns"),
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
                    [{"speaker_id": "SPEAKER_01", "start_time": 0.0, "end_time": 1.0}])
         write_rows(dataset.artifact("speech_segments"),
                    [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
                      "speaker_id": "SPEAKER_07", "language": "en", "text": "hello"}])
-        dataset.state.mark_completed("diarization")
+        dataset.state.mark_completed("diarization_nemotron")
         dataset.state.mark_completed("speaker_assignment")
         finalize(dataset)
         with pytest.raises(ValidationError, match="absent from diarization"):
             stage.validate(dataset)
 
     def test_matching_speakers_pass(self, dataset: StageContext) -> None:
-        write_rows(dataset.artifact("speaker_turns"),
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
                    [{"speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 9.0}])
         write_rows(dataset.artifact("speech_segments"),
                    [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
@@ -236,3 +236,151 @@ class TestReuse:
         write_dataset_summary(dataset)
         assert should_reuse(stage, dataset, config_hash=config_hash,
                             dependency_hash=dependency_hash, force=False)[0]
+
+
+class TestLabelsWithoutATimeline:
+    """A speaker label with no diarization table behind it is a defect, not a detail.
+
+    Reproduced on a corpus copy: with the Nemotron environment missing and no turn table,
+    finalization and the ELAN export both succeeded while ``segments``/``words`` still cited
+    pyannote's ``SPEAKER_00`` — a speaker no table in the dataset contains. With a cached
+    turn table present the same run failed instead, on the cross-reference check below.
+    """
+
+    def test_a_label_with_no_diarization_table_fails_the_dataset(
+            self, dataset: StageContext) -> None:
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "SPEAKER_00", "language": "en", "text": "hello"}])
+        finalize(dataset)
+        with pytest.raises(ValidationError, match="no diarization timeline"):
+            stage.validate(dataset)
+
+    def test_a_cleared_transcript_passes(self, dataset: StageContext) -> None:
+        """What speaker_assignment writes when it has no timeline must validate."""
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": None, "speaker_assignment_method": "no_diarization",
+                     "language": "en", "text": "hello"}])
+        finalize(dataset)
+        assert stage.validate(dataset)["timed_tables_checked"] >= 1
+
+
+class TestAnIncompatibleTranslation:
+    """A translation that names a different speaker than its own source is stale.
+
+    Reproduced on a corpus copy: speaker assignment gave ``speaker_0``, the translation
+    stage was skipped, and ``translation/segments_en.parquet`` still carried pyannote's
+    ``SPEAKER_00`` for the same segment. Every table validated on its own, ``validate``
+    exited 0, and the manifest promised both — leaving a consumer to join two tables that
+    disagree about who is speaking.
+    """
+
+    def _write(self, dataset: StageContext, *, translated_speaker: str) -> None:
+        # The timeline the transcript's label comes from, so the speaker cross-reference is
+        # satisfied and the only disagreement in the dataset is the translation's.
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
+                   [{"speaker_id": "speaker_0", "start_time": 0.0, "end_time": 9.0}])
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "speaker_0", "language": "es", "text": "hola"}])
+        write_rows(dataset.artifact("translation_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": translated_speaker, "english_text": "hello"}])
+
+    def test_a_disagreeing_speaker_is_reported_and_excluded_from_the_manifest(
+            self, dataset: StageContext) -> None:
+        self._write(dataset, translated_speaker="SPEAKER_00")
+        manifest = finalize(dataset)
+        assert "translation_segments" not in manifest["artifacts"]
+        reason = manifest["artifacts_not_generated"]["translation_segments"]
+        assert reason.startswith("stale:") and "speaker labels disagree" in reason
+        assert "translation_segments" not in manifest["artifact_details"]
+        # The file itself is preserved: it is real work, and re-running translation fixes it.
+        assert dataset.artifact("translation_segments").is_file()
+        # Reported by validate, not raised: one stale table must not fail the corpus.
+        result = stage.validate(dataset)
+        assert "translation_segments" in result["stale_artifacts"]
+
+    def test_matching_speakers_stay_in_the_manifest(self, dataset: StageContext) -> None:
+        self._write(dataset, translated_speaker="speaker_0")
+        manifest = finalize(dataset)
+        assert manifest["artifacts"]["translation_segments"].endswith("segments_en.parquet")
+        assert stage.validate(dataset)["stale_artifacts"] == {}
+
+
+class TestEveryDerivedTableWithASpeaker:
+    """The translation-only check published the same disagreement in five other tables.
+
+    Reproduced on a ``La-1`` corpus copy after ``speaker_assignment`` relabelled the transcript
+    from the Nemotron timeline: ``segments.parquet`` said ``speaker_0``/``speaker_1`` while
+    ``translation/segments_en.parquet`` *and* the four ``linguistic/*`` tables still said
+    pyannote's ``SPEAKER_00``. ``stale_artifacts`` looked at the translation alone, so the
+    manifest advertised the spaCy tables as current and the .eaf published a ``gloss_en`` tier
+    the transcript contradicted.
+    """
+
+    def _write(self, dataset: StageContext, artifact: str) -> None:
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
+                   [{"speaker_id": "speaker_0", "start_time": 0.0, "end_time": 9.0}])
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "speaker_0", "language": "es", "text": "hola"}])
+        write_rows(dataset.artifact(artifact),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "SPEAKER_00", "text": "hola"}])
+
+    @pytest.mark.parametrize("artifact", [
+        "spacy_source_tokens", "spacy_source_sentences",
+        "spacy_english_tokens", "spacy_english_sentences",
+        "acoustic_segments",
+    ])
+    def test_a_table_with_the_old_speaker_is_reported_and_kept_out_of_the_manifest(
+            self, dataset: StageContext, artifact: str) -> None:
+        self._write(dataset, artifact)
+        manifest = finalize(dataset)
+        assert artifact not in manifest["artifacts"]
+        assert manifest["artifacts_not_generated"][artifact].startswith("stale:")
+        assert artifact not in manifest["artifact_details"]
+        # The file is preserved: it is real work, and its own stage reinstates it.
+        assert dataset.artifact(artifact).is_file()
+        assert artifact in stage.validate(dataset)["stale_artifacts"]
+
+    def test_a_current_table_stays_in_the_manifest(self, dataset: StageContext) -> None:
+        self._write(dataset, "spacy_source_tokens")
+        write_rows(dataset.artifact("spacy_source_tokens"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "speaker_0", "text": "hola"}])
+        manifest = finalize(dataset)
+        assert "spacy_source_tokens" in manifest["artifacts"]
+        assert stage.validate(dataset)["stale_artifacts"] == {}
+
+
+class TestALabelInTheWordsTable:
+    """A words-only dataset published pyannote's label because the check read segments alone.
+
+    Reproduced on a corpus copy with ``speech/segments.parquet`` removed and no Nemotron table:
+    ``words.parquet`` still cited ``SPEAKER_00``, the ELAN words tier printed it, and
+    finalization — whose citation check was keyed on the segments table's existence — had
+    nothing to say. ``validate`` exited 0 over a label no table in the dataset contains.
+    """
+
+    def test_a_words_label_with_no_timeline_fails(self, dataset: StageContext) -> None:
+        dataset.artifact("speech_segments").unlink()
+        write_rows(dataset.artifact("speech_words"),
+                   [{"segment_id": "seg1", "word_id": "w1", "start_time": 0.5,
+                     "end_time": 0.9, "word": "hello", "speaker_id": "SPEAKER_00"}])
+        finalize(dataset)
+        with pytest.raises(ValidationError, match="no diarization timeline"):
+            stage.validate(dataset)
+
+    def test_a_words_label_absent_from_the_timeline_fails(self, dataset: StageContext) -> None:
+        dataset.artifact("speech_segments").unlink()
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
+                   [{"speaker_id": "speaker_0", "start_time": 0.0, "end_time": 9.0}])
+        write_rows(dataset.artifact("speech_words"),
+                   [{"segment_id": "seg1", "word_id": "w1", "start_time": 0.5,
+                     "end_time": 0.9, "word": "hello", "speaker_id": "SPEAKER_00"}])
+        finalize(dataset)
+        with pytest.raises(ValidationError, match="absent from diarization"):
+            stage.validate(dataset)

@@ -20,7 +20,7 @@ left 296 module- and class-level annotations resolving, so a bare "did the total
 assertion was not enough to notice.
 
 Importing every module of `multimodal_pipeline` is safe by design: the package is the
-orchestrator side and never touches torch, pyannote, spacy or parselmouth. Heavy tools live in
+orchestrator side and never touches torch, spacy or parselmouth. Heavy tools live in
 `environments/*` and are reached by subprocess.
 """
 
@@ -230,7 +230,6 @@ _MUST_BE_SCANNED = (
     "multimodal_pipeline.schemas.write_table()",
     "multimodal_pipeline.state.utc_now()",
     "multimodal_pipeline.state.StageRecord:status",
-    "multimodal_pipeline.fusion.TurnTableSpec:engine",
     "multimodal_pipeline.config:PERSON_TRACKER_TYPES",
     # A method on a class, which the attribute-only class branch could not see.
     "multimodal_pipeline.state.StageRecord.to_dict()",

@@ -598,7 +598,7 @@ class TestAStaleFrameIsNotLeftBehind:
 
         The table is in the frame the config asks for, so nothing here says it was written
         from anything else. Deleting it would turn a half-built dataset into lost work for
-        no gain — the same empty-producible-set trap `speaker_fusion` records.
+        no gain — the same empty-producible-set trap this module records above.
         """
         stage = PoseNormalizedStage()
         seed_body(context, a_person(extra={0: (90.0, 60.0)}))
@@ -792,13 +792,13 @@ class TestPythonSourceDigest:
         A module that became a C extension, or a source-less loader, would leave the fingerprint
         carrying ``None`` forever and every test above still green.
         """
-        import multimodal_pipeline.fusion as fusion
         import multimodal_pipeline.pose_normalize as pose_normalize
+        import multimodal_pipeline.speaker_assignment as speaker_assignment
         import multimodal_pipeline.stages.persons as persons
         import multimodal_pipeline.stages.pose_normalized as pose_normalized_stage
-        import multimodal_pipeline.stages.speaker_fusion as speaker_fusion_stage
+        import multimodal_pipeline.stages.speaker_assignment as speaker_assignment_stage
         from multimodal_pipeline.stages.base import python_source_digest
 
         assert python_source_digest(pose_normalize, pose_normalized_stage) is not None
-        assert python_source_digest(fusion, speaker_fusion_stage) is not None
+        assert python_source_digest(speaker_assignment, speaker_assignment_stage) is not None
         assert python_source_digest(persons) is not None

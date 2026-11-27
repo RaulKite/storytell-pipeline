@@ -71,7 +71,7 @@ from multimodal_pipeline.schemas import (  # noqa: E402
     ACTIVE_SPEAKER_FRAMES_SCHEMA,
     BODY_25_KEYPOINT_NAMES,
     BODY_SCHEMA,
-    SPEAKER_TURNS_SCHEMA,
+    SPEAKER_TURNS_NEMOTRON_SCHEMA,
     WORDS_SCHEMA,
 )
 from multimodal_pipeline.stages.activespeaker import FRAME_REASONS  # noqa: E402
@@ -92,7 +92,7 @@ FIGURES = (
 #: "stage list" has no Parquet behind it: it is the orchestrator's own stage order.
 TABLE_SOURCES: tuple[tuple[str, str], ...] = (
     ("active_speaker_frames", "active_speaker_frames"),
-    ("speaker_turns", "speaker_turns"),
+    ("speaker_turns_nemotron", "speaker_turns_nemotron"),
     ("speech_words", "speech_words"),
     ("pose_body", "pose_body"),
 )
@@ -110,7 +110,8 @@ REQUIRED_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
                                   "score_imputed", "is_active_speaker"),
     },
     "speaker_turn_strip": {
-        "speaker_turns": ("turn_id", "speaker_id", "start_time", "end_time", "diarization_type"),
+        "speaker_turns_nemotron": ("turn_id", "speaker_id", "start_time", "end_time",
+                                   "diarization_type", "overlap_s"),
         "speech_words": ("speaker_id", "start_time", "end_time", "word"),
     },
     "pose_skeleton_strip": {
@@ -217,7 +218,7 @@ def _pyplot() -> Any:
 #: synthetic tables cannot drift from the real ones without a test failing.
 SYNTHETIC_SCHEMAS: dict[str, pa.schema] = {
     "active_speaker_frames": ACTIVE_SPEAKER_FRAMES_SCHEMA,
-    "speaker_turns": SPEAKER_TURNS_SCHEMA,
+    "speaker_turns_nemotron": SPEAKER_TURNS_NEMOTRON_SCHEMA,
     "speech_words": WORDS_SCHEMA,
     "pose_body": BODY_SCHEMA,
 }
@@ -302,21 +303,21 @@ def synthetic_turns_and_words(*, seed: int) -> tuple[list[dict[str, Any]], list[
     """Two speakers, five turns, and words placed inside them.
 
     The shapes are what a reader needs: turn lanes on a shared timeline, word ticks
-    assigned to a speaker, and the `diarization_type` column that says pyannote produced
-    an exclusive timeline.
+    assigned to a speaker, and the `overlap_s` column that records how much of a turn
+    another speaker was talking over.
     """
     rng = random.Random(seed)
     layout = [
-        ("SPEAKER_00", 0.30, 3.10),
-        ("SPEAKER_01", 3.40, 6.20),
-        ("SPEAKER_00", 6.60, 9.80),
-        ("SPEAKER_01", 10.10, 12.40),
-        ("SPEAKER_00", 12.90, 15.60),
+        ("speaker_0", 0.30, 3.10, 0.0),
+        ("speaker_1", 3.10, 6.20, 0.0),
+        ("speaker_0", 6.60, 9.80, 0.0),
+        ("speaker_1", 10.10, 12.40, 0.12),
+        ("speaker_0", 12.28, 15.60, 0.12),
     ]
     turns: list[dict[str, Any]] = []
     words: list[dict[str, Any]] = []
     words_per_turn = 6
-    for turn_index, (speaker, start, end) in enumerate(layout, start=1):
+    for turn_index, (speaker, start, end, overlap) in enumerate(layout, start=1):
         turns.append(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -326,7 +327,8 @@ def synthetic_turns_and_words(*, seed: int) -> tuple[list[dict[str, Any]], list[
                 "start_time": start,
                 "end_time": end,
                 "duration": round(end - start, 3),
-                "diarization_type": "exclusive",
+                "diarization_type": "overlapping",
+                "overlap_s": overlap,
             }
         )
         slots = (end - start) / words_per_turn
@@ -416,7 +418,8 @@ def synthetic_tables(*, seed: int) -> dict[str, Any]:
         "stage list": list(STAGE_ORDER),
         "active_speaker_frames": _rows_to_table(
             "active_speaker_frames", synthetic_frames(seed=seed), ACTIVE_SPEAKER_FRAMES_SCHEMA),
-        "speaker_turns": _rows_to_table("speaker_turns", turns, SPEAKER_TURNS_SCHEMA),
+        "speaker_turns_nemotron": _rows_to_table(
+            "speaker_turns_nemotron", turns, SPEAKER_TURNS_NEMOTRON_SCHEMA),
         "speech_words": _rows_to_table("speech_words", words, WORDS_SCHEMA),
         "pose_body": _rows_to_table("pose_body", synthetic_pose(seed=seed), BODY_SCHEMA),
     }
@@ -625,11 +628,11 @@ def render_active_speaker_strip(data: dict[str, Any], out_path: Path, *, label: 
 def render_speaker_turn_strip(data: dict[str, Any], out_path: Path, *, label: str) -> Path:
     """Diarization turns as lanes, with the aligned words underneath.
 
-    Two speakers talking over the same seconds is the thing to notice: pyannote's
-    exclusive timeline forces one speaker per instant, and the word row shows WhisperX
-    timings assigned to that same speaker id space.
+    Two speakers talking over the same seconds is the thing to notice: Nemotron's channels
+    overlap, `overlap_s` measures it, and the word row shows WhisperX timings assigned to
+    that same speaker id space.
     """
-    turns = _source_rows(data, "speaker_turn_strip", "speaker_turns")
+    turns = _source_rows(data, "speaker_turn_strip", "speaker_turns_nemotron")
     words = _source_rows(data, "speaker_turn_strip", "speech_words")
 
     speakers = sorted({str(row.get("speaker_id")) for row in turns}

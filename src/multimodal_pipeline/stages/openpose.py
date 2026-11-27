@@ -90,6 +90,17 @@ def scaled_output_resolution(width: int, height: int, max_side: int) -> tuple[in
     return (max(int(round(width * ratio)), 1), max(int(round(height * ratio)), 1))
 
 
+class UnusableOpenPose(StageError):
+    """An OpenPose install that is *there* and cannot run: a defect, never a skip.
+
+    The distinction ``enabled()`` draws is install state versus broken install. A path that
+    does not exist is something the operator has not installed yet; a path that exists but
+    is a directory, or a file without the execute bit, is a configuration or install defect
+    that no amount of running the pipeline will resolve — and reporting it as a skip hid it
+    behind a completed-looking batch whose pose tables simply were not there.
+    """
+
+
 class OpenPoseStage(Stage):
     name = "openpose"
     inputs = ("metadata", "frame_index")
@@ -136,33 +147,104 @@ class OpenPoseStage(Stage):
     # -------------------------------------------------------------------- run
 
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
+        """Skip when OpenPose is not installed here, exactly like a missing uv project.
+
+        OpenPose ships enabled and is a third-party binary this repository does not fetch, so
+        a machine that has not installed it is an install state, not a defect in the video.
+        Without this check ``prepare()`` raised ``StageError`` from the discovery helpers and
+        the video was marked failed — a default run on a fresh clone then reported ``failed``
+        while everything else had actually worked. ``inspect-environment`` still announces the
+        same finding before a batch starts ("OpenPose binary not found under " plus the
+        configured root), and the skip reason below names the path it looked in.
+
+        An explicit ``openpose.executable`` or ``openpose.model_folder`` that does not resolve
+        is a skip too, for the same reason ``persons.weights_dir`` is one: it is a promise
+        about a path, and the message names the path instead of leaving the operator with a
+        failed video. What is *not* screened is an installation that exists but is broken —
+        that runs and fails loudly, because there silence would hide a real defect.
+        """
         if not ctx.config.openpose.enabled:
             return False, "openpose.enabled = false"
+        # `UnusableOpenPose` is deliberately not caught: a present-but-broken install has to
+        # fail the video. Everything else the discovery helpers raise is an absent path, which
+        # is an install state and stays a skip naming what to install.
+        try:
+            self.resolve_executable(ctx)
+        except UnusableOpenPose:
+            raise
+        except (StageError, FileNotFoundError) as exc:
+            return False, f"OpenPose is not installed: {exc}"
+        try:
+            self.resolve_model_folder(ctx)
+        except UnusableOpenPose:
+            raise
+        except StageError as exc:
+            return False, f"OpenPose models are missing: {exc}"
         return True, ""
 
     def resolve_executable(self, ctx: StageContext) -> Path:
         cfg = ctx.config.openpose
         if cfg.executable != "auto":
+            candidate = Path(cfg.executable)
+            # Checked before `require_executable`, which reports "not found or not runnable"
+            # for both a missing path (skip) and an unusable one (fail) — one message for two
+            # states is exactly what made this undiagnosable.
+            if candidate.exists() and (not candidate.is_file() or not os.access(candidate, os.X_OK)):
+                detail = "is not a file" if not candidate.is_file() else "is not executable"
+                raise UnusableOpenPose(
+                    f"openpose.executable {detail}: {candidate} — fix the path or restore "
+                    f"its execute bit"
+                )
             return require_executable(cfg.executable, hint="set openpose.executable")
         discovery = openpose_report(ctx.config)
         candidate = discovery.get("executable")
         if not candidate:
+            # Something is at a discovery path and it is not a usable file. Classified the same
+            # way as an explicit path that is a directory or has lost its execute bit: a broken
+            # install fails loudly rather than reporting itself as "not installed", which is what
+            # an unpacked tarball whose modes were lost, or a directory created where the binary
+            # belongs, used to read as.
+            wrong_type = Path(discovery.get("executable_wrong_type") or "")
+            if discovery.get("executable_wrong_type"):
+                detail = "is not a file" if not wrong_type.is_file() else "is not executable"
+                raise UnusableOpenPose(
+                    f"OpenPose binary at a discovered path {detail}: {wrong_type} — fix the "
+                    f"install under {cfg.root} or set openpose.executable")
             raise StageError(
                 f"OpenPose binary not found under {cfg.root}. Expected e.g. "
                 f"{cfg.root}/build/examples/openpose/openpose.bin. Set openpose.executable explicitly."
             )
-        return Path(candidate)
+        found = Path(candidate)
+        # Discovery answers "is a file there"; it cannot answer "can it run", because a
+        # published tarball whose modes were lost looks installed and is not.
+        if not os.access(found, os.X_OK):
+            raise UnusableOpenPose(
+                f"OpenPose binary found but is not executable: {found} — restore its execute "
+                f"bit (chmod +x) or set openpose.executable"
+            )
+        return found
 
     def resolve_model_folder(self, ctx: StageContext) -> Path:
         cfg = ctx.config.openpose
         if cfg.model_folder != "auto":
             folder = Path(cfg.model_folder)
+            if folder.exists() and not folder.is_dir():
+                raise UnusableOpenPose(
+                    f"openpose.model_folder is not a directory: {folder} — point it at the "
+                    f"models directory of the checkout"
+                )
             if not folder.is_dir():
                 raise StageError(f"openpose.model_folder is not a directory: {folder}")
             return folder
         discovery = openpose_report(ctx.config)
         candidate = discovery.get("model_folder")
         if not candidate:
+            wrong_type = Path(discovery.get("model_folder_wrong_type") or ".")
+            if discovery.get("model_folder_wrong_type"):
+                raise UnusableOpenPose(
+                    f"OpenPose model folder at a discovered path is not a directory: "
+                    f"{wrong_type} — fix the install under {cfg.root} or set "
+                    f"openpose.model_folder")
             raise StageError(f"OpenPose model folder not found under {cfg.root}/models")
         return Path(candidate)
 

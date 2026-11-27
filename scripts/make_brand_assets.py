@@ -184,7 +184,7 @@ def modalities(theme):
         o.append(f'<path d="M{X(t)} {ay-4} V{ay+3}" stroke="{c["grid"]}" stroke-width="1.2"/>')
         o.append(text(X(t), ay - 8, f"{t} s" if t in (0, 60) else str(t), 10.5, c["text2"], anchor="middle"))
     lanes = [
-        ("speech", "Speech", "WhisperX · pyannote", "speech/words.parquet"),
+        ("speech", "Speech", "WhisperX · Nemotron", "speech/words.parquet"),
         ("language", "Language", "spaCy · translation endpoint", "linguistic/source/tokens.parquet"),
         ("acoustics", "Acoustics", "Praat via Parselmouth", "acoustic/frame_features.parquet"),
         ("vision", "Vision", "OpenPose · YOLO (optional)", "pose/body.parquet"),

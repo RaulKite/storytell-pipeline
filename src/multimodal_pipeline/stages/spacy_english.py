@@ -48,7 +48,9 @@ class SpacyEnglishStage(SpacySourceStage):
             return False, "spacy.process_english = false"
         if not ctx.artifact("translation_segments").is_file():
             return False, "no English translation available (translation stage did not run)"
-        return True, ""
+        # Last, so the reasons above win: "there is nothing to analyse" is the more useful
+        # answer than "the environment is missing" for a stage whose input never arrived.
+        return super().enabled(ctx)
 
     def worker_argv(self, ctx: StageContext, raw_path: Path, request_digest: str) -> list[str]:
         cfg = ctx.config.spacy

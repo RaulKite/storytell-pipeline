@@ -37,7 +37,7 @@ from multimodal_pipeline.schemas import (
     ACTIVE_SPEAKER_FRAMES_SCHEMA,
     BODY_25_KEYPOINT_NAMES,
     BODY_SCHEMA,
-    SPEAKER_TURNS_SCHEMA,
+    SPEAKER_TURNS_NEMOTRON_SCHEMA,
     WORDS_SCHEMA,
 )
 from multimodal_pipeline.stages.activespeaker import FRAME_REASONS
@@ -60,11 +60,12 @@ requires_matplotlib = pytest.mark.skipif(
 FIGURE_SOURCE = {
     "stage_graph": "stage list",
     "active_speaker_strip": "active_speaker_frames",
-    "speaker_turn_strip": "speaker_turns",
+    "speaker_turn_strip": "speaker_turns_nemotron",
     "pose_skeleton_strip": "pose_body",
 }
 
-PARQUET_SOURCES = ("active_speaker_frames", "speaker_turns", "speech_words", "pose_body")
+PARQUET_SOURCES = ("active_speaker_frames", "speaker_turns_nemotron", "speech_words",
+                   "pose_body")
 
 
 @pytest.fixture(scope="module")
@@ -110,7 +111,7 @@ class TestSyntheticShapesMatchTheRealSchemas:
         ("source", "schema"),
         [
             ("active_speaker_frames", ACTIVE_SPEAKER_FRAMES_SCHEMA),
-            ("speaker_turns", SPEAKER_TURNS_SCHEMA),
+            ("speaker_turns_nemotron", SPEAKER_TURNS_NEMOTRON_SCHEMA),
             ("speech_words", WORDS_SCHEMA),
             ("pose_body", BODY_SCHEMA),
         ],
@@ -159,7 +160,7 @@ class TestSyntheticShapesMatchTheRealSchemas:
 
     def test_turns_and_words_share_one_speaker_namespace(self, figures: object) -> None:
         tables = figures.synthetic_tables(seed=7)
-        turn_speakers = set(tables["speaker_turns"].column("speaker_id").to_pylist())
+        turn_speakers = set(tables["speaker_turns_nemotron"].column("speaker_id").to_pylist())
         word_speakers = set(tables["speech_words"].column("speaker_id").to_pylist())
         assert word_speakers <= turn_speakers, "word ticks would have a lane of their own"
         assert len(turn_speakers) >= 2, "one speaker cannot show an overlap"

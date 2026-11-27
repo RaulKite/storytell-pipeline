@@ -50,7 +50,7 @@ def config_text(root: Path, video_dir: Path) -> str:
         "output": {"directory": str(root / "out")},
         "logging": {"level": "INFO", "console": False},
         "whisperx": {"enabled": False},
-        "diarization": {"enabled": False},
+        "diarization_nemotron": {"enabled": False},
         "translation": {"enabled": False},
         "spacy": {"enabled": False},
         "acoustic": {"enabled": False},
@@ -157,6 +157,22 @@ def fresh(project: Path) -> Path:
     return project
 
 
+def broken_openpose_config(fresh: Path, tmp_path: Path) -> str:
+    """The project's config with OpenPose enabled and pointed at an unusable binary.
+
+    Written outside the project so the ``fresh`` fixture's cleanup does not have to know about
+    it, and so a stray broken config cannot leak into another test's batch.
+    """
+    config = yaml.safe_load((fresh / "config" / "config.yaml").read_text(encoding="utf-8"))
+    binary = tmp_path / "openpose.bin"
+    binary.write_bytes(b"not a binary")
+    binary.chmod(0o644)
+    config["openpose"].update({"enabled": True, "executable": str(binary)})
+    path = tmp_path / "config.broken-openpose.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    return str(path)
+
+
 def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -207,19 +223,22 @@ class TestHelpAndEnvironment:
         assert ".env:2" in combined and "Traceback" not in combined
 
     def test_dotenv_credentials_reach_the_run_without_export(self, fresh: Path) -> None:
-        """The documented workflow: write .env, run. No shell wrapper, no `source`."""
+        """The documented workflow: write .env, run. No shell wrapper, no `source`.
+
+        The HF token no longer disables a stage (the Nemotron checkpoint is not gated), so
+        the property under test is the loader's: the line in `.env` is accepted, no warning
+        claims a stage will skip for it, and its value is never echoed back.
+        """
         env = self._dotenv_env()
         env.pop("HF_TOKEN", None)
         (fresh / ".env").write_text("HF_TOKEN=hf_fromdotenvfile\n", encoding="utf-8")
         config = fresh / "config" / "config.yaml"
         payload = yaml.safe_load(config.read_text())
-        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        payload["diarization_nemotron"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
         result = cli("inspect-environment", "-c", str(config), cwd=fresh, env=env)
         warnings = stdout_json(result)["environment_warnings"]
-        # The token now exists, so the "will be skipped" warning must be gone.
         assert not [w for w in warnings if "HF_TOKEN" in w], warnings
-        # And its value must not be echoed anywhere in the report.
         assert "hf_fromdotenvfile" not in (result.stdout + result.stderr)
 
     def test_inspect_environment_reports_the_toolchain(self) -> None:
@@ -293,6 +312,24 @@ class TestFullRun:
         assert stages["openpose"] == "skipped"
         assert stages["metadata"] == "completed"
 
+    def test_skip_reasons_reach_the_batch_report_and_the_summary(self, fresh: Path) -> None:
+        """A skip has to be visible without opening each video's status.json.
+
+        The batch report is what a script and the closing summary are read from; a
+        completed video whose pose or diarization stage never ran is complete, and the one
+        thing a reader needs is why. Reproduced before this: entries carried `errors` only,
+        so `batch_report.json` and the CLI summary said nothing about an unmeasured stage.
+        """
+        result = cli("run", "-c", str(fresh / "config" / "config.yaml"))
+        assert result.returncode == 0, result.stderr[-3000:]
+        entry = next(video for video in load(fresh / "out" / "batch_report.json")["videos"]
+                     if video["video_id"] == "alpha")
+        assert entry["status"] == "completed"
+        assert entry["skipped"]["whisperx"] == "whisperx.enabled = false"
+        assert "openpose" in entry["skipped"]
+        # And the summary an operator actually reads, on stderr where diagnostics belong.
+        assert "skipped whisperx" in result.stderr, result.stderr[-2000:]
+
     # --- the second diarization engine must be inert until it is asked for -----------
 
     def test_second_diarizer_skips_and_is_declared_absent(self, fresh: Path) -> None:
@@ -311,6 +348,35 @@ class TestFullRun:
         assert not (fresh / "out" / "alpha" / "speech" / "speaker_turns_nemotron.parquet").exists()
         validate = cli("validate", "-c", config)
         assert validate.returncode == 0, validate.stdout[-2000:]
+
+    def test_a_missing_whisperx_environment_completes_the_video(self, fresh: Path) -> None:
+        """The reported failure: whisperx skips, then its readers failed and the batch exited 2.
+
+        A fresh project with only some environments is the normal state of a new clone. Here
+        `whisperx` is enabled but its uv project does not exist, `translation` has a mock
+        endpoint (so nothing about its own config excuses it) and `stories` shares that
+        endpoint. Reproduced before the fix: `translation` failed on the absent
+        `speech/segments.parquet`, `validate` reported it, and the run exited 2 over an
+        install state the first stage had already reported as a skip.
+        """
+        config_path = fresh / "config" / "config.yaml"
+        payload = yaml.safe_load(config_path.read_text())
+        payload["whisperx"] = {"enabled": True,
+                               "uv_project": str(fresh / "environments" / "whisperx")}
+        payload["translation"] = {"enabled": True, "provider": "mock", "model": "test-model"}
+        payload["stories"] = {"enabled": True, "provider": "mock", "model": "test-model"}
+        config_path.write_text(yaml.safe_dump(payload))
+
+        result = cli("run", "-c", str(config_path))
+        assert result.returncode == 0, result.stderr[-3000:]
+        manifest = load(fresh / "out" / "alpha" / "manifest.json")
+        assert manifest["processing"]["status"] == "completed", manifest["processing"]
+        assert manifest["processing"]["stages"]["whisperx"] == "skipped"
+        report = load(fresh / "out" / "batch_report.json")
+        entry = next(video for video in report["videos"] if video["video_id"] == "alpha")
+        for stage in ("speaker_assignment", "translation", "stories"):
+            assert entry["skipped"][stage].startswith("upstream skipped: transcript unavailable"), (
+                f"{stage}: {entry['skipped'][stage]}")
 
     def test_enabled_second_diarizer_without_environment_skips_with_the_fix(self, fresh: Path) -> None:
         """Enabled but not installed: skip, name the fix, and still complete the dataset."""
@@ -376,7 +442,6 @@ class TestFullRun:
         config_path = fresh / "config" / "config.yaml"
         payload = yaml.safe_load(config_path.read_text())
         payload["whisperx"] = {"enabled": False}
-        payload["diarization"] = {"enabled": False}
         payload["translation"] = {"enabled": False}
         payload["diarization_nemotron"] = {
             "enabled": True,
@@ -490,6 +555,45 @@ class TestFullRun:
         assert result.returncode == 0, result.stderr[-2000:]
         assert "metadata" in result.stderr
         assert "valid previous result" in result.stderr
+
+    def test_the_plan_survives_a_broken_openpose_install(self, fresh: Path,
+                                                        tmp_path: Path) -> None:
+        """One video's broken install must not hide the plan for the rest of the batch.
+
+        Reproduced by pointing ``openpose.executable`` at a file without its execute bit:
+        ``status --plan`` exited 1 on a traceback before planning the second video, so the plan
+        could not be read to find out what was wrong.
+        """
+        # A plan needs the dataset to exist: ``audio``'s fingerprint reads metadata.json.
+        cli("run", "-c", str(fresh / "config" / "config.yaml"))
+        result = cli("status", "-c", broken_openpose_config(fresh, tmp_path), "--plan")
+        assert result.returncode == 0, result.stderr[-3000:]
+        output = result.stdout + result.stderr
+        assert output.count("will fail") >= 2, output[-3000:]
+        assert "alpha" in output and "beta" in output
+        assert "not executable" in output
+
+    def test_a_broken_openpose_install_is_a_failed_stage_not_a_crashed_batch(
+            self, fresh: Path, tmp_path: Path) -> None:
+        """``run`` records the defect, blocks its dependants and finishes the stage loop."""
+        result = cli("run", "-c", broken_openpose_config(fresh, tmp_path))
+        assert result.returncode == 2, result.stderr[-3000:]
+        state = load(fresh / "out" / "alpha" / "status.json")
+        stages = {name: record["status"] for name, record in state["stages"].items()}
+        assert stages["openpose"] == "failed"
+        assert "not executable" in state["stages"]["openpose"]["error"]["message"]
+        # Its dependant is blocked by the failure, not left running or pending.
+        assert stages["pose_normalized"] == "skipped"
+        assert "upstream stage failed: openpose" in (
+            state["stages"]["pose_normalized"].get("validation_result") or {}).get("reason", "")
+        # The loop reached the end: no stage is left half-executed behind the defect.
+        assert "pending" not in stages.values(), stages
+        # Both videos were processed; the batch did not stop at the first. Neither is
+        # ``failed`` overall — a completed dataset with one broken stage is ``partial``, which
+        # is the difference between "this video is unusable" and "one measurement is missing".
+        report = load(fresh / "out" / "batch_report.json")
+        assert report["summary"]["partial"] == 2, report["summary"]
+        assert [video["video_id"] for video in report["videos"]] == ["alpha", "beta"]
 
     def test_batch_report_counts_the_run(self, fresh: Path) -> None:
         cli("run", "-c", str(fresh / "config" / "config.yaml"))
@@ -664,7 +768,7 @@ class TestSecrets:
         payload["translation"] = {"enabled": False, "provider": "openai-compatible",
                                  "base_url": "https://litellm.invalid/v1",
                                  "api_key": "sk-E2E-secret-do-not-write", "model": "m"}
-        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        payload["diarization_nemotron"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
         config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
         env = _env()
         env["HF_TOKEN"] = "hf_E2Esecrettoken"
@@ -687,7 +791,7 @@ class TestSecrets:
     def test_the_token_variable_name_survives_but_its_value_does_not(self, fresh: Path) -> None:
         config_path = fresh / "config" / "config.yaml"
         payload = yaml.safe_load(config_path.read_text())
-        payload["diarization"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
+        payload["diarization_nemotron"] = {"enabled": True, "hf_token_env": "HF_TOKEN"}
         config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
         env = _env()
         env["HF_TOKEN"] = "hf_E2Esecrettoken"
@@ -698,7 +802,10 @@ class TestSecrets:
                             for path in (fresh / "out" / "alpha").rglob("*") if path.is_file())
         assert "hf_E2Esecrettoken" not in written
         # The operator still has to learn *which* variable to set; naming it is
-        # documentation, echoing its value would be a leak.
-        warnings = cli("inspect-environment", "-c", str(config_path))
-        assert "HF_TOKEN" in stdout_json(warnings)["environment_warnings"][0]
-        assert "hf_E2Esecrettoken" not in stdout_json(warnings)["environment_warnings"][0]
+        # documentation, echoing its value would be a leak. The record that names it is the
+        # masked config snapshot, because the token no longer gates a stage and therefore no
+        # longer appears in a warning.
+        provenance = next((fresh / "out" / "alpha" / "provenance").glob("config.json"))
+        recorded = provenance.read_text(encoding="utf-8")
+        assert "HF_TOKEN" in recorded
+        assert "hf_E2Esecrettoken" not in recorded

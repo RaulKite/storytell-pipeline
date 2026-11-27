@@ -67,16 +67,12 @@ FILE_BLURBS: dict[str, str] = {
                    "`frame_number` → `pts_seconds`",
     "audio": "the single extracted audio track every audio measurement descends from",
     "whisperx_raw": "native WhisperX transcript + word timestamps, untouched",
-    "diarization_raw": "native pyannote output, untouched",
-    "diarization_rttm": "the same diarization in standard RTTM form",
-    "exclusive_diarization_raw": "non-overlapping variant of the pyannote result, the "
-                                 "one alignment prefers when configured to",
     "speech_segments": "transcript segments with language and the assigned speaker",
     "speech_words": "words with alignment status and confidence",
-    "speaker_turns": "pyannote turn intervals",
-    "nemotron_diarization_raw": "native second-engine diarization, untouched",
-    "speaker_turns_nemotron": "Nemotron turn intervals — a different `speaker_id` "
-                              "namespace from `speaker_turns`",
+    "nemotron_diarization_raw": "native diarization output, untouched",
+    "speaker_turns_nemotron": "Nemotron turn intervals, with the overlap each turn "
+                              "measures against other speakers; `speaker_id` is this "
+                              "model's own namespace, not a face or person id",
     "translation_segments": "English gloss keyed by `segment_id`; a translation, not a "
                             "second transcript",
     "translation_raw": "preserved provider responses and the request-keyed cache",
@@ -110,9 +106,6 @@ FILE_BLURBS: dict[str, str] = {
     "active_speaker_frames": "the pipeline's *selected* face per TalkNet grid frame, "
                              "with `is_active_speaker` after smoothing and hysteresis",
     "active_speaker_tracks": "per face-track summaries over the audio timeline",
-    "speaker_fusion_pyannote": "pyannote turn × face evidence, per turn",
-    "speaker_fusion_nemotron": "Nemotron turn × face evidence — kept in its own file so "
-                               "the two id namespaces cannot be joined by accident",
     "persons_raw": "the detector's native per-frame document, untouched",
     "person_frames": "body boxes per frame with `person_id`",
     "person_tracks": "per-body-track summaries and sighting gaps",
@@ -181,17 +174,13 @@ DIR_GUIDES: dict[str, Guide] = {
         "frames, and the extracted audio can differ from the container duration "
         "slightly.",
         "## Identifiers",
-        "- `speaker_id` is scoped to one diarization engine. "
-        "`speech/speaker_turns.parquet` and `speaker/fusion_pyannote.parquet` share one "
-        "namespace; `speech/speaker_turns_nemotron.parquet` and "
-        "`speaker/fusion_nemotron.parquet` share the other. Two engines means two "
-        "namespaces: never union them.",
+        "- `speaker_id` in `speech/speaker_turns_nemotron.parquet` is Nemotron's own "
+        "arrival-ordered namespace (`speaker_0`). It is unrelated to TalkNet's face "
+        "`track_id` and to YOLO's `person_id`; equal digits name different things.",
         "- `track_id` in `speaker/` is a TalkNet *face* track; `person_id` in "
         "`persons/` is a YOLO *body* trajectory. Both are small integers starting near "
         "zero in separate namespaces, so joining them may look reasonable but means "
         "nothing.",
-        "- `face_track_id` in `speaker/fusion_*.parquet` is the one explicit bridge, and "
-        "it names a TalkNet `track_id` of this dataset, never a diarizer speaker.",
         "- `segment_id` ties translation, linguistic and per-segment acoustic rows back "
         "to `speech/segments.parquet`. It is not a word position.",
         "- All of them are per-clip. Two clips need not agree about who is who.",
@@ -302,10 +291,9 @@ DIR_GUIDES: dict[str, Guide] = {
         "source frames: `timestamp` is grid time and `source_timestamp` maps to the "
         "nearest source PTS.",
         "`active_speaker_frames.parquet` carries the *selected* face per grid frame "
-        "(`is_active_speaker`, after smoothing and hysteresis). "
-        "`speaker/fusion_pyannote.parquet` and `speaker/fusion_nemotron.parquet` answer "
-        "the same question about two diarizers and are two files precisely so their id "
-        "namespaces cannot be merged by accident.",
+        "(`is_active_speaker`, after smoothing and hysteresis). The diarization turns it "
+        "could be compared against live in `speech/speaker_turns_nemotron.parquet`, which "
+        "is a different id namespace: TalkNet's `track_id` is a face, never a speaker.",
     )),
     "speaker/raw": Guide("Native TalkNet output", RAW_NOTES + (
         "`video_out.avi` is TalkNet's **native annotated preview**, kept only when "

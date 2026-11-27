@@ -236,10 +236,15 @@ def retry_failed(
     for source in sources:
         state = VideoState.load(VideoPaths(pipeline_config.output.directory / source.video_id),
                                source.video_id, str(source.path))
-        failed = [name for name in state.stage_order if state.stage(name).status == "failed"]
+        from .stages.base import STAGE_ORDER, dependants_of
+
+        # Only stages this pipeline still has. An output tree from before the pyannote and
+        # speaker_fusion stages were removed records them as `failed`, and retrying a name
+        # that no longer exists would print "Retrying 0 stage(s)" and run nothing.
+        failed = [name for name in state.stage_order
+                  if name in STAGE_ORDER and state.stage(name).status == "failed"]
         if not failed:
             continue
-        from .stages.base import dependants_of
 
         targets.append(source)
         for name in failed:
@@ -409,6 +414,7 @@ def validate(
         context.log = logger
         problems: dict[str, str] = {}
         skipped: list[str] = []
+        stale: dict[str, str] = {}
         # Artifacts a later stage rewrote in place must not be judged against the
         # earlier stage's fingerprint.
         owners = artifact_owners(context.state)
@@ -429,12 +435,20 @@ def validate(
                 problems[stage.name] = "; ".join(changed[:3])
                 continue
             try:
-                stage.validate(context)
+                result = stage.validate(context)
             except Exception as exc:  # noqa: BLE001 - aggregated into the report
                 problems[stage.name] = str(exc)[:300]
+                continue
+            # A stage may report an artifact that exists but no longer agrees with the rest
+            # of the dataset (today: a translation whose speaker labels moved). That is not
+            # a validation failure — the stage's own outputs are sound — but it is invisible
+            # without being printed, and "validate exits 0" while two tables disagree was
+            # the defect this reports.
+            if isinstance(result, dict):
+                stale.update(result.get("stale_artifacts") or {})
         logger.close()
         results.append({"video_id": source.video_id, "ok": not problems,
-                        "problems": problems, "skipped": skipped})
+                        "problems": problems, "skipped": skipped, "stale": stale})
         if problems:
             failures += 1
             console.print(f"[red]FAIL[/] {source.video_id}")
@@ -444,6 +458,8 @@ def validate(
             console.print(f"[green]OK[/]   {source.video_id}")
         for item in skipped:
             console.print(f"    [dim]skipped:[/] {item}")
+        for name, reason in stale.items():
+            console.print(f"    [yellow]stale:[/] {name}: {reason}")
     if as_json:
         out_console.print_json(json.dumps({
             "output_directory": str(pipeline_config.output.directory),
@@ -476,11 +492,10 @@ def _environment_warnings(config: PipelineConfig) -> list[str]:
     (a stage that will run with no language model, which produces empty linguistics that
     look like results).
     """
-    import os
-
     warnings: list[str] = []
-    if config.diarization.enabled and not os.environ.get(config.diarization.hf_token_env):
-        warnings.append(f"{config.diarization.hf_token_env} is not set: diarization will be skipped")
+    # The HF token is deliberately *not* warned about: the Nemotron checkpoint is not gated,
+    # so a missing token slows the download and disables nothing. Only a stage that will
+    # really skip belongs in this list.
     if config.translation.enabled and not config.translation.endpoint_configured:
         warnings.append("translation endpoint is not configured: translation will be skipped")
     # 'stories' is on by default and the only stage that spends tokens per video, so the
@@ -637,11 +652,19 @@ def _finish(report: BatchReport, config: PipelineConfig) -> None:
     console.print(f"  Failed:            {report.failed}")
     console.print(f"  Total time:        {_human_duration(report.elapsed_seconds)}")
     for entry in report.entries:
-        if entry["status"] != STATUS_COMPLETED:
-            console.print(f"\n  [yellow]{entry['video_id']}[/]")
-            for stage, message in (entry.get("errors") or {}).items():
-                detail = message.get("message") if isinstance(message, dict) else message
-                console.print(f"    {stage}: {detail}")
+        # Skips are printed for *every* video that has them, including completed ones: a
+        # video whose diarizer or pose stage was skipped for a missing prerequisite is
+        # complete, and its missing measurements are the thing a reader needs without opening
+        # each ``status.json`` to find out what was not measured and why.
+        skips = entry.get("skipped") or {}
+        if entry["status"] == STATUS_COMPLETED and not skips:
+            continue
+        console.print(f"\n  [yellow]{entry['video_id']}[/] [{entry['status']}]")
+        for stage, message in (entry.get("errors") or {}).items():
+            detail = message.get("message") if isinstance(message, dict) else message
+            console.print(f"    {stage}: {detail}")
+        for stage, reason in skips.items():
+            console.print(f"    [dim]skipped {stage}: {_one_line(str(reason))}[/]")
     console.print(f"\nBatch report:\n  {report.path}")
     if report.failed or report.partial:
         raise typer.Exit(code=2)

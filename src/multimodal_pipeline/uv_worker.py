@@ -1,6 +1,6 @@
 """Uniform invocation of the heavy ML workers inside their own uv projects.
 
-The orchestrator never imports torch/pyannote/spacy: it calls
+The orchestrator never imports torch/spacy: it calls
 ``uv run --project <env> python workers/<worker>.py`` and reads back a
 machine-readable result JSON. That keeps mutually-incompatible CUDA/torch pins
 out of the orchestrator environment and makes every stage resumable from the

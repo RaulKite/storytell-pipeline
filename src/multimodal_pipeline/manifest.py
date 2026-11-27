@@ -20,13 +20,27 @@ MANIFEST_SCHEMA_VERSION = "1.0"
 def build_manifest(*, video_id: str, metadata: dict[str, Any], overall_status: str,
                    registry: ArtifactRegistry, stage_statuses: dict[str, str],
                    detected_language: str | None = None,
+                   stale: dict[str, str] | None = None,
                    schema_version: str = MANIFEST_SCHEMA_VERSION) -> dict[str, Any]:
+    """Describe the dataset as it is, including what a reader must not trust.
+
+    ``stale`` names artifacts that exist on disk but that finalization found inconsistent
+    with the rest of the dataset (today: a translation whose speaker labels no longer match
+    the transcript it came from). They are kept out of ``artifacts`` — the manifest is the
+    join contract other software reads, and a path listed there is a promise that the file
+    agrees with its neighbours — and recorded under ``artifacts_not_generated`` with the
+    reason instead. The files themselves are preserved: they are real work, and a rerun of
+    the stage that produced them is what reinstates them.
+    """
     present = registry.describe()
+    stale = stale or {}
     artifacts: dict[str, str] = {}
     optional_missing: dict[str, str] = {}
     for name in MANIFEST_ARTIFACTS:
         info = present.get(name)
-        if info:
+        if name in stale:
+            optional_missing[name] = f"stale: {stale[name]}"
+        elif info:
             artifacts[name] = info["path"]
         else:
             optional_missing[name] = "not_generated"
@@ -68,6 +82,7 @@ def build_manifest(*, video_id: str, metadata: dict[str, Any], overall_status: s
         "artifact_details": {
             name: {key: value for key, value in info.items() if key != "path"}
             for name, info in sorted(present.items())
+            if name not in stale
         },
     }
 

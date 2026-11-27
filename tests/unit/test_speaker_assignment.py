@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -189,8 +190,8 @@ class TestCoverage:
 
     def test_triple_stack_counts_time_with_two_or_more_speakers(self) -> None:
         # Active speakers per second: 1,2,3,2,1 -> 6s have two or more speakers.
-        # Overlap is wall-clock time with concurrent speech (pyannote semantics),
-        # not speaker-seconds above the single-speaker baseline.
+        # Overlap is wall-clock time with concurrent speech, not speaker-seconds above
+        # the single-speaker baseline.
         turns = normalise_turns([(0.0, 6.0, "A"), (2.0, 8.0, "B"), (4.0, 10.0, "C")])
         report = coverage_report(turns, duration=10.0)
         assert report["speaker_seconds"] == pytest.approx(10.0)
@@ -204,16 +205,16 @@ class TestCoverage:
 class TestSilentVideoIsValid:
     """A silent video has no segments; that is a correct result, not a failure.
 
-    Before diarization could actually run this stage skipped whenever the HF token was
-    absent, so the empty-transcript path was never reached with a speaker timeline
-    present. With a token, a silent video produces turns and zero segments, and the
-    stage used to reject its own correct output.
+    The empty-transcript path was originally unreachable: the stage skipped whenever the
+    diarizer's credential was absent, so it was never exercised with a speaker timeline
+    present. A silent video produces turns and zero segments, and the stage used to
+    reject its own correct output.
     """
 
     def test_empty_transcript_validates(self, context):
         import pyarrow as pa
         from multimodal_pipeline.schemas import (
-            SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, write_table,
+            SEGMENTS_SCHEMA, SPEAKER_TURNS_NEMOTRON_SCHEMA, WORDS_SCHEMA, write_table,
         )
         from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
 
@@ -221,13 +222,14 @@ class TestSilentVideoIsValid:
                     pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA), SEGMENTS_SCHEMA)
         write_table(context.artifact("speech_words"),
                     pa.Table.from_pylist([], schema=WORDS_SCHEMA), WORDS_SCHEMA)
-        write_table(context.artifact("speaker_turns"),
+        write_table(context.artifact("speaker_turns_nemotron"),
                     pa.Table.from_pylist(
-                        [{"schema_version": "1.0", "video_id": context.video_id, "turn_index": 0,
-                          "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
-                          "speaker_id": "SPEAKER_00", "diarization_type": "exclusive",
-                          "confidence": None}], schema=SPEAKER_TURNS_SCHEMA),
-                    SPEAKER_TURNS_SCHEMA)
+                        [{"schema_version": "1.0", "video_id": context.video_id,
+                          "turn_id": "turn000001", "start_time": 0.0, "end_time": 1.0,
+                          "duration": 1.0, "speaker_id": "speaker_0",
+                          "diarization_type": "overlapping", "overlap_s": 0.0}],
+                        schema=SPEAKER_TURNS_NEMOTRON_SCHEMA),
+                    SPEAKER_TURNS_NEMOTRON_SCHEMA)
         stage = SpeakerAssignmentStage()
         result = stage.validate(context)
         assert result["segments"] == 0
@@ -236,10 +238,11 @@ class TestSilentVideoIsValid:
         assert result["speakers"] == 1
 
     def test_execute_writes_metadata_without_turn_type(self, context):
-        """diarization_type is absent when the exclusive artifact is missing."""
+        """The table metadata records the assignment method and the diarizer's own type."""
         import pyarrow as pa
         from multimodal_pipeline.schemas import (
-            SEGMENTS_SCHEMA, SPEAKER_TURNS_SCHEMA, WORDS_SCHEMA, read_table, write_table,
+            SEGMENTS_SCHEMA, SPEAKER_TURNS_NEMOTRON_SCHEMA, WORDS_SCHEMA, read_table,
+            write_table,
         )
         from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
 
@@ -247,29 +250,404 @@ class TestSilentVideoIsValid:
                     pa.Table.from_pylist([], schema=SEGMENTS_SCHEMA), SEGMENTS_SCHEMA)
         write_table(context.artifact("speech_words"),
                     pa.Table.from_pylist([], schema=WORDS_SCHEMA), WORDS_SCHEMA)
-        write_table(context.artifact("speaker_turns"),
+        write_table(context.artifact("speaker_turns_nemotron"),
                     pa.Table.from_pylist(
-                        [{"schema_version": "1.0", "video_id": context.video_id, "turn_index": 0,
-                          "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
-                          "speaker_id": "SPEAKER_00", "diarization_type": "inclusive",
-                          "confidence": None}], schema=SPEAKER_TURNS_SCHEMA),
-                    SPEAKER_TURNS_SCHEMA)
+                        [{"schema_version": "1.0", "video_id": context.video_id,
+                          "turn_id": "turn000001", "start_time": 0.0, "end_time": 1.0,
+                          "duration": 1.0, "speaker_id": "speaker_0",
+                          "diarization_type": "overlapping", "overlap_s": 0.0}],
+                        schema=SPEAKER_TURNS_NEMOTRON_SCHEMA),
+                    SPEAKER_TURNS_NEMOTRON_SCHEMA)
         SpeakerAssignmentStage().execute(context)
         meta = read_table(context.artifact("speech_segments")).schema.metadata
         assert meta is not None and meta[b"speaker_assignment"] == b"max_overlap"
 
 
-class TestDiarizationRttmWrittenWhenEmpty:
-    def test_stage_writes_empty_rttm_for_no_turns(self, context):
-        """The artifact split must preserve an empty RTTM, not treat falsy as absent."""
-        import json
-        from multimodal_pipeline.stages.diarization import DiarizationStage
+#: A transcript as an old pyannote run left it: labels *and* the overlap columns its
+#: assignment wrote. `whisperx_legacy_raw` is the preserved native document beside it.
+LEGACY_SEGMENTS = [
+    {"schema_version": "1.0", "video_id": "conversation_001", "segment_id": "seg0001",
+     "start_time": 0.0, "end_time": 2.0, "duration": 2.0, "language": "es",
+     "speaker_id": "SPEAKER_00", "text": "hola", "confidence": 0.9,
+     "speaker_overlap_seconds": 2.0, "speaker_overlap_ratio": 1.0,
+     "speaker_assignment_method": "max_overlap"},
+    {"schema_version": "1.0", "video_id": "conversation_001", "segment_id": "seg0002",
+     "start_time": 2.0, "end_time": 4.0, "duration": 2.0, "language": "es",
+     "speaker_id": "SPEAKER_01", "text": "adios", "confidence": 0.8,
+     "speaker_overlap_seconds": 2.0, "speaker_overlap_ratio": 1.0,
+     "speaker_assignment_method": "max_overlap"},
+]
 
-        raw = context.artifact("diarization_raw")
+LEGACY_WORDS = [
+    {"schema_version": "1.0", "video_id": "conversation_001", "segment_id": "seg0001",
+     "word_id": "w0001", "start_time": 0.0, "end_time": 0.5, "duration": 0.5,
+     "speaker_id": "SPEAKER_00", "word": "hola", "confidence": 1.0,
+     "alignment_status": "aligned", "character_start": 0, "character_end": 4,
+     "speaker_overlap_seconds": 0.5, "speaker_overlap_ratio": 1.0,
+     "speaker_assignment_method": "max_overlap"},
+]
+
+NEMOTRON_TURNS = [
+    {"schema_version": "1.0", "video_id": "conversation_001", "turn_id": "turn000001",
+     "start_time": 0.0, "end_time": 2.5, "duration": 2.5, "speaker_id": "speaker_0",
+     "diarization_type": "overlapping", "overlap_s": 0.0},
+    {"schema_version": "1.0", "video_id": "conversation_001", "turn_id": "turn000002",
+     "start_time": 2.5, "end_time": 4.0, "duration": 1.5, "speaker_id": "speaker_1",
+     "diarization_type": "overlapping", "overlap_s": 0.0},
+]
+
+
+def _write_transcript(ctx, *, turns: bool) -> None:
+    """A transcript carrying pyannote labels, optionally beside a cached Nemotron table."""
+    import pyarrow as pa
+    from multimodal_pipeline.schemas import (
+        SEGMENTS_SCHEMA, SPEAKER_TURNS_NEMOTRON_SCHEMA, WORDS_SCHEMA, write_table,
+    )
+
+    write_table(ctx.artifact("speech_segments"),
+                pa.Table.from_pylist(LEGACY_SEGMENTS, schema=SEGMENTS_SCHEMA), SEGMENTS_SCHEMA)
+    write_table(ctx.artifact("speech_words"),
+                pa.Table.from_pylist(LEGACY_WORDS, schema=WORDS_SCHEMA), WORDS_SCHEMA)
+    if turns:
+        write_table(ctx.artifact("speaker_turns_nemotron"),
+                    pa.Table.from_pylist(NEMOTRON_TURNS, schema=SPEAKER_TURNS_NEMOTRON_SCHEMA),
+                    SPEAKER_TURNS_NEMOTRON_SCHEMA)
+
+
+class TestDiarizerWithoutItsEnvironment:
+    """A skipped Nemotron stage may not leave pyannote labels in the transcript.
+
+    Reproduced on corpus copies with the Nemotron environment missing: the diarizer and
+    ``speaker_assignment`` both skipped, and depending on whether a turn table was on disk
+    either finalization failed on ``SPEAKER_00`` or — with no turn table — finalization and
+    the ELAN export succeeded while ``segments``/``words`` still cited a speaker that no
+    table in the dataset contains. Both outcomes are silent lies about the data.
+    """
+
+    def test_cached_turns_are_used_even_though_the_diarizer_stage_skipped(self, context):
+        """The turn table is the input; the stage that wrote it need not have run now."""
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=True)
+        context.state.mark_skipped("diarization_nemotron",
+                                   "diarization_nemotron environment not installed at /nowhere")
+        context.state.mark_completed("whisperx")
+        stage = SpeakerAssignmentStage()
+        enabled, reason = stage.enabled(context)
+        assert enabled is True, reason
+        stage.execute(context)
+        speakers = [row["speaker_id"] for row in read_table(context.artifact("speech_segments")).to_pylist()]
+        assert speakers == ["speaker_0", "speaker_1"]
+        words = read_table(context.artifact("speech_words")).to_pylist()
+        assert words[0]["speaker_id"] == "speaker_0"
+        assert "SPEAKER_00" not in speakers
+
+    def test_no_turns_clears_every_legacy_label(self, context):
+        """No timeline means no labels: null them rather than publish another engine's."""
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=False)
+        context.state.mark_skipped("diarization_nemotron", "environment not installed")
+        context.state.mark_completed("whisperx")
+        stage = SpeakerAssignmentStage()
+        enabled, reason = stage.enabled(context)
+        assert enabled is True, reason
+        stage.execute(context)
+
+        segments = read_table(context.artifact("speech_segments")).to_pylist()
+        words = read_table(context.artifact("speech_words")).to_pylist()
+        assert [row["speaker_id"] for row in segments] == [None, None]
+        assert [row["speaker_id"] for row in words] == [None]
+        # The pyannote assignment's own audit columns go with the label.
+        assert {row["speaker_assignment_method"] for row in segments} == {"no_diarization"}
+        assert {row["speaker_overlap_ratio"] for row in segments} == {None}
+        # Text and timing are untouched: this stage labels, it does not transcribe.
+        assert [row["text"] for row in segments] == ["hola", "adios"]
+        assert [row["end_time"] for row in segments] == [2.0, 4.0]
+        assert stage.validate(context)["assigned_segments"] == 0
+
+    def test_the_preserved_raw_transcript_stays_byte_identical(self, context):
+        """The clear pass rewrites derived tables only — the native document is evidence."""
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=False)
+        raw = context.artifact("whisperx_raw")
         raw.parent.mkdir(parents=True, exist_ok=True)
-        raw.write_text(json.dumps({"video_id": context.video_id, "turns": [],
-                                   "exclusive_turns": [], "rttm": ""}), encoding="utf-8")
-        DiarizationStage().preserve_extra_raw(context, raw)
-        rttm = context.artifact("diarization_rttm")
-        assert rttm.is_file(), "a diarization with no turns still has an RTTM artifact"
-        assert rttm.read_text(encoding="utf-8") == ""
+        raw.write_bytes(b'{"language": "es", "segments": [{"speaker": "SPEAKER_00"}]}')
+        before = raw.read_bytes()
+        SpeakerAssignmentStage().execute(context)
+        assert raw.read_bytes() == before
+
+    def test_validate_rejects_a_label_left_without_a_timeline(self, context):
+        """The invariant is checked, not assumed: a leftover label is a defect."""
+        from multimodal_pipeline.exceptions import ValidationError
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=False)
+        with pytest.raises(ValidationError, match="no diarization timeline"):
+            SpeakerAssignmentStage().validate(context)
+
+    def test_a_disabled_diarizer_still_uses_a_cached_timeline(self, context):
+        """The rule is "a compatible table on disk", not "the stage ran in this invocation".
+
+        ``diarization_nemotron.enabled: false`` says "do not load the model", and with a
+        timeline already in the dataset the labels it produced are still this pipeline's own.
+        Clearing them because a flag was switched off would delete a measurement the config
+        never asked to forget, so the cached table wins. Reversible alternative, if an
+        operator ever wants a label-free transcript while keeping the table: add a
+        ``diarization_nemotron.keep_labels: false`` switch rather than overloading ``enabled``.
+        """
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=True)
+        context.config.diarization_nemotron.enabled = False
+        stage = SpeakerAssignmentStage()
+        enabled, reason = stage.enabled(context)
+        assert enabled is True, reason
+        stage.execute(context)
+        assert {row["speaker_id"] for row in read_table(context.artifact("speech_segments")).to_pylist()} == {
+            "speaker_0", "speaker_1"}
+
+    def test_an_unreadable_turn_table_fails_loudly(self, context):
+        """A present-but-broken timeline is a defect, never a reason to quietly clear."""
+        from multimodal_pipeline.exceptions import StageError
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=False)
+        context.artifact("speaker_turns_nemotron").write_bytes(b"not parquet")
+        with pytest.raises(StageError, match="speaker_turns_nemotron"):
+            SpeakerAssignmentStage().execute(context)
+
+
+# --------------------------------------------------------------- stage-level defects
+
+TURN = {"schema_version": "1.0", "video_id": "conversation_001", "turn_id": "turn000001",
+        "start_time": 0.0, "end_time": 2.5, "duration": 2.5, "speaker_id": "speaker_0",
+        "diarization_type": "overlapping", "overlap_s": 0.0}
+
+
+def _write_turns(ctx, rows: list[dict]) -> None:
+    import pyarrow as pa
+    from multimodal_pipeline.schemas import (
+        SPEAKER_TURNS_NEMOTRON_SCHEMA, write_table,
+    )
+
+    write_table(ctx.artifact("speaker_turns_nemotron"),
+                pa.Table.from_pylist(rows, schema=SPEAKER_TURNS_NEMOTRON_SCHEMA),
+                SPEAKER_TURNS_NEMOTRON_SCHEMA)
+
+
+def _metadata(ctx, *, duration: float | None = 10.0) -> None:
+    from multimodal_pipeline.artifacts import atomic_write_json
+
+    atomic_write_json(ctx.artifact("metadata"), {"duration_seconds": duration})
+
+
+class TestADamagedTimeline:
+    """A timeline that cannot be trusted fails the stage; it never labels null and passes.
+
+    Four ways the turn table can be wrong were reproduced on copies of the corpus: a
+    reversed-interval table, a directory sitting at the turns path, a turn table copied
+    from another recording, and turns produced from an audio file that has since been
+    replaced. Every one of them used to pass validation: ``normalise_turns`` silently
+    drops what it cannot use, so the label pass produced null speakers, the transcript was
+    overwritten, and the run reported success.
+    """
+
+    def _stage(self):
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        return SpeakerAssignmentStage()
+
+    def test_a_reversed_interval_fails_before_anything_is_written(self, context) -> None:
+        from multimodal_pipeline.exceptions import StageError
+        from multimodal_pipeline.schemas import read_table
+
+        _write_transcript(context, turns=False)
+        _write_turns(context, [{**TURN, "start_time": 5.0, "end_time": 1.0}])
+        before = read_table(context.artifact("speech_segments")).to_pylist()
+        with pytest.raises(StageError, match="not a forward interval"):
+            self._stage().execute(context)
+        assert read_table(context.artifact("speech_segments")).to_pylist() == before
+
+    def test_a_non_numeric_interval_fails(self, context) -> None:
+        from multimodal_pipeline.exceptions import StageError
+
+        _write_transcript(context, turns=False)
+        _write_turns(context, [{**TURN, "start_time": None}])
+        with pytest.raises(StageError, match="non-numeric interval"):
+            self._stage().execute(context)
+
+    def test_a_missing_column_fails(self, context, write_parquet) -> None:
+        """The columns are checked, so a re-shaped table cannot be read as "no turns"."""
+        from multimodal_pipeline.exceptions import StageError
+
+        _write_transcript(context, turns=False)
+        write_parquet(context.artifact("speaker_turns_nemotron"),
+                      [{"video_id": context.video_id, "speaker_id": "speaker_0"}])
+        with pytest.raises(StageError, match="has no start_time, end_time column"):
+            self._stage().execute(context)
+
+    def test_turns_from_another_recording_fail(self, context) -> None:
+        """The copy that passed: every recording has speech at t=0, so the overlap looks sane."""
+        from multimodal_pipeline.exceptions import StageError
+
+        _write_transcript(context, turns=False)
+        _write_turns(context, [{**TURN, "video_id": "some_other_clip"}])
+        with pytest.raises(StageError, match="written for \\['some_other_clip'\\]"):
+            self._stage().execute(context)
+
+    def test_a_turn_past_the_audio_end_fails(self, context) -> None:
+        from multimodal_pipeline.exceptions import StageError
+
+        _write_transcript(context, turns=False)
+        _metadata(context, duration=1.0)
+        _write_turns(context, [TURN])
+        with pytest.raises(StageError, match="past this video's 1.000s of audio"):
+            self._stage().execute(context)
+
+    def test_a_turn_inside_the_frame_grid_tolerance_passes(self, context) -> None:
+        """The corpus case: La-1's container measures 8.008 s and Nemotron ends at 8.01 s."""
+        from multimodal_pipeline.schemas import read_table
+
+        _write_transcript(context, turns=False)
+        _metadata(context, duration=8.008008)
+        _write_turns(context, [{**TURN, "end_time": 8.01}])
+        self._stage().execute(context)
+        assert {row["speaker_id"] for row
+                in read_table(context.artifact("speech_segments")).to_pylist()} == {"speaker_0"}
+
+    def test_a_timeline_diarized_from_other_audio_fails(self, context) -> None:
+        from multimodal_pipeline.exceptions import StageError
+        from multimodal_pipeline.stages.base import raw_sidecar_path
+        from multimodal_pipeline.stages.metadata import sha256_of
+
+        _write_transcript(context, turns=False)
+        _write_turns(context, [TURN])
+        audio = context.artifact("audio")
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"the current audio")
+        sidecar = raw_sidecar_path(context.artifact("nemotron_diarization_raw"))
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps({"request": {"audio_sha256": "0" * 64}}), encoding="utf-8")
+        assert sha256_of(audio) != "0" * 64
+        with pytest.raises(StageError, match="different audio"):
+            self._stage().execute(context)
+
+    def test_matching_provenance_passes(self, context) -> None:
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.base import raw_sidecar_path
+        from multimodal_pipeline.stages.metadata import sha256_of
+
+        _write_transcript(context, turns=False)
+        _write_turns(context, [TURN])
+        audio = context.artifact("audio")
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"the current audio")
+        sidecar = raw_sidecar_path(context.artifact("nemotron_diarization_raw"))
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps({"request": {"audio_sha256": sha256_of(audio)}}),
+                           encoding="utf-8")
+        self._stage().execute(context)
+        assert read_table(context.artifact("speech_segments")).to_pylist()[0]["speaker_id"] == "speaker_0"
+
+    def test_no_sidecar_is_not_a_mismatch(self, context) -> None:
+        """An older dataset has no provenance file; "cannot prove" is not "proved wrong"."""
+        from multimodal_pipeline.schemas import read_table
+
+        _write_transcript(context, turns=False)
+        _write_turns(context, [TURN])
+        context.artifact("audio").write_bytes(b"audio")
+        self._stage().execute(context)
+        assert read_table(context.artifact("speech_segments")).to_pylist()[0]["speaker_id"] == "speaker_0"
+
+
+class TestBothTranscriptsBeforeEitherIsReplaced:
+    """A corrupt words file used to leave the segments table already relabelled."""
+
+    def test_an_unreadable_words_table_costs_nothing(self, context) -> None:
+        from multimodal_pipeline.exceptions import StageError
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=True)
+        context.artifact("speech_words").write_bytes(b"not parquet")
+        segments_before = read_table(context.artifact("speech_segments")).to_pylist()
+        with pytest.raises(StageError):
+            SpeakerAssignmentStage().execute(context)
+        assert read_table(context.artifact("speech_segments")).to_pylist() == segments_before
+        # Nothing half-written is left behind either.
+        assert list(context.artifact("speech_words").parent.glob("*.staging")) == []
+
+    def test_both_tables_end_up_labelled(self, context) -> None:
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=True)
+        SpeakerAssignmentStage().execute(context)
+        assert [row["speaker_id"] for row
+                in read_table(context.artifact("speech_segments")).to_pylist()] == ["speaker_0", "speaker_1"]
+        assert [row["speaker_id"] for row
+                in read_table(context.artifact("speech_words")).to_pylist()] == ["speaker_0"]
+        assert list(context.artifact("speech_words").parent.glob("*.staging")) == []
+
+
+class TestOneTranscriptTable:
+    """A dataset may have only one of the two tables, and its labels must not survive.
+
+    Reproduced on a corpus copy with ``speech/segments.parquet`` removed and no Nemotron
+    table: this stage skipped because it required both inputs, so ``words.parquet`` kept
+    pyannote's ``SPEAKER_00``, the ELAN words tier printed it, and nothing failed.
+    """
+
+    def test_a_words_only_dataset_is_cleared(self, context) -> None:
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=False)
+        context.artifact("speech_segments").unlink()
+        stage = SpeakerAssignmentStage()
+        enabled, reason = stage.enabled(context)
+        assert enabled is True, reason
+        stage.execute(context)
+        words = read_table(context.artifact("speech_words")).to_pylist()
+        assert [row["speaker_id"] for row in words] == [None]
+        assert {row["speaker_assignment_method"] for row in words} == {"no_diarization"}
+        # And the stage is a finished result for this dataset rather than a permanent rerun.
+        assert stage.outputs_present(context) is True
+        assert stage.validate(context)["words"] == 1
+
+    def test_a_words_only_dataset_is_labelled_from_a_timeline(self, context) -> None:
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=True)
+        context.artifact("speech_segments").unlink()
+        SpeakerAssignmentStage().execute(context)
+        assert [row["speaker_id"] for row
+                in read_table(context.artifact("speech_words")).to_pylist()] == ["speaker_0"]
+
+    def test_a_segments_only_dataset_is_labelled(self, context) -> None:
+        from multimodal_pipeline.schemas import read_table
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=True)
+        context.artifact("speech_words").unlink()
+        stage = SpeakerAssignmentStage()
+        stage.execute(context)
+        assert [row["speaker_id"] for row
+                in read_table(context.artifact("speech_segments")).to_pylist()] == ["speaker_0", "speaker_1"]
+        assert stage.validate(context)["segments"] == 2
+
+    def test_neither_table_still_skips(self, context) -> None:
+        from multimodal_pipeline.stages.speaker_assignment import SpeakerAssignmentStage
+
+        _write_transcript(context, turns=False)
+        context.artifact("speech_segments").unlink()
+        context.artifact("speech_words").unlink()
+        enabled, reason = SpeakerAssignmentStage().enabled(context)
+        assert enabled is False
+        assert reason.startswith("upstream skipped")

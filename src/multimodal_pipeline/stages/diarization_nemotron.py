@@ -1,14 +1,12 @@
-"""NVIDIA Nemotron 3 Diarization stage — a second engine, next to pyannote.
+"""NVIDIA Nemotron 3 Diarization stage — the pipeline's speaker diarizer.
 
-This stage exists so two diarizers can be compared on the same corpus. It is a parallel
-opinion, not a replacement:
-
-* it reads ``audio/audio.wav`` and depends on the ``audio`` stage only — never on
-  ``diarization``, so either engine can be switched off and the other still runs;
-* it writes its own raw JSON and its own Parquet table;
-* ``speaker_assignment`` does not read it. Choosing an engine is a decision the operator
-  makes after comparing the two tables, and wiring that choice into the DAG now would
-  delete the alternative this stage exists to preserve.
+It reads ``audio/audio.wav`` and depends on the ``audio`` stage only, so a transcription
+failure costs no speaker timeline. It writes its own raw JSON plus
+``speech/speaker_turns_nemotron.parquet``, and that table is what ``speaker_assignment``
+labels the transcript from. The name keeps the ``_nemotron`` suffix on purpose: every
+dataset produced while a second engine existed has the file under this artifact name, and
+renaming it would make a re-run of an old output directory write a second, empty table
+beside the populated one.
 
 Why the HuggingFace route and not the ``nemo-toolkit`` route the NVIDIA blog shows: NeMo
 3.0.0 cannot load this checkpoint at all (its encoder raises
@@ -79,9 +77,9 @@ class DiarizationNemotronStage(WorkerStage):
             path = ctx.input("audio")
         except StageError:
             return None
-        # Distinct scratch key from DiarizationStage: both stages read the same file, but
-        # sharing one cache entry would make the second stage's digest depend on which
-        # stage happened to run first in this process.
+        # A key of this stage's own: the whisperx and acoustic stages read the same file
+        # too, and sharing one cache entry would make this digest depend on which stage
+        # happened to run first in this process.
         cached = ctx.scratch.get("audio_sha256_nemotron")
         if cached:
             return cached
@@ -92,26 +90,21 @@ class DiarizationNemotronStage(WorkerStage):
     # ------------------------------------------------------------------ enablement
 
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
-        """Skip, never fail, when the optional engine is not available.
+        """Skip, never fail, when the environment is not installed.
 
         Three states are distinguished because they need different answers from an
         operator: switched off, environment not installed, and environment installed but
         broken. The last one still runs and fails loudly, because at that point silence
-        would hide a real defect.
+        would hide a real defect — and the transcript stays unlabelled for a reason the
+        stage record names.
+
+        The environment and worker checks are ``WorkerStage``'s own: identical prerequisites
+        deserve an identical message, and one copy cannot drift from the other.
         """
         cfg = ctx.config.diarization_nemotron
         if not cfg.enabled:
             return False, "diarization_nemotron.enabled = false"
-        project = self.uv_project(ctx)
-        if not project.is_dir():
-            return False, (
-                f"nemotron environment not installed at {project} — create it and run "
-                "`uv sync --python 3.12` there to enable the second diarizer"
-            )
-        worker = self.worker_script(ctx)
-        if not worker.is_file():
-            return False, f"nemotron worker script missing at {worker}"
-        return True, ""
+        return super().enabled(ctx)
 
     # ------------------------------------------------------------------ worker
 

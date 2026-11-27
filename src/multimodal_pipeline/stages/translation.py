@@ -30,7 +30,7 @@ from ..artifacts import atomic_write_json, read_json
 from ..config import stable_hash
 from ..exceptions import StageError, ValidationError
 from ..schemas import TRANSLATION_SCHEMA, read_table, write_table
-from .base import Stage, StageContext
+from .base import Stage, StageContext, transcript_skip_reason
 
 
 class TranslationTransportError(RuntimeError):
@@ -303,6 +303,14 @@ class TranslationStage(Stage):
         if not cfg.endpoint_configured:
             return False, ("translation endpoint is not configured (set translation.base_url, "
                            "translation.api_key and translation.model in the config file)")
+        # Last, so "this stage is switched off" and "its endpoint is unset" keep winning: both
+        # are answers about the configured work, and both are still true when the transcript
+        # is absent. Without this gate the stage failed on the missing table and took the
+        # video's result with it, over a WhisperX install state the batch had already
+        # reported as a skip.
+        unavailable = transcript_skip_reason(ctx, required=("speech_segments",))
+        if unavailable:
+            return False, unavailable
         return True, ""
 
     def prepare(self, ctx: StageContext) -> None:

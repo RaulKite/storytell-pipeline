@@ -22,6 +22,10 @@ Turn = tuple[float, float, str]
 METHOD_MAX_OVERLAP = "max_overlap"
 METHOD_POINT_CONTAINMENT = "point_containment"
 METHOD_NO_OVERLAP = "no_overlap"
+#: No diarization timeline existed for this dataset at all, so no label is claimed. Distinct
+#: from `no_overlap`, which reports a gap *inside* a timeline that was read: this one says the
+#: transcript was cleared of labels no current diarizer produced.
+METHOD_NO_DIARIZATION = "no_diarization"
 EPSILON = 1e-9
 
 

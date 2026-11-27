@@ -44,7 +44,6 @@ from multimodal_pipeline.elan import (
     ASD_NOT_EVALUATED,
     ASD_NOT_SPEAKING,
     ENGINE_NS,
-    FACE_TRACK_NS,
     FORMANT_BANDS_HZ,
     INTENSITY_DB_STEP,
     PRAAT_FRAME_TIERS,
@@ -79,9 +78,7 @@ from multimodal_pipeline.schemas import (
     POSE_NORMALIZED_SCHEMA,
     PERSON_TRACKS_SCHEMA,
     SEGMENTS_SCHEMA,
-    SPEAKER_FUSION_SCHEMA,
     SPEAKER_TURNS_NEMOTRON_SCHEMA,
-    SPEAKER_TURNS_SCHEMA,
     TRANSLATION_SCHEMA,
     WORDS_SCHEMA,
     read_table,
@@ -512,7 +509,7 @@ def make_dataset(tmp_path: Path) -> dict[str, Path]:
     Chosen so each interesting rule fires exactly once:
 
     * ``words`` — three words, one carrying a newline and one with zero width;
-    * ``speaker_turns`` — one turn;
+    * ``speaker_turns_nemotron`` — one turn;
     * ``active_speaker_frames`` — face→no-face→face, i.e. three collapsed blocks;
     * ``active_speaker_tracks`` — one track whose endpoints need the ASD step;
     * ``pose_body`` — a low-confidence frame in the middle, so presence is two blocks;
@@ -530,10 +527,10 @@ def make_dataset(tmp_path: Path) -> dict[str, Path]:
         _word("multi\nline", 0.5, 0.9),
         _word("zero", 1.0, 1.0),
     ])
-    _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [{
+    _write(SPEAKER_TURNS_NEMOTRON_SCHEMA, root / "speech" / "speaker_turns_nemotron.parquet", [{
         "schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
-        "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
-        "diarization_type": "exclusive",
+        "speaker_id": "speaker_0", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+        "diarization_type": "overlapping", "overlap_s": 0.0,
     }])
     _write(ACTIVE_SPEAKER_FRAMES_SCHEMA, root / "speaker" / "active_speaker_frames.parquet", [
         _asd_frame(0, "speaking", 0), _asd_frame(1, "speaking", 0),
@@ -567,21 +564,6 @@ def _translation(segment_id: str, start: float, end: float, english_text: str,
             "source_language": "es", "source_text": source_text,
             "english_text": english_text, "translation_model": "chat",
             "translation_prompt_version": "v1"}
-
-
-def _fusion_row(turn_id: str, speaker_id: str, start: float, end: float,
-                agreement: str = "face_matched", detail: str = "track 0 active on 4/5 frames",
-                face_track_id: int | None = 0, engine: str = "pyannote",
-                **extra: Any) -> dict[str, Any]:
-    row = {"schema_version": "1.0", "video_id": "clip", "engine": engine,
-           "turn_id": turn_id, "speaker_id": speaker_id, "start_time": start,
-           "end_time": end, "duration": end - start, "diarization_type": "exclusive",
-           "overlap_s": None, "face_track_id": face_track_id, "face_active_frames": 4,
-           "face_frames_in_turn": 5, "frames_in_turn": 5, "face_mean_score": 2.506753,
-           "face_score_max": 3.86, "agreement": agreement,
-           "agreement_detail": detail}
-    row.update(extra)
-    return row
 
 
 @pytest.fixture
@@ -633,11 +615,11 @@ def logical_texts(eaf: Any, tier: str) -> list[str]:
 
 
 class TestBuildEaf:
-    """The fifteen tiers, built from real Parquet and read back out of real XML."""
+    """The twelve tiers, built from real Parquet and read back out of real XML."""
 
     def test_only_the_tiers_with_input_files_are_present(self, dataset: dict[str, Path]) -> None:
         eaf, _report = build_eaf(dataset["dir"], dataset["video"], log=lambda *a, **k: None)
-        assert tiers_of(eaf) == ["words", "turns_pyannote", "asd_speaking", "face_tracks",
+        assert tiers_of(eaf) == ["words", "turns_nemotron", "asd_speaking", "face_tracks",
                                  "pose_presence"]
         assert set(tier_counts(eaf)) == set(tiers_of(eaf))
 
@@ -655,19 +637,19 @@ class TestBuildEaf:
                   log=lambda *a, **k: lines.append(str(a[0])))[0]
         # "skipped (" and not bare "skipped": the closing census line also reports the count,
         # and counting it would make this assertion pass at seven tiers or at seventy.
-        # Ten: fifteen tiers minus the five producers this clip writes. The four Praat tiers are
+        # Seven: twelve tiers minus the five producers this clip writes. The four Praat tiers are
         # four lines naming the *same* missing file, which is what four tiers over one table
         # looks like when it is absent — and the linguistic tiers are gone from this count
         # because no tier reads their tables any more (they are on disk here and unread).
         skipped = [line for line in lines if "skipped (" in line]
-        assert len(skipped) == 10, skipped
+        assert len(skipped) == 7, skipped
         assert len([line for line in skipped
                     if "acoustic/frame_features.parquet not produced" in line]) == 4, skipped
         assert not [line for line in skipped if "linguistic/" in line], skipped
         assert sum(1 for line in skipped if "gloss_en" in line) == 1
         assert any("translation/segments_en.parquet not produced" in line for line in skipped)
         # The census line agrees with the per-tier lines rather than restating a constant.
-        assert any(line.startswith("elan: 5 tier(s)") and "skipped 10" in line for line in lines)
+        assert any(line.startswith("elan: 5 tier(s)") and "skipped 7" in line for line in lines)
 
     def test_a_known_word_lands_on_the_expected_millisecond_pair(self,
                                                                 dataset: dict[str, Path]
@@ -700,33 +682,15 @@ class TestBuildEaf:
                                                              ) -> None:
         """Two turn tables, two engine names, decided by the tier and not by the filename.
 
-        The label leads with the word ``speaker`` because `SPEAKER_00` (pyannote) and
-        ``speaker_0`` (Nemotron) are unrelated clusters over unrelated channels and TalkNet's
-        ``track_id`` is a third namespace again (§20.2). A tier label is the one piece of the
-        file that travels — pasted into an issue, quoted in a paper — without the tier header
-        that says which engine wrote it, so the label carries the namespace marker itself.
+        The label leads with the word ``speaker`` because Nemotron's arrival-ordered
+        ``speaker_0`` and TalkNet's ``track_id`` are unrelated id spaces (§20.2). A tier label
+        is the one piece of the file that travels — pasted into an issue, quoted in a paper —
+        without the tier header that says which producer wrote it, so the label carries the
+        namespace marker itself.
         """
-        assert annotations(eaf_of(dataset), "turns_pyannote") == [
-            (0, 1000, "speaker SPEAKER_00 (pyannote, exclusive) · t-0")]
+        assert annotations(eaf_of(dataset), "turns_nemotron") == [
+            (0, 1000, "speaker speaker_0 (nemotron, overlapping) · t-0")]
 
-    def test_a_turn_label_carries_its_turn_id_so_the_fusion_tier_links_to_it(self,
-                                                                            dataset: dict[str,
-                                                                                          Path]
-                                                                            ) -> None:
-        """`turn_id` is the key both tables publish, so the labels can share it.
-
-        The fusion row is built *from* a turn and carries the same `turn_id`; printed on both
-        sides, it is the one legitimate link between a diarizer's turn and the A/V verdict on
-        it — unlike a speaker id, which must never cross engines.
-        """
-        root = dataset["dir"]
-        _write(SPEAKER_FUSION_SCHEMA, root / "speaker" / "fusion_pyannote.parquet",
-               [_fusion_row("t-0", "SPEAKER_00", 0.0, 1.0)])
-        eaf, _report = build_eaf(root, dataset["video"], log=lambda *a, **k: None)
-        turn_id = annotations(eaf, "turns_pyannote")[0][2].rsplit("·", 1)[-1].strip()
-        fused = annotations(eaf, "fusion_pyannote")[0][2]
-        assert turn_id == "t-0"
-        assert "turn t-0" in fused
     def test_face_to_no_face_to_face_collapses_into_three_blocks(self,
                                                                  dataset: dict[str, Path]
                                                                  ) -> None:
@@ -901,23 +865,23 @@ class TestBuildEaf:
         good = _word("hello", 0.0, 0.4)
         bad = _word("nan-word", float("nan"), 1.0)
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [good, bad])
-        _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [{
+        _write(SPEAKER_TURNS_NEMOTRON_SCHEMA, root / "speech" / "speaker_turns_nemotron.parquet", [{
             "schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
-            "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
-            "diarization_type": "exclusive",
+            "speaker_id": "speaker_0", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+            "diarization_type": "overlapping", "overlap_s": 0.0,
         }])
         lines: list[str] = []
         eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         # The other tier survived, and the good row of the poisoned tier survived with it.
         assert [(start, end) for start, end, _value in annotations(eaf, "words")] == [(0, 400)]
         assert annotations(eaf, "words")[0][2].startswith("hello")
-        assert len(annotations(eaf, "turns_pyannote")) == 1
+        assert len(annotations(eaf, "turns_nemotron")) == 1
         assert [line for line in lines if "dropped 1 of 2" in line and "words" in line], lines
         # And the census in the file says one word, not two and not zero. Read by name:
         # pympi puts its own `lastUsedAnnotation` property first, so an index would be a
         # claim about pympi's internals rather than about this file's promise.
         census = dict(eaf.properties)["pipeline-tiers"]
-        assert census == "turns_pyannote=1 words=1"
+        assert census == "turns_nemotron=1 words=1"
 
     def test_a_tier_whose_rows_are_all_non_finite_is_empty_not_fatal(self,
                                                                       tmp_path: Path) -> None:
@@ -960,17 +924,17 @@ class TestBuildEaf:
             _word("no-end", 2.0, None),
             _word("no-start", None, 3.0),
         ])
-        _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [{
+        _write(SPEAKER_TURNS_NEMOTRON_SCHEMA, root / "speech" / "speaker_turns_nemotron.parquet", [{
             "schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
-            "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
-            "diarization_type": "exclusive",
+            "speaker_id": "speaker_0", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+            "diarization_type": "overlapping", "overlap_s": 0.0,
         }])
         lines: list[str] = []
         eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
         assert [(start, end) for start, end, _t in annotations(eaf, "words")] == [(0, 400)]
         # A sibling tier is untouched, and the census counts only the row really placed.
-        assert len(annotations(eaf, "turns_pyannote")) == 1
-        assert dict(eaf.properties)["pipeline-tiers"] == "turns_pyannote=1 words=1"
+        assert len(annotations(eaf, "turns_nemotron")) == 1
+        assert dict(eaf.properties)["pipeline-tiers"] == "turns_nemotron=1 words=1"
         missing = [line for line in lines if "missing timestamp" in line]
         assert [line for line in missing if "words" in line and "2 of 3" in line], lines
         # The two states are not merged into one line.
@@ -1057,20 +1021,20 @@ class TestBuildEaf:
         """
         root, video = _clip(tmp_path)
         _write(WORDS_SCHEMA, root / "speech" / "words.parquet", [_word("hello", 0.0, 0.4)])
-        _write(SPEAKER_TURNS_SCHEMA, root / "speech" / "speaker_turns.parquet", [
+        _write(SPEAKER_TURNS_NEMOTRON_SCHEMA, root / "speech" / "speaker_turns_nemotron.parquet", [
             {"schema_version": "1.0", "video_id": "clip", "turn_id": "t-0",
-             "speaker_id": "SPEAKER_00", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
-             "diarization_type": "exclusive"},
+             "speaker_id": "speaker_0", "start_time": 0.0, "end_time": 1.0, "duration": 1.0,
+             "diarization_type": "overlapping", "overlap_s": 0.0},
             {"schema_version": "1.0", "video_id": "clip", "turn_id": "t-1",
-             "speaker_id": "SPEAKER_00", "start_time": -4.0, "end_time": -2.0,
-             "duration": 2.0, "diarization_type": "exclusive"},
+             "speaker_id": "speaker_0", "start_time": -4.0, "end_time": -2.0,
+             "duration": 2.0, "diarization_type": "overlapping", "overlap_s": 0.0},
         ])
         lines: list[str] = []
         eaf, _report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
-        assert [(s, e) for s, e, _t in annotations(eaf, "turns_pyannote")] == [(0, 1000)]
-        assert [line for line in lines if "turns_pyannote" in line and "1 of 2" in line
+        assert [(s, e) for s, e, _t in annotations(eaf, "turns_nemotron")] == [(0, 1000)]
+        assert [line for line in lines if "turns_nemotron" in line and "1 of 2" in line
                 and "missing timestamp" in line], lines
-        assert dict(eaf.properties)["pipeline-tiers"] == "turns_pyannote=1 words=1"
+        assert dict(eaf.properties)["pipeline-tiers"] == "turns_nemotron=1 words=1"
 
     def test_the_document_is_well_formed_xml_and_reloads(self, dataset: dict[str, Path]
                                                          ) -> None:
@@ -1081,7 +1045,7 @@ class TestBuildEaf:
         root = ET.parse(path).getroot()
         assert root.tag.endswith("ANNOTATION_DOCUMENT")
         names = sorted(real_tier_names(root))
-        assert names == sorted(["words", "turns_pyannote", "asd_speaking", "face_tracks",
+        assert names == sorted(["words", "turns_nemotron", "asd_speaking", "face_tracks",
                                 "pose_presence"])
         assert list(root.iter("MEDIA_DESCRIPTOR"))
         from pympi.Elan import Eaf
@@ -1104,7 +1068,7 @@ class TestBuildEaf:
                                  log=lambda *a, **k: lines.append(str(a[0])))
         assert "pose_presence" not in tiers_of(eaf)
         assert any("pose_presence skipped" in line and "unreadable" in line for line in lines)
-        assert {"words", "asd_speaking", "face_tracks", "turns_pyannote"} <= set(tiers_of(eaf))
+        assert {"words", "asd_speaking", "face_tracks", "turns_nemotron"} <= set(tiers_of(eaf))
 
     def test_the_tier_census_in_the_document_matches_the_document(self,
                                                                  dataset: dict[str, Path]
@@ -1258,114 +1222,14 @@ class TestSegmentIdentityLinksTiers:
 class TestNamespaceInLabels:
     """Which ids are separate namespaces, and which one is a real link."""
 
-    def _fusion_clip(self, tmp_path: Path) -> Path:
-        root = tmp_path / "processed" / "clip"
-        video = tmp_path / "input_videos" / "clip.mp4"
-        video.parent.mkdir(parents=True)
-        video.write_bytes(b"stub")
-        _write(WORDS_SCHEMA, root / "speech" / "words.parquet",
-               [_word("hola", 0.0, 0.4)])
-        _write(SPEAKER_FUSION_SCHEMA, root / "speaker" / "fusion_pyannote.parquet", [
-            _fusion_row("turn000001", "SPEAKER_00", 0.0, 1.0),
-            _fusion_row("turn000002", "SPEAKER_01", 1.0, 2.0, agreement="face_never_active",
-                        detail="no track active in window", face_track_id=None),
-        ])
-        return root
-
-    def test_a_fusion_label_says_which_face_track_without_equating_it_to_the_speaker(
-            self, tmp_path: Path) -> None:
-        """The winning face track is a TalkNet id, and the schema says so twice.
-
-        `SPEAKER_FUSION_SCHEMA.face_track_id` is documented as "An ASD track id, not a speaker
-        id", and the turn's `speaker_id` is pyannote's namespace. Printing both in one label
-        is only safe when the label says which is which — the same argument §20.2 makes for
-        `person_id` versus `track_id`, applied to the tier a human actually reads. The
-        verdict's own arithmetic (`agreement_detail`) is kept verbatim after them.
-        """
-        root = self._fusion_clip(tmp_path)
-        eaf, _report = build_eaf(root, tmp_path / "input_videos" / "clip.mp4",
-                             log=lambda *a, **k: None)
-        assert [text for _s, _e, text in annotations(eaf, "fusion_pyannote")] == [
-            "face_matched: turn turn000001 · turn speaker SPEAKER_00 (pyannote) | "
-            "face track 0 | track 0 active on 4/5 frames",
-            "face_never_active: turn turn000002 · turn speaker SPEAKER_01 (pyannote) | "
-            "face track unknown | no track active in window",
-        ]
-
-    def test_the_fusion_face_track_id_is_the_face_tracks_tier_track_id(self,
-                                                                      tmp_path: Path
-                                                                      ) -> None:
-        """`face_track_id` is not a fourth namespace — it *is* TalkNet's `track_id`.
-
-        Measured here rather than asserted from prose: `fusion.fuse_turn_table` copies the
-        winning frame's `track_id` straight through, so on every corpus dataset the fusion
-        tables' `face_track_id` values are a subset of `active_speaker_tracks.track_id`
-        (KABC {0} and {0,1} ⊆ [0, 1]; La-1 {0, 4} ⊆ [0, 1, 2, 4]). Printing it as if it were
-        another unrelated space would hide the one legitimate link this tier has to the
-        `face_tracks` tier, so the link is asserted the way a reader uses it: the id in the
-        fusion label names an annotation that really exists on the face-track tier.
-        """
-        root = tmp_path / "processed" / "clip"
-        video = tmp_path / "input_videos" / "clip.mp4"
-        video.parent.mkdir(parents=True)
-        video.write_bytes(b"stub")
-        _write(ACTIVE_SPEAKER_TRACKS_SCHEMA, root / "speaker" / "active_speaker_tracks.parquet",
-               [{"schema_version": "1.0", "video_id": "clip", "track_id": 4,
-                 "first_timestamp": 0.0, "last_timestamp": 0.04, "frame_count": 3,
-                 "active_frame_count": 2, "active_ratio": 0.66, "mean_score": 1.5,
-                 "max_score": 2.0, "scenes": [1], "mean_bbox_area": 10.0}])
-        _write(SPEAKER_FUSION_SCHEMA, root / "speaker" / "fusion_pyannote.parquet",
-               [_fusion_row("turn000001", "SPEAKER_00", 0.0, 1.0, face_track_id=4)])
-        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
-
-        fused = annotations(eaf, "fusion_pyannote")[0][2]
-        face_track = fused.split("face track ", 1)[1].split(" ", 1)[0]
-        track_tier = {text.split(" ")[1]
-                      for _s, _e, text in annotations(eaf, "face_tracks")}
-        assert face_track == "4"
-        assert face_track in track_tier, "fusion names a face track the face-track tier lacks"
-        # And the document says so, rather than lumping it in with the namespaces that really
-        # are separate (§20.2 is about diarizer speaker vs TalkNet face vs YOLO person).
-        semantics = dict(eaf.properties)["pipeline-tier-semantics"]
-        assert "same" in semantics and FACE_TRACK_NS in semantics
-        assert "track_id" in semantics
-
-    def test_the_fusion_label_names_the_engine_from_its_own_row(self, tmp_path: Path) -> None:
-        """The engine is read from `engine`, not inferred from the tier name or an id.
-
-        A fusion label is the part of the file that gets quoted on its own, and a tier header
-        does not travel with it: quoted out of `fusion_nemotron`, a bare `turn speaker
-        speaker_0` is indistinguishable from pyannote's `SPEAKER_00` apart from its shape.
-        `SPEAKER_FUSION_SCHEMA.engine` already records which diarizer wrote the row and which
-        speaker-id namespace it came from, so the label prints that column — which is why a row
-        whose `engine` disagrees with the file it sits in prints the row's own value, and a null
-        one prints `unknown` rather than whatever the tier is called.
-        """
-        root = tmp_path / "processed" / "clip"
-        video = tmp_path / "input_videos" / "clip.mp4"
-        video.parent.mkdir(parents=True)
-        video.write_bytes(b"stub")
-        _write(SPEAKER_FUSION_SCHEMA, root / "speaker" / "fusion_pyannote.parquet", [
-            _fusion_row("turn000001", "speaker_0", 0.0, 1.0, engine="nemotron"),
-            _fusion_row("turn000002", "SPEAKER_00", 1.0, 2.0, engine=None),
-        ])
-        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
-        assert [text for _s, _e, text in annotations(eaf, "fusion_pyannote")] == [
-            "face_matched: turn turn000001 · turn speaker speaker_0 (nemotron) | "
-            "face track 0 | track 0 active on 4/5 frames",
-            "face_matched: turn turn000002 · turn speaker SPEAKER_00 (unknown) | "
-            "face track 0 | track 0 active on 4/5 frames",
-        ]
-        assert ENGINE_NS in dict(eaf.properties)["pipeline-tier-semantics"]
-
     def test_a_turn_label_says_its_speaker_id_is_a_diarizer_label(self,
                                                                  dataset: dict[str, Path]
                                                                  ) -> None:
-        """The namespace marker is the tier's job, and it is asserted on the *other* engine too.
+        """The namespace marker comes from the builder, not from an id prefix.
 
-        `turns_nemotron` reads a different file whose ids arrive-ordered (`speaker_0`), so the
-        marker has to come from the builder and not from a prefix that happens to look right on
-        pyannote's ``SPEAKER_00``.
+        `turns_nemotron` reads a file whose ids are arrival-ordered (`speaker_0`), so the
+        marker is the word ``speaker`` the builder prints — not a prefix that happens to look
+        right on some other engine's `SPEAKER_00`.
         """
         root = dataset["dir"]
         _write(SPEAKER_TURNS_NEMOTRON_SCHEMA, root / "speech" / "speaker_turns_nemotron.parquet",
@@ -1650,8 +1514,8 @@ class TestTierSemanticsProperty:
         The clause used to end "only the last is evidence about silence", which is a claim the
         producer never made: the ASD row's `is_active_speaker` is TalkNet's verdict on the one
         track this frame selected, and the same second can carry an off-screen or out-of-frame
-        voice — the fusion table's own `no_face_visible` detail names that case ("off-screen
-        narrator or audio bed"). A reader who took the old wording literally would mark a block
+        voice ("off-screen narrator or audio bed"). A reader who took the old wording
+        literally would mark a block
         silent while a diarizer turn on the same clip was busy. So the property says whose
         mouth the verdict is about and says plainly that it is not an audio claim.
         """
@@ -1662,10 +1526,9 @@ class TestTierSemanticsProperty:
         assert "not" in clause and "audio" in clause
         assert "evidence about silence" not in clause
 
-    def test_the_engine_and_face_track_clauses_survive_the_round_trip(self,
-                                                                     dataset: dict[str, Path]
-                                                                     ) -> None:
-        """The two clauses this correction added are checked on disk, not only in the constant.
+    def test_the_engine_clause_survives_the_round_trip(self,
+                                                       dataset: dict[str, Path]) -> None:
+        """The engine clause is checked on disk, not only in the constant.
 
         The semantics property is one long string written through pympi's XML text node; a
         character in it that the library mangles would otherwise show up as a silently reworded
@@ -1677,8 +1540,7 @@ class TestTierSemanticsProperty:
 
         text = self.semantics(Eaf(str(out), suppress_version_warning=True))
         assert ENGINE_NS in text
-        assert FACE_TRACK_NS in text
-        assert "same" in text
+        assert "speaker_0" in text
 
     def test_the_semantics_are_about_the_tiers_this_file_writes(
             self, dataset: dict[str, Path]) -> None:
@@ -1763,12 +1625,6 @@ class TestColumnNamesAgainstSchemas:
                                                           "english_text", "speaker_id",
                                                           "segment_id",
                                                           "translation_model")),
-            "speaker_fusion_pyannote": (SPEAKER_FUSION_SCHEMA, ("start_time", "end_time",
-                                                                "agreement",
-                                                                "agreement_detail",
-                                                                "speaker_id",
-                                                                "face_track_id",
-                                                                "engine")),
         }
         for artifact, (schema, columns) in expected.items():
             known = {field.name for field in schema}
@@ -1793,10 +1649,10 @@ def eaf_of(dataset: dict[str, Path]) -> Any:
 class TestTierRegistration:
     """Every tier reads a registered artifact; no file name is invented here."""
 
-    def test_the_fifteen_tiers_are_the_ones_the_design_named(self) -> None:
+    def test_the_twelve_tiers_are_the_ones_the_design_named(self) -> None:
         assert [spec.tier for spec in TIERS] == [
-            "words", "segments_src", "gloss_en", "turns_pyannote", "turns_nemotron",
-            "fusion_pyannote", "fusion_nemotron", "asd_speaking", "face_tracks",
+            "words", "segments_src", "gloss_en", "turns_nemotron",
+            "asd_speaking", "face_tracks",
             "person_tracks", "pose_presence",
             "voiced_blocks", "f0_blocks", "intensity_blocks", "formant_blocks"]
 
@@ -1847,8 +1703,9 @@ class TestTierRegistration:
             "speech_words": (WORDS_SCHEMA, ("start_time", "end_time", "word")),
             "speech_segments": (SEGMENTS_SCHEMA, ("start_time", "end_time", "speaker_id",
                                                   "text")),
-            "speaker_turns": (SPEAKER_TURNS_SCHEMA, ("start_time", "end_time", "speaker_id",
-                                                     "diarization_type")),
+            "speaker_turns_nemotron": (SPEAKER_TURNS_NEMOTRON_SCHEMA,
+                                       ("start_time", "end_time", "speaker_id",
+                                        "diarization_type", "overlap_s")),
             "active_speaker_frames": (ACTIVE_SPEAKER_FRAMES_SCHEMA,
                                       ("timestamp", "is_active_speaker", "face_status",
                                        "frame_reason", "track_id")),
@@ -3301,7 +3158,7 @@ class TestCoverageInventory:
         """Every registered normalised table in, one entry out, one of the four words each.
 
         The count is taken from the registry rather than typed, because the claim is "every
-        normalised table appears", not "25 appear today"; the pinned number only notices that
+        normalised table appears", not "22 appear today"; the pinned number only notices that
         the registry's shape changed. The state vocabulary is asserted as a closed set so a
         fifth state cannot be introduced without being named.
         """
@@ -3310,7 +3167,7 @@ class TestCoverageInventory:
         parquet = {name for name, relative in ARTIFACT_LAYOUT.items()
                    if relative.endswith(".parquet")}
         assert set(inventory) == parquet
-        assert len(inventory) == 25, "the registry's normalised-table count changed shape"
+        assert len(inventory) == 22, "the registry's normalised-table count changed shape"
         assert {entry["state"] for entry in inventory.values()} <= set(elan_core.COVERAGE_STATES)
 
     def test_the_inventory_is_a_json_property_that_survives_the_round_trip(
@@ -3595,7 +3452,7 @@ class TestCoverageInventory:
         for root in corpus_datasets():
             eaf, _report = build_eaf(root, corpus_video(root), log=lambda *a, **k: None)
             inventory = coverage_map(eaf)
-            assert len(inventory) == 25, root.name
+            assert len(inventory) == 22, root.name
             for name in UNREAD_TABLES:
                 on_disk = (root / ARTIFACT_LAYOUT[name]).is_file()
                 expected = (elan_core.COVERAGE_PRESENT_NOT_EXPORTED if on_disk
@@ -3626,9 +3483,14 @@ class TestCoverageInventory:
             absent_by_root[root.name] = {n for n, state in recomputed.items()
                                          if state == elan_core.COVERAGE_ABSENT}
         assert seen == set(elan_core.COVERAGE_STATES), seen
-        assert {name: missing for name, missing in absent_by_root.items() if missing} == {
-            "person_demo": {"storytelling_events", "stories", "uncertain_spans"},
-            "pipeline_silent": {"storytelling_events", "stories", "uncertain_spans"},
+        # A dataset produced before the stories v2 split holds `stories.parquet` but neither
+        # table v2 added; the operator regenerates the corpus, and until then that gap — and
+        # only that gap — is the truth. Any other absence is still a lost producer.
+        v2_only = {"storytelling_events", "uncertain_spans"}
+        speechless = {"storytelling_events", "stories", "uncertain_spans"}
+        assert {name: missing for name, missing in absent_by_root.items()
+                if missing and missing != v2_only} == {
+            "person_demo": speechless, "pipeline_silent": speechless,
         }, "which datasets lack a table changed; re-measure the README's counts"
 
 
@@ -4141,3 +4003,65 @@ class TestDropCountsReachTheRecord:
             assert report["dropped"], root.name
             checked += 1
         assert checked, "no corpus datasets on this disk; the loop proved nothing"
+
+
+class TestAStaleTierIsNotPublished:
+    """The export may not quote a speaker the transcript no longer has.
+
+    Reproduced on a ``La-1`` corpus copy after ``speaker_assignment`` relabelled the transcript
+    from the Nemotron timeline: the new .eaf showed ``speaker_0``/``speaker_1`` on
+    ``segments_src`` and pyannote's ``SPEAKER_00`` on ``gloss_en``, in the same document, about
+    the same segments. The staleness rule is the manifest's (``staleness.speaker_staleness``);
+    this is the export applying it instead of publishing the disagreement.
+    """
+
+    def _dataset(self, tmp_path: Path, *, translated_speaker: str) -> tuple[Path, Path]:
+        root = tmp_path / "processed" / "clip"
+        video = tmp_path / "input_videos" / "clip.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"stub")
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet",
+               [_word("hola", 0.0, 0.4, speaker_id="speaker_0")])
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet",
+               [_segment("seg1", 0.0, 0.4, "hola", speaker_id="speaker_0")])
+        _write(TRANSLATION_SCHEMA, root / "translation" / "segments_en.parquet",
+               [_translation("seg1", 0.0, 0.4, "hello", speaker_id=translated_speaker)])
+        return root, video
+
+    def test_a_stale_translation_loses_its_tier(self, tmp_path: Path) -> None:
+        root, video = self._dataset(tmp_path, translated_speaker="SPEAKER_00")
+        lines: list[str] = []
+        eaf, report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert "gloss_en" not in tiers_of(eaf)
+        assert "segments_src" in tiers_of(eaf)
+        # The reason travels with the run and with the document.
+        assert any("tier gloss_en skipped (stale:" in line for line in lines)
+        assert "translation_segments" in report["stale"]
+        coverage = json.loads(dict(eaf.properties)[elan_core.COVERAGE_PROPERTY])["artifacts"]
+        assert coverage["translation_segments"]["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+        assert coverage["translation_segments"]["reason"].startswith("stale:")
+
+    def test_no_bar_in_the_document_carries_the_old_speaker(self, tmp_path: Path) -> None:
+        """The whole point: the label a reader quotes cannot be the stale one."""
+        root, video = self._dataset(tmp_path, translated_speaker="SPEAKER_00")
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
+        written = [text for tier in tiers_of(eaf) for _start, _end, text in annotations(eaf, tier)]
+        assert written
+        assert not [text for text in written if "SPEAKER_00" in text]
+
+    def test_a_current_translation_keeps_its_tier(self, tmp_path: Path) -> None:
+        root, video = self._dataset(tmp_path, translated_speaker="speaker_0")
+        eaf, report = build_eaf(root, video, log=lambda *a, **k: None)
+        assert "gloss_en" in tiers_of(eaf)
+        assert report["stale"] == {}
+
+    def test_the_stale_table_is_left_on_disk(self, tmp_path: Path) -> None:
+        """Skipping a tier must never delete the work; re-running its stage reinstates it."""
+        root, video = self._dataset(tmp_path, translated_speaker="SPEAKER_00")
+        build_eaf(root, video, log=lambda *a, **k: None)
+        assert (root / ARTIFACT_LAYOUT["translation_segments"]).is_file()
+        # And the reinstated table gets its tier back on the next export.
+        _write(TRANSLATION_SCHEMA, root / "translation" / "segments_en.parquet",
+               [_translation("seg1", 0.0, 0.4, "hello", speaker_id="speaker_0")])
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
+        assert "gloss_en" in tiers_of(eaf)

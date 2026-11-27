@@ -28,16 +28,15 @@ from ..artifacts import ArtifactRegistry, VideoPaths
 from ..config import PipelineConfig, stable_hash
 from ..discovery import VideoSource
 from ..exceptions import StageError, ValidationError
-from ..state import STATUS_COMPLETED, VideoState
+from ..state import STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED, VideoState
 
 # Execution order for one video. Also the DAG's topological order.
 STAGE_ORDER: tuple[str, ...] = (
     "metadata",
     "audio",
     "whisperx",
-    "diarization",
-    # Second diarization engine. Adjacent to the first for readability only: the DAG does
-    # not order these two against each other (see STAGE_DEPENDENCIES).
+    # The only diarizer. Sits beside `whisperx` because both read the extracted audio and
+    # `speaker_assignment` joins them; the DAG does not order them against each other.
     "diarization_nemotron",
     "speaker_assignment",
     "translation",
@@ -52,9 +51,6 @@ STAGE_ORDER: tuple[str, ...] = (
     # Third visual signal, placed with the other video readers rather than after the audio
     # branch: it reads the source video and the frame index, nothing else.
     "persons",
-    # Audio/visual agreement. Last of the media stages because it consumes the diarizers'
-    # turn tables *and* the ASD frames table.
-    "speaker_fusion",
     # Narrative windows over the finished transcript. Placed here — after every producer it
     # reads and immediately before `finalization` — because it is a consumer of the
     # labelled transcript and nothing downstream reads its table. Its dependency is
@@ -75,21 +71,18 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "metadata": (),
     "audio": ("metadata",),
     "whisperx": ("audio",),
-    "diarization": ("audio",),
-    # Deliberately independent of `diarization`: the point of a second engine is that
-    # either one can be off and the other still produces a dataset. Depending on it would
-    # also let a pyannote failure (gated-model consent, expired token) cost the very
-    # comparison the operator asked for.
+    # Deliberately independent of `speaker_assignment`: a diarization failure must not cost
+    # the transcript labels of a stage that reads the same audio, and either side can be off
+    # in a dataset whose subject is the other one.
     "diarization_nemotron": ("audio",),
-    "speaker_assignment": ("whisperx", "diarization"),
+    "speaker_assignment": ("whisperx", "diarization_nemotron"),
     "translation": ("speaker_assignment",),
     # `speaker_assignment` only, which is exactly what it reads: `speech/segments.parquet`
-    # with the speaker labels applied, plus `speech/speaker_turns.parquet` rendered beside
+    # with the speaker labels applied, plus `speech/speaker_turns_nemotron.parquet` rendered beside
     # the transcript as speaker context. Depending on `translation` would make an
     # unconfigured or failing translation endpoint cost the story detection — the two
     # stages share an HTTP endpoint, not a table, and a Spanish clip with no English gloss
-    # still has stories in it. Depending on `speaker_fusion` would tie a narrative reading
-    # to TalkNet having run, and a diarization-free corpus would lose the stories it has.
+    # still has stories in it.
     "stories": ("speaker_assignment",),
     "spacy_source": ("speaker_assignment",),
     "spacy_english": ("translation",),
@@ -113,12 +106,6 @@ STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # independent signal. It deliberately does not depend on `activespeaker` either: a
     # TalkNet failure is about *faces*, and the person table is the evidence that survives one.
     "persons": ("metadata",),
-    # Depends on all three producers whose tables it reads, and on nothing else. Depending
-    # on `diarization` alone would let a pyannote failure poison the Nemotron fusion, and
-    # depending on `speaker_assignment` would tie a visual verdict to transcript bookkeeping
-    # it never reads. Either diarizer can be off: the stage fuses what exists and skips the
-    # engine whose table is absent (see SpeakerFusionStage.enabled).
-    "speaker_fusion": ("diarization", "diarization_nemotron", "activespeaker"),
     # Depends on every stage that precedes it, and — explicitly — on none that follow.
     #
     # `elan` is excluded from that comprehension, and the reason is a cycle rather than a
@@ -173,6 +160,51 @@ class StageContext:
     @property
     def video_id(self) -> str:
         return self.source.video_id
+
+
+#: The two tables a transcript is. Both are rewritten in place by `speaker_assignment`,
+#: so a consumer's gate is about whether the words arrived, not about which stage wrote
+#: them last.
+TRANSCRIPT_ARTIFACTS: tuple[str, ...] = ("speech_segments", "speech_words")
+
+#: Prefix every "there is nothing to read" skip reason carries. The batch report and the
+#: CLI summary quote these verbatim, so an operator can tell a prerequisite skip from a
+#: stage that decided it had no work.
+UPSTREAM_SKIPPED = "upstream skipped"
+
+
+def transcript_skip_reason(ctx: StageContext,
+                           required: Sequence[str] = TRANSCRIPT_ARTIFACTS) -> str | None:
+    """Why a transcript consumer cannot run, or ``None`` when the transcript is there.
+
+    Every stage that reads ``speech/segments.parquet`` used to find out by raising
+    ``StageError`` from ``ctx.input()`` deep inside ``execute()``. With the WhisperX
+    environment missing, ``whisperx`` skipped correctly and then ``translation`` and
+    ``spacy_source`` *failed* on the absent table -- and a failure is not a skip: the batch
+    exited 2 and ``validate`` reported two broken stages over an install state the pipeline
+    had already named. The same shape as a missing uv project: an absent prerequisite is a
+    skip with a reason, and only a present-but-broken one is a failure.
+
+    Decided from the files, matching ``elan`` and ``pose_normalized``: a dataset whose
+    transcript was deleted is described accurately rather than excused by a flag. The
+    upstream stage's own reason is quoted when there is one, because "whisperx was skipped
+    for a missing environment" is the sentence that tells an operator what to install.
+
+    ``required`` names the tables this caller actually reads, so a stage is never excused by
+    a file it does not open: ``stories`` and ``translation`` read ``speech_segments`` alone
+    and must still report an *empty* transcript as their own reason rather than claiming the
+    words table is missing.
+    """
+    absent_names = [name for name in required if not ctx.artifact(name).is_file()]
+    if not absent_names:
+        return None
+    absent = ", ".join(absent_names)
+    upstream = ctx.state.stage("whisperx")
+    recorded = (upstream.validation_result or {}).get("reason")
+    if upstream.status in {STATUS_SKIPPED, STATUS_FAILED}:
+        return (f"{UPSTREAM_SKIPPED}: transcript unavailable "
+                f"(whisperx {upstream.status}: {recorded or 'no reason recorded'})")
+    return f"{UPSTREAM_SKIPPED}: transcript unavailable ({absent} missing)"
 
 
 @dataclass
@@ -512,6 +544,35 @@ class WorkerStage(Stage):
 
     def worker_script(self, ctx: StageContext) -> Path:
         raise NotImplementedError
+
+    def enabled(self, ctx: StageContext) -> tuple[bool, str]:
+        """Skip, never fail, when this stage's isolated environment is not installed.
+
+        Every stage ships enabled, so the default run of this pipeline on a machine that has
+        only some of the ``environments/*`` projects has to complete: a missing project is an
+        *install state*, not a defect in the data, and letting it through would raise
+        ``WorkerError`` from :func:`~multimodal_pipeline.uv_worker.run_worker` and mark the
+        video failed over a directory nobody created yet. The reason names the directory and
+        the remedy, because a stage that dies with "uv project not found" and no next step is
+        the number-one setup failure class in this repository.
+
+        A *present but broken* environment is deliberately not screened here: the stage runs
+        and fails loudly, because at that point silence would hide a real defect. Same
+        three-state discipline as ``diarization_nemotron`` and ``persons``, which add their own
+        gates (a checkpoint) on top of this one.
+        """
+        project = self.uv_project(ctx)
+        if not project.is_dir():
+            python = self.python_version(ctx)
+            sync = f"uv sync --python {python}" if python else "uv sync"
+            return False, (
+                f"{self.name} environment not installed at {project} — create it and run "
+                f"`{sync}` there to enable this stage"
+            )
+        worker = self.worker_script(ctx)
+        if not worker.is_file():
+            return False, f"{self.name} worker script missing at {worker}"
+        return True, ""
 
     def python_version(self, ctx: StageContext) -> str | None:
         return None

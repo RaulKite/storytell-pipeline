@@ -8,10 +8,10 @@ requires-python = ">=3.12,<3.13"
 # Resolved on 2026-09-25 against this machine (RTX 4090, driver 555.42.06 = CUDA 12.5).
 #
 # WHY THIS ENVIRONMENT EXISTS AT ALL
-# The model is a second, parallel diarizer next to pyannote, so the operator can compare
-# two engines on the same corpus. It shares nothing with environments/diarization: that
-# one is pinned to pyannote.audio 4.0.7, and adding a second, much larger dependency
-# graph to it would make every pyannote upgrade a two-model upgrade.
+# This is the pipeline's only diarizer, and it needs a dependency graph nothing else here
+# can carry: an unreleased transformers architecture plus its own torch/CUDA resolution.
+# Putting it in the orchestrator or in another worker's project would make one pin decide
+# two tools' fate.
 #
 # WHY transformers-from-git AND NOT THE BLOG'S nemo-toolkit
 # The NVIDIA blog shows `pip install "nemo-toolkit[asr]>=0.14.0"` and

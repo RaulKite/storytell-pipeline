@@ -47,8 +47,7 @@ The same applies independently to the `stories` section.
 | `input`, `output` | Directory, recursive discovery and accepted extensions; dataset root |
 | `execution` | Sequential mode, GPU index, stop-on-video-error policy |
 | `whisperx` | Model, language, device, compute type, batching and VAD |
-| `diarization` | pyannote pipeline, speaker constraints, exclusive alignment preference |
-| `diarization_nemotron` | Optional second engine, threshold and up to eight speaker channels |
+| `diarization_nemotron` | Speaker diarization: model, threshold, up to eight channels |
 | `translation`, `stories` | Independent endpoint/model, prompt version, retries, context and cache. `stories` also chooses `speaker_source` (nemotron/none) and its coverage thresholds; `max_segments_per_request: null` sends the whole transcript. A `stories` cache entry is keyed by the rendered prompt plus the posted request body, so `extra_body` and every prompt change invalidate it. `stories.repair_max_answer_chars` (default 20000) bounds the rejected answer resent inside a repair: above it the answer is omitted and only the validator's problems are sent, and a repair the endpoint still refuses as too large (HTTP 400/413) is resent as the plain question and counted as `repair_fallbacks` in `stories_summary.json` |
 | `spacy` | Source/English models, fallback and language-reliability policy |
 | `acoustic` | Frame step, pitch range, formant ceiling, pause policy and chunk size |
@@ -56,9 +55,26 @@ The same applies independently to the `stories` section.
 | `pose_normalized` | Origin and basis keypoints; changing them changes coordinates |
 | `activespeaker` | TalkNet checkout/weights, device, threshold, smoothing and switch hysteresis |
 | `persons` | Model/weights, tracker, confidence, classes and input image size |
-| `speaker_fusion` | Selected engines, minimum face frames and active ratio |
 | `elan` | Enable/disable derived annotation export |
 | `logging` | Level, console output and progress refresh interval |
+
+`diarization_nemotron.enabled: false` means "do not load the model", not "erase the
+labels". A `speech/speaker_turns_nemotron.parquet` already in the dataset is still used by
+`speaker_assignment`; with no such table the transcript's `speaker_id` is cleared to null
+with `speaker_assignment_method: no_diarization`, so a dataset never keeps a label no
+current diarizer produced. Reversible alternative if a label-free transcript beside a
+populated turn table is ever wanted: a separate switch, rather than overloading `enabled`.
+
+`diarization_nemotron.fallback_to_cpu` has two readings and they are not the same knob.
+With the default `true` the worker degrades `cuda` → `cpu` and records why in its raw
+document and log; with `false` a machine that cannot see a GPU fails loudly instead of
+producing a result that took ten times longer and nobody noticed. Prefer the silent
+fallback only where a slow result is still a useful one.
+
+Every stage's `enabled` defaults to `true`, and so does every tool switch inside a stage
+(`openpose.body/hands/face.enabled`, `spacy.process_source`, `spacy.process_english`).
+Switching one off is a supported way to say "never measure this"; leaving it on with the
+prerequisite absent is not an error — the stage skips with a reason naming what to install.
 
 OpenPose renderings are opt-in: `openpose.write_images: true` adds files under
 `pose/raw_images/`. Set `openpose.image_max_side` to bound their size. Changing
@@ -90,9 +106,10 @@ none of those capabilities. Installing/removing models invalidates linguistic re
 
 ## Secrets and external requests
 
-Use [`.env.example`](../.env.example) for the variable names. pyannote reads the
-variable named by `diarization.hf_token_env` (normally `HF_TOKEN`). API keys belong
-in `.env` and YAML interpolation, not committed literals.
+Use [`.env.example`](../.env.example) for the variable names. The diarizer reads the
+variable named by `diarization_nemotron.hf_token_env` (normally `HF_TOKEN`), which is a
+rate-limit convenience: the checkpoint is not gated, so a missing token skips nothing. API
+keys belong in `.env` and YAML interpolation, not committed literals.
 
 Credential-like fields are masked as `***masked***` in pipeline bookkeeping.
 That is not a guarantee that every artifact is safe to publish: raw responses,
@@ -107,12 +124,18 @@ responses; retained responses and cache keys are the reproducibility evidence.
 
 | Symptom | Check / remedy |
 |---|---|
-| Missing `HF_TOKEN` | Add the credential and accept pyannote model terms; diarization otherwise skips |
+| Missing `HF_TOKEN` | Nothing is disabled: the Nemotron checkpoint is not gated and downloads anonymously, only slower |
+| Config still has `diarization:` or `speaker_fusion:` | Those sections were removed; delete them. Nemotron (`diarization_nemotron:`) is the only diarizer |
 | Endpoint not configured | Replace the placeholder in that stage's YAML; supply key/model, use mock or disable |
 | `uv project not found` | Restore/correct the configured project directory, then sync it; sync cannot create a missing project definition |
-| `libnvrtc.so.13` | Check the diarization torchcodec pin and re-sync; see environment comments |
-| OpenPose binary not found | Fix `openpose.root` or executable/model paths; inspect the environment report |
-| TalkNet root missing / no `run_talknet.py` | Point at a valid TalkNet-ASD checkout |
+| `libnvrtc.so.13` | Check the `diarization_nemotron` torch pin and re-sync; see the environment's comments |
+| Stage skipped: `… environment not installed at …` | Create that `environments/<name>` project and `uv sync` it; `inspect-environment` lists every missing one before a run |
+| Stage skipped: OpenPose not installed | Fix `openpose.root` or executable/model paths, or switch `openpose.enabled` off; inspect the environment report |
+| Stage failed: OpenPose binary found but not executable | A path that exists but cannot run is a defect, not an install state: restore its execute bit, or fix the directory that sits where the binary or `models/` belongs |
+| Stage skipped: `upstream skipped: transcript unavailable` | WhisperX did not produce a transcript, so nothing that reads one can run; the reason quotes whisperx's own cause |
+| A derived table reported as stale | Its speaker labels no longer match the transcript (translation, the spaCy tables, `acoustic_segments`); re-run the stage that wrote it, which reinstates it in the manifest and the `.eaf` |
+| Stage skipped: TalkNet root missing / no `run_talknet.py` | Point `activespeaker.talknet_root` at a valid TalkNet-ASD checkout |
+| Stage skipped: `weights_dir` is set but a checkpoint is missing | Put the file there, or unset `weights_dir` and let the tool download it |
 | TalkNet `weights_only` / unpickling error | Preserve the torch 2.5.1 compatibility pin and re-sync its environment |
 | Stage reruns unexpectedly | Read `status --plan`; compare config/tool/source hashes, upstream sequence and validation |
 | Empty pose/person table | Inspect raw output and stage status; no detection can be a valid result, not proof nobody was present |

@@ -17,8 +17,10 @@ Commands use repository-relative paths: run them from the repository root.
 
 ## Tier inventory
 
-There are up to **15 fixed, flat tiers**, with no parent/child hierarchy. A missing
-input skips its tier with a reason; an existing empty input can yield an empty tier.
+There are up to **12 fixed, flat tiers**, with no parent/child hierarchy. A missing
+input skips its tier with a reason, and so does a *stale* one — a table whose speaker
+labels no longer match the transcript (see [datasets](datasets.md)); the export never
+quotes two speakers for one segment. An existing empty input can yield an empty tier.
 The stage needs transcript words or segments; absence of both skips the stage with
 a reason. If those inputs disappear after enablement, execution can fail.
 
@@ -27,10 +29,7 @@ a reason. If those inputs disappear after enablement, execution can fail.
 | `words` | Words with word ID, segment ID and assigned speaker |
 | `segments_src` | Source transcript segments |
 | `gloss_en` | English segment translation — **not a word gloss** |
-| `turns_pyannote` | pyannote speaker turns |
-| `turns_nemotron` | Nemotron turns, with independent speaker IDs |
-| `fusion_pyannote` | pyannote turn × face agreement and arithmetic |
-| `fusion_nemotron` | Nemotron turn × face agreement and arithmetic |
+| `turns_nemotron` | Nemotron speaker turns, labelled with their own speaker IDs |
 | `asd_speaking` | Selected-face activity runs; not a verdict about all audio |
 | `face_tracks` | TalkNet face-track summaries; scores are not probabilities |
 | `person_tracks` | Sighting runs proven by detections and source-frame adjacency |
@@ -82,8 +81,9 @@ The export embeds self-description properties:
 | `pipeline-coverage` | Table treatment: exported, summarised, present-not-exported or absent |
 | `pipeline-overlap-projection` | Original logical intervals/labels and their mapping to projected bars |
 
-Coverage is not accuracy or complete information preservation. Bars, logical rows
-and input-table rows can have different counts. `validate` checks XML time slots,
+A stale table reads `present, not exported` with the staleness as its reason, and
+`validate` names it under `coverage_not_exported`. Coverage is not accuracy or complete
+information preservation. Bars, logical rows and input-table rows can have different counts. `validate` checks XML time slots,
 positive intervals, same-tier nonoverlap, media links and coverage consistency;
 valid XML alone is not enough.
 

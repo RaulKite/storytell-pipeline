@@ -51,11 +51,10 @@ LONG_VIDEO_ID = "2017-12-30_1930_US_CNN_Global_Warning_Arctic_Melt_1237_273_1241
 #: ``STAGE_ORDER`` below rather than named, because the count moves when a stage lands.
 SOME_STAGES_DISABLED = {
     "whisperx": False,
-    "diarization": False,
+    "diarization_nemotron": False,
     "translation": False,
     "acoustic": False,
     "openpose": False,
-    "speaker_fusion": False,
 }
 
 

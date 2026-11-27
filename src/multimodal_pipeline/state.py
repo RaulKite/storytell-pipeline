@@ -114,6 +114,12 @@ class VideoState:
         self.source_path = source_path
         self.stages: dict[str, StageRecord] = {}
         self.stage_order: list[str] = []
+        #: The stages the running pipeline still has, in order. ``stage_order`` also
+        #: carries records of stages that were removed (`diarization`, `speaker_fusion`),
+        #: because a reader comparing an old tree to a new one needs that history -- but a
+        #: retired record is history, not a result, so it must not decide the video's
+        #: status. Kept apart from ``stage_order`` for exactly that reason.
+        self.current_stages: list[str] = []
         self.created_at: str | None = None
         self.updated_at: str | None = None
         #: Highest stage-execution sequence recorded so far for this video.
@@ -133,6 +139,7 @@ class VideoState:
             for name, record in (payload.get("stages") or {}).items():
                 state.stages[name] = StageRecord.from_dict(name, record or {})
             state.stage_order = list(payload.get("stage_order") or state.stages.keys())
+            state.current_stages = list(payload.get("current_stage_order") or [])
         # Resume-safe: never restart the counter below a sequence already recorded.
         state.sequence = max([state.sequence] + [record.run_sequence or 0 for record in state.stages.values()])
         return state
@@ -145,7 +152,10 @@ class VideoState:
     def bind_stages(self, order: Iterable[str]) -> None:
         """Declare the canonical stage list, preserving any recorded history."""
         order = list(order)
-        self.stage_order = order
+        # Two separate lists, not an alias: history is appended to ``stage_order`` below and
+        # a shared list would silently make every retired name a current stage again.
+        self.current_stages = list(order)
+        self.stage_order = list(order)
         for name in order:
             self.stages.setdefault(name, StageRecord(name=name))
         # Keep history for stages that vanished from the pipeline definition.
@@ -159,6 +169,23 @@ class VideoState:
         if name not in self.stages:
             self.stages[name] = StageRecord(name=name)
         return self.stages[name]
+
+    def current_stage_names(self) -> list[str]:
+        """The stages whose status is this video's result.
+
+        Falls back to the recorded ``stage_order`` for a ``status.json`` written before
+        ``current_stage_order`` existed, and keeps only names the pipeline still has. The
+        import is local because ``stages.base`` imports this module at import time; a
+        module-level import here would close that cycle.
+        """
+        if self.current_stages:
+            return list(self.current_stages)
+        from .stages.base import STAGE_ORDER
+
+        known = [name for name in self.stage_order if name in STAGE_ORDER]
+        # A file from a pipeline whose stage names are all unknown is described by what it
+        # recorded rather than reported as empty.
+        return known or list(self.stage_order)
 
     def status_of(self, name: str) -> str:
         return self.stage(name).status
@@ -175,7 +202,8 @@ class VideoState:
         someone can consume, it is a failure. Reporting it as partial would hide a
         broken file in a folder full of ``partial`` entries.
         """
-        statuses = [self.stage(name).status for name in self.stage_order if name in self.stages]
+        statuses = [self.stage(name).status for name in self.current_stage_names()
+                    if name in self.stages]
         if not statuses:
             return STATUS_PENDING
         if STATUS_RUNNING in statuses:
@@ -282,12 +310,13 @@ class VideoState:
     # --------------------------------------------------------------- summary
 
     def summary(self) -> dict[str, Any]:
+        current = self.current_stage_names()
         return {
             "video_id": self.video_id,
             "status": self.overall_status,
             "stages": {name: self.stage(name).status for name in self.stage_order},
             "failed_stages": [
-                name for name in self.stage_order if self.stage(name).status == STATUS_FAILED
+                name for name in current if self.stage(name).status == STATUS_FAILED
             ],
             "duration_seconds": round(
                 sum(self.stage(n).duration_seconds or 0.0 for n in self.stage_order), 3
@@ -305,6 +334,9 @@ class VideoState:
             "updated_at": utc_now(),
             "overall_status": self.overall_status,
             "sequence": self.sequence,
+            # Every record, retired ones included: the file is the history. Which of them
+            # are this pipeline's results is `current_stage_order`.
+            "current_stage_order": self.current_stage_names(),
             "stage_order": self.stage_order,
             "stages": {name: self.stages[name].to_dict() for name in self.stage_order if name in self.stages},
         }

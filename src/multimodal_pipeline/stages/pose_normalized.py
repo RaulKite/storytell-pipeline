@@ -8,7 +8,7 @@ the slowest stage in the pipeline).
 Why it is a *new table*: ``pose/body.parquet`` carries pixels, and pixels are the
 measured quantity. Every dataset already produced joins on them, so re-expressing them
 in place would silently redefine the corpus — the same reasoning that keeps
-``speaker_fusion`` out of ``speaker_turns``. The normalised table is a derived
+``speaker_assignment`` from rewriting the diarization turns it reads. The normalised table is a derived
 interpretation, and the pipeline's rule is that raw survives so a later decision can be
 recomputed without re-running the tool.
 
@@ -207,9 +207,8 @@ class PoseNormalizedStage(Stage):
     def _foreign_frame_outputs(self, ctx: StageContext) -> dict[str, str]:
         """Declared outputs whose recorded frame is not the frame the config asks for.
 
-        This is *positive* evidence in the sense ``speaker_fusion`` uses for a
-        deselection: the file states one basis triple and the configuration states
-        another. The absence of an input is not such evidence and never appears here.
+        This is *positive* evidence, not an absence: the file states one basis triple
+        and the configuration states another. The absence of an input is not such evidence and never appears here.
         """
         wanted = self.wanted_frame(ctx)
         found: dict[str, str] = {}
@@ -256,7 +255,7 @@ class PoseNormalizedStage(Stage):
         the mismatch is a report, not a fix.
 
         The gate is the config flag, not the wording of the skip reason, for the reason
-        ``speaker_fusion`` records: ``pose_normalized.enabled: false`` is the operator
+        recorded at :meth:`_clear_foreign_outputs`: ``pose_normalized.enabled: false`` is the operator
         pausing this stage over a table they still want, and coupling deletion to a reason
         string would let a reworded ``enabled()`` message decide whose files get deleted.
         """
@@ -321,8 +320,8 @@ class PoseNormalizedStage(Stage):
         neighbouring stage's artifact, and only files that exist are touched.
 
         ``evidence`` is the caller's proof, per artifact. It is required rather than
-        inferred from "this run wrote nothing", which is the trap ``speaker_fusion``
-        records: an absent input is the absence of evidence, not evidence of staleness, and
+        inferred from "this run wrote nothing": an absent input is the absence of
+        evidence, not evidence of staleness, and
         deleting on it would turn a half-built dataset into lost work. Here the only
         accepted proof is a file that states a basis frame different from the one the
         configuration asks for.

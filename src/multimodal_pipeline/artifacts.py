@@ -20,16 +20,12 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "audio": "audio/audio.wav",
     "frame_index": "source/frame_index.parquet",
     "whisperx_raw": "speech/raw/whisperx.json",
-    "diarization_raw": "speech/raw/diarization.json",
-    "diarization_rttm": "speech/raw/diarization.rttm",
-    "exclusive_diarization_raw": "speech/raw/exclusive_diarization.json",
     "speech_segments": "speech/segments.parquet",
     "speech_words": "speech/words.parquet",
-    "speaker_turns": "speech/speaker_turns.parquet",
-    # Second-engine diarization. Separate raw file and separate table on purpose:
-    # `speaker_turns` keeps meaning "pyannote only", so every dataset produced before this
-    # stage existed keeps its meaning, and a reviewer comparing engines is comparing two
-    # files rather than one file with a mode column.
+    # Nemotron's own diarization: the raw worker document and the turn table the transcript
+    # is labelled from. The artifact name keeps the `_nemotron` suffix every dataset already
+    # produced has; renaming it would make a re-run of an old output directory write a
+    # second, empty table beside the populated one.
     "nemotron_diarization_raw": "speech/raw/nemotron_diarization.json",
     "speaker_turns_nemotron": "speech/speaker_turns_nemotron.parquet",
     "translation_raw": "translation/raw",
@@ -72,12 +68,6 @@ ARTIFACT_LAYOUT: dict[str, str] = {
     "activespeaker_scenes_csv": "speaker/raw/scenes.csv",
     "active_speaker_frames": "speaker/active_speaker_frames.parquet",
     "active_speaker_tracks": "speaker/active_speaker_tracks.parquet",
-    # Audio/visual agreement: diarization turns x the ASD frames table. One file per
-    # selected engine, so the two speaker-id namespaces stay in two files and a consumer
-    # cannot accidentally join them. Declared always, written only for selected engines --
-    # the manifest already reports unproduced artifacts as `artifacts_not_generated`.
-    "speaker_fusion_pyannote": "speaker/fusion_pyannote.parquet",
-    "speaker_fusion_nemotron": "speaker/fusion_nemotron.parquet",
     # The ELAN export. A derived export artifact rather than a measurement table: it is built
     # from the files above and rewrites nothing, so it is opt-out via `elan.enabled` and a
     # dataset without it is complete in every other sense.
@@ -101,7 +91,6 @@ STAGE_LOG_NAMES = (
     "metadata",
     "audio",
     "whisperx",
-    "diarization",
     "diarization_nemotron",
     "speaker_assignment",
     "translation",
@@ -110,13 +99,12 @@ STAGE_LOG_NAMES = (
     "acoustic",
     "openpose",
     # Reads pose/body.parquet only, so it sits with the pose stage rather than with the
-    # speaker stages even though it is a derived table like speaker_fusion.
+    # speaker stages even though it is a derived table.
     "pose_normalized",
     "activespeaker",
     # Own log like every stage: it runs its own worker and its failure needs a file to point
     # at, even though it reads the video rather than the audio or the speaker tables.
     "persons",
-    "speaker_fusion",
     # Own log like every stage. It runs no worker (one HTTP call per window), but its skip
     # reasons and its per-window drop counts need a file to point at.
     "stories",

@@ -1,7 +1,7 @@
 """Audio extraction for the speech/acoustic stages.
 
 One canonical WAV is produced: 16 kHz mono PCM s16le. That single format is
-what WhisperX, Pyannote Community-1 and Parselmouth all expect, so timeline
+what WhisperX, the diarizer and Parselmouth all expect, so timeline
 synchronisation is guaranteed by construction instead of by three conversions.
 
 The native rate/channel layout is preserved (``audio_source_info``) for

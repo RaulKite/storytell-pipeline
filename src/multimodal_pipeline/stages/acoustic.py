@@ -24,7 +24,7 @@ from ..schemas import (
     ChunkedParquetWriter,
     read_table,
 )
-from .base import StageContext, WorkerStage
+from .base import StageContext, WorkerStage, transcript_skip_reason
 
 FRAMES_PER_GROUP = 250_000
 
@@ -76,6 +76,22 @@ class AcousticStage(WorkerStage):
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
         if not ctx.config.acoustic.enabled:
             return False, "acoustic.enabled = false"
+        # Praat lives in its own uv project, so a machine that never synced it gets a skip
+        # naming the directory instead of a failed video. Checked before the transcript, so
+        # the reason names the thing the operator has to install first.
+        enabled, reason = super().enabled(ctx)
+        if not enabled:
+            return enabled, reason
+        # The frame timeline needs only the audio, but this stage's own contract is both
+        # outputs: ``acoustic_segments`` is the transcript's segments with measurements
+        # joined on, and ``validate`` joins them against ``speech_segments``. With no
+        # transcript it raised from ``read_table`` inside ``normalize`` and failed the video,
+        # so it skips instead. Alternative considered: publish the frames table and skip the
+        # segment aggregate — rejected as a bigger change than this defect needs, and it would
+        # make one stage's outputs conditional on each other.
+        unavailable = transcript_skip_reason(ctx, required=("speech_segments",))
+        if unavailable:
+            return False, unavailable
         return True, ""
 
     def uv_project(self, ctx: StageContext) -> Path:

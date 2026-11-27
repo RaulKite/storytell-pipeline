@@ -11,17 +11,16 @@ clip has no person data". The dependency is on ``finalization`` alone for the co
 reason recorded in ``STAGE_DEPENDENCIES``: the manifest has to be able to declare this stage, so
 this stage cannot be upstream of the stage that writes the manifest.
 
-Why it defaults to **on** when ``persons`` and ``diarization_nemotron`` default to off: those two
-cost a torch environment and a checkpoint download a fresh clone never asked for. This one costs
-a pure-Python library and a few seconds over files already on disk. See
-:class:`~multimodal_pipeline.config.ElanConfig`.
+Why it defaults to **on** when ``persons`` defaults to off: that one costs a torch environment and
+a checkpoint download a fresh clone never asked for. This one costs a pure-Python library and a
+few seconds over files already on disk. See :class:`~multimodal_pipeline.config.ElanConfig`.
 
 The table-to-tier mapping lives in ``elan.py``, so the tier algebra can be driven against a
 synthetic dataset directory with no stage, no config and no output directory. This file is the
 reader, the writer, and the reuse guarantees around them:
 
 * per-tier absence is normal and logged, never an error — translation has no endpoint by
-  default, ``persons`` ships disabled, either diarizer may be off;
+  default, ``persons`` or OpenPose may not be installed, either diarizer may be off;
 * what the export represents and what it leaves out travels in the file and in this stage's
   record, because "that tier is missing" has two causes an opened ``.eaf`` cannot tell apart —
   see :func:`~multimodal_pipeline.elan.coverage_inventory`;
@@ -42,7 +41,7 @@ from ..elan import (ALL_INPUTS, COVERAGE_EXPORTED, COVERAGE_PRESENT_NOT_EXPORTED
                     OVERLAP_PROJECTION_PROPERTY, SECONDARY_INPUTS, TIERS, build_eaf, coverage_of,
                     drop_counts, overlap_projection, tier_counts)
 from ..exceptions import ValidationError
-from .base import Stage, StageContext
+from .base import UPSTREAM_SKIPPED, Stage, StageContext
 
 #: The artifacts whose joint absence makes the export pointless rather than partial. Every
 #: other input is optional; these two are the tiers everyone opens the file for.
@@ -80,7 +79,7 @@ class ElanStage(Stage):
         ``config_hash`` still matched. An absent input is recorded as ``None`` rather than
         dropped from the payload, so a table that appears later changes the fingerprint — a key
         that vanished would hash the same as some other combination of missing inputs.
-        ``speaker_fusion`` and ``pose_normalized`` make the same argument for their inputs; this
+        ``speaker_assignment`` and ``pose_normalized`` make the same argument for their inputs; this
         stage simply has more of them.
 
         ``inventory_present`` is here because the coverage inventory makes the document a function
@@ -161,9 +160,12 @@ class ElanStage(Stage):
             return False, "elan.enabled = false"
         if any(ctx.artifact(name).is_file() for name in TRANSCRIPT_ARTIFACTS):
             return True, ""
-        return False, ("no transcript to export: neither speech/words.parquet nor "
-                       "speech/segments.parquet exists in this dataset — run the whisperx "
-                       "stage first")
+        # The same prefix every other transcript consumer reports, so the batch report and
+        # the closing summary read as one statement about what did not arrive rather than as
+        # fourteen stages each inventing its own wording.
+        return False, (f"{UPSTREAM_SKIPPED}: transcript unavailable: neither "
+                       f"speech/words.parquet nor speech/segments.parquet exists in this "
+                       f"dataset — run the whisperx stage first")
 
     # ------------------------------------------------------------------ execution
 
@@ -232,6 +234,12 @@ class ElanStage(Stage):
             # tier dropped zero rows, so nothing here is currently answering a real question — the
             # counters exist for the day a producer starts writing null timestamps.
             "dropped_rows": drop_counts(report),
+            # Which tables were refused for being stale, and why, in the run log and this block
+            # only — the durable copy is the .eaf's own coverage property, where each entry reads
+            # `present, not exported` with this sentence as its reason and `validate` reports it
+            # as `coverage_not_exported`. Duplicating that into status.json would be a second
+            # copy of a claim the document already carries.
+            "stale_tables": dict(sorted((report or {}).get("stale", {}).items())),
             # Read back out of the document rather than recomputed here, exactly like the tier
             # counts and the projection: the record's coverage *is* the file's coverage, so the two
             # cannot disagree about whether `pose/face.parquet` is represented.
@@ -313,8 +321,8 @@ class ElanStage(Stage):
         is not a reusable result, and the rerun is a two-second, pure-python re-export of tables
         that have not changed. It does mean the corpus ``.eaf`` files still on disk report overlap
         until they are regenerated — measured, four of the seven on this machine (KABC, CNN,
-        La-1 and ``person_demo``, in ``person_tracks``/``turns_nemotron``/``fusion_nemotron``/
-        ``face_tracks``; the three ``pipeline_*`` clips are clean).
+        La-1 and ``person_demo``, in ``person_tracks``/``turns_nemotron``/``face_tracks``;
+        the three ``pipeline_*`` clips are clean).
         """
         path = ctx.artifact("elan_annotations")
         if not path.is_file():

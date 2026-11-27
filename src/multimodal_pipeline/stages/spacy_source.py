@@ -28,7 +28,7 @@ import pyarrow as pa
 from ..artifacts import read_json
 from ..exceptions import StageError, ValidationError
 from ..schemas import SENTENCES_SCHEMA, TOKENS_SCHEMA, read_table, write_table
-from .base import StageContext, WorkerStage
+from .base import StageContext, WorkerStage, transcript_skip_reason
 
 #: What a blank/lemma-only fallback pipeline can still provide.
 FALLBACK_CAPABILITIES = ("tokenization", "sentencizer")
@@ -207,6 +207,19 @@ class SpacySourceStage(WorkerStage):
         cfg = ctx.config.spacy
         if not cfg.enabled:
             return False, "spacy.enabled = false"
+        # A trained model is optional (the worker falls back to ``blank`` and says so); the
+        # environment is not, so its absence is a skip naming the project, never a failure.
+        # Checked first, because "install this" is the more actionable of two skip reasons.
+        enabled, reason = super().enabled(ctx)
+        if not enabled:
+            return enabled, reason
+        # Both tables this stage reads in the worker are transcript tables, so their absence
+        # is a skip with the upstream cause, never a failed video: without this the worker
+        # invocation raised on ``ctx.input("speech_segments")`` and the batch exited 2 over a
+        # WhisperX environment that was simply not installed.
+        unavailable = transcript_skip_reason(ctx)
+        if unavailable:
+            return False, unavailable
         return True, ""
 
     def uv_project(self, ctx: StageContext) -> Path:

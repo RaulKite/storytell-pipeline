@@ -10,11 +10,9 @@ import pytest
 
 from multimodal_pipeline.normalization import (
     BODY_25_NAME_LIST,
-    diarization_turn_rows,
     iterate_keypoints,
     openpose_frame_number,
     openpose_frame_rows,
-    parse_rttm,
     whisperx_segment_rows,
     whisperx_word_rows,
 )
@@ -124,46 +122,6 @@ class TestWhisperxWords:
         ]}
         ids = [r["word_id"] for r in whisperx_word_rows(payload, "v")]
         assert len(ids) == len(set(ids)) == 2
-
-
-class TestDiarizationTurns:
-    def test_rows_are_ordered_by_start(self) -> None:
-        payload = {"turns": [[5.0, 8.0, "B"], [0.0, 3.0, "A"]]}
-        rows = diarization_turn_rows(payload, "v")
-        assert [r["start_time"] for r in rows] == [0.0, 5.0]
-        assert rows[0]["turn_id"] == "turn000001"
-        assert rows[1]["duration"] == pytest.approx(3.0)
-        assert rows[0]["diarization_type"] == "inclusive"
-
-    def test_exclusive_timeline_is_labelled(self) -> None:
-        rows = diarization_turn_rows({"exclusive_turns": [[0.0, 1.0, "A"]]}, "v",
-                                     diarization_type="exclusive")
-        assert rows[0]["diarization_type"] == "exclusive"
-
-    def test_short_turn_rows_are_dropped(self) -> None:
-        assert diarization_turn_rows({"turns": [[0.0, 1.0]]}, "v") == []
-
-    def test_empty(self) -> None:
-        assert diarization_turn_rows({}, "v") == []
-
-
-class TestRttm:
-    def test_parses_speaker_lines(self) -> None:
-        text = (
-            "SPEAKER vid 1 0.500 3.200 <NA> <NA> SPEAKER_00 <NA> <NA>\n"
-            "SPEAKER vid 1 4.000 1.000 <NA> <NA> SPEAKER_01 <NA> <NA>\n"
-            "COMMENT whatever\n"
-        )
-        rows = parse_rttm(text)
-        assert len(rows) == 2
-        assert rows[0]["speaker_id"] == "SPEAKER_00"
-        assert rows[0]["start_time"] == pytest.approx(0.5)
-        assert rows[0]["end_time"] == pytest.approx(3.7)
-        assert rows[1]["duration"] == pytest.approx(1.0)
-
-    def test_garbage_is_skipped(self) -> None:
-        assert parse_rttm("") == []
-        assert parse_rttm("SPEAKER a b not_a_number 1.0 x y S1 z w") == []
 
 
 class TestKeypointIteration:
@@ -350,57 +308,3 @@ class TestOpenposeRealFrame:
 
 def person_score(frame: dict, person_index: int, key: str, point: int) -> float:
     return float(frame["people"][person_index][key][point * 3 + 2])
-
-
-class TestDiarizationValidationBindsToRequest:
-    """`validate` must accept the raw a run produced and reject one from another config.
-
-    It used to compare a request hash read out of the worker's own JSON, which never
-    contains one, so the comparison was None != <hash> and rejected every successful
-    diarization. That was invisible while the stage skipped for a missing HF token.
-    """
-
-    @staticmethod
-    def _seed(context, stage):
-        import json
-        import pyarrow as pa
-        from multimodal_pipeline.schemas import SPEAKER_TURNS_SCHEMA, write_table
-        from multimodal_pipeline.stages.base import stamp_raw
-
-        raw = context.artifact("diarization_raw")
-        raw.parent.mkdir(parents=True, exist_ok=True)
-        raw.write_text(json.dumps({
-            "video_id": context.video_id,
-            "pipeline_id": context.config.diarization.pipeline,
-            "turns": [[0.0, 1.0, "SPEAKER_00"]], "exclusive_turns": [], "rttm": "",
-        }), encoding="utf-8")
-        stamp_raw(raw, request=stage.request(context),
-                  digest=stage.request_digest(context), worker=None)
-        write_table(context.artifact("speaker_turns"),
-                    pa.Table.from_pylist(
-                        [{"schema_version": "1.0", "video_id": context.video_id,
-                          "turn_index": 0, "start_time": 0.0, "end_time": 1.0,
-                          "duration": 1.0, "speaker_id": "SPEAKER_00",
-                          "diarization_type": "inclusive", "confidence": None}],
-                        schema=SPEAKER_TURNS_SCHEMA),
-                    SPEAKER_TURNS_SCHEMA)
-        return raw
-
-    def test_matching_request_validates(self, context):
-        from multimodal_pipeline.stages.diarization import DiarizationStage
-
-        stage = DiarizationStage()
-        self._seed(context, stage)
-        assert stage.validate(context)["speakers"] == 1
-
-    def test_raw_from_a_different_config_is_rejected(self, context):
-        import pytest as _pt
-        from multimodal_pipeline.exceptions import ValidationError
-        from multimodal_pipeline.stages.diarization import DiarizationStage
-
-        stage = DiarizationStage()
-        self._seed(context, stage)
-        # Same raw file, different request: the sidecar must notice.
-        context.config.diarization.device = "cpu"
-        with _pt.raises(ValidationError, match="different configuration"):
-            stage.validate(context)

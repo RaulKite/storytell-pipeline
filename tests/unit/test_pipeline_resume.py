@@ -24,6 +24,14 @@ class FakeStage(Stage):
     executions: dict[str, int] = {}
     #: stage names whose execute() should raise
     fail_on: set[str] = set()
+    #: stage names whose *gate* (enabled) should raise, i.e. a present-but-broken install
+    raise_in_gate: set[str] = set()
+    #: stage names whose gate reports a configuration-level skip (a missing environment)
+    disabled_in_gate: set[str] = set()
+    #: when true, a stage whose declared input is absent reports the skip every transcript
+    #: consumer reports: "upstream skipped: ...". False by default so the fake DAG's many
+    #: intentionally-missing inputs do not turn every existing test into a skip.
+    gate_on_missing: bool = False
     #: optional extra config keys folded into the fingerprint
     extra_config: dict[str, Any] = {}
 
@@ -34,6 +42,20 @@ class FakeStage(Stage):
 
     def config_fingerprint(self, ctx: StageContext) -> dict[str, Any]:
         return {"stage": self.name, **type(self).extra_config.get(self.name, {})}
+
+    def enabled(self, ctx: StageContext) -> tuple[bool, str]:
+        from multimodal_pipeline.stages.base import UPSTREAM_SKIPPED
+
+        if self.name in type(self).raise_in_gate:
+            raise StageError(f"{self.name} is installed but unusable")
+        if self.name in type(self).disabled_in_gate:
+            return False, f"{self.name} environment not installed"
+        if type(self).gate_on_missing:
+            missing = [name for name in self.inputs if not ctx.artifact(name).is_file()]
+            if missing:
+                return False, (f"{UPSTREAM_SKIPPED}: input unavailable "
+                               f"({', '.join(missing)} missing)")
+        return True, ""
 
     def prepare(self, ctx: StageContext) -> None:
         for artifact_name in self.inputs:
@@ -91,6 +113,9 @@ ARTIFACT_OF = {
 def fake_dag(monkeypatch, tmp_path):
     FakeStage.executions = {}
     FakeStage.fail_on = set()
+    FakeStage.raise_in_gate = set()
+    FakeStage.disabled_in_gate = set()
+    FakeStage.gate_on_missing = False
     FakeStage.extra_config = {}
 
     stages = [FakeStage(name, deps) for name, deps in FAKE_DAG]
@@ -223,6 +248,88 @@ class TestFailurePropagation:
         FakeStage.fail_on = {"assign"}
         runner = runner_for(config, monkeypatch, Path(""))
         assert runner.run().status in {"partial", "failed"}
+
+
+class TestAGateThatRaises:
+    """A broken precondition is a stage failure, never the end of the run or the plan.
+
+    ``enabled()`` used to be called outside the runner's failure handling, so OpenPose
+    discovering a binary without its execute bit aborted the whole stage loop: ``run`` exited 2
+    with a traceback, the stage stayed ``pending``, and the independent stages after it never
+    ran although nothing they read was broken. ``status --plan`` exited 1 before planning the
+    videos after the broken one, so the plan could not be read to find the defect.
+    """
+
+    def test_the_stage_fails_and_the_independent_branch_still_runs(self, config, monkeypatch) -> None:
+        FakeStage.raise_in_gate = {"pose"}
+        runner = runner_for(config, monkeypatch, Path(""))
+        result = runner.run()
+        assert statuses(runner)["pose"] == STATUS_FAILED
+        # Its dependant is blocked...
+        assert statuses(runner)["report"] == STATUS_SKIPPED
+        # ...and the independent speech branch finished, in the same pass.
+        assert statuses(runner)["assign"] == STATUS_COMPLETED
+        assert FakeStage.executions.get("assign") == 1
+        assert result.status in {"partial", "failed"}
+
+    def test_the_failed_stage_never_stays_pending(self, config, monkeypatch) -> None:
+        FakeStage.raise_in_gate = {"pose"}
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        record = runner.state.stage("pose")
+        assert record.status == STATUS_FAILED
+        assert "installed but unusable" in record.error["message"]
+        assert record.error["type"] == "StageError"
+
+    def test_the_plan_reports_it_and_keeps_planning(self, config, monkeypatch) -> None:
+        FakeStage.raise_in_gate = {"pose"}
+        runner = runner_for(config, monkeypatch, Path(""))
+        plan = {item.name: item for item in runner.plan()}
+        assert set(plan) == {name for name, _ in FAKE_DAG}
+        assert plan["pose"].will_run
+        assert plan["pose"].reason.startswith("will fail: ")
+        assert "installed but unusable" in plan["pose"].reason
+        # A plan reader is told what this failure costs, before the run rather than after it.
+        assert not plan["report"].will_run
+        assert plan["report"].reason.startswith("blocked by failed upstream: pose")
+
+
+class TestAnUpstreamThatWillRunFirst:
+    """Planning from recorded state alone called a stage skipped that the pass will run.
+
+    With whisperx scheduled to run (its output deleted, or its configuration changed) the
+    transcript does not exist *yet*, so every transcript consumer's gate reported "upstream
+    skipped: transcript unavailable (whisperx skipped: ...)" — a sentence about the previous
+    run, on a plan where whisperx was about to write exactly that file.
+    """
+
+    def test_a_transcript_consumer_is_planned_to_run_after_whisperx(
+            self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        FakeStage.gate_on_missing = True
+        FakeStage.extra_config = {"whisperx": {"model": "larger"}}
+        # The transcript whisperx is about to rewrite is not there any more.
+        runner.paths.artifact("speech_segments").unlink()
+        plan = {item.name: item for item in runner.plan()}
+        assert plan["whisperx"].will_run
+        assert plan["assign"].will_run, plan["assign"].reason
+        assert "whisperx will run first in this pass" in plan["assign"].reason
+        assert plan["assign"].reason.startswith("upstream skipped: input unavailable")
+
+    def test_a_consumer_whose_upstream_is_not_scheduled_stays_skipped(
+            self, config, monkeypatch) -> None:
+        """The rule is about *this pass*, not about optimism: no pending whisperx, no run."""
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        FakeStage.gate_on_missing = True
+        # whisperx is switched off (its environment is missing), so it cannot write the file.
+        FakeStage.disabled_in_gate = {"whisperx"}
+        runner.paths.artifact("speech_segments").unlink()
+        plan = {item.name: item for item in runner.plan()}
+        assert not plan["whisperx"].will_run
+        assert not plan["assign"].will_run
+        assert plan["assign"].reason.startswith("disabled: upstream skipped: input unavailable")
 
 
 class TestInvalidation:
@@ -483,3 +590,51 @@ class TestArtifactIntegrity:
         plan = {item.name: item for item in parquet_dag.plan()}
         assert plan["asr"].reason == "valid previous result"
         assert plan["post"].will_run
+
+
+class TestRetiredStagesInAnOldOutputTree:
+    """A `status.json` written by a pipeline with more stages still plans and resumes.
+
+    `diarization` and `speaker_fusion` were removed. Their records — and their files —
+    survive in every dataset produced before that, and neither loading nor planning nor a
+    resume may treat the unknown names as a reason to crash or to delete anything.
+    """
+
+    @staticmethod
+    def _add_retired_records(runner: VideoRunner) -> None:
+        from multimodal_pipeline.state import StageRecord
+
+        state = type(runner.state).load(runner.paths, runner.source.video_id)
+        for name in ("diarization", "speaker_fusion"):
+            state.stages[name] = StageRecord(name=name, status=STATUS_FAILED,
+                                             run_sequence=2,
+                                             output_artifacts=["speaker_turns"])
+            state.stage_order.append(name)
+        state.save()
+        stale = runner.paths.dataset_dir / "speaker" / "fusion_pyannote.parquet"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"legacy-bytes")
+
+    def test_plan_lists_the_current_stages_and_nothing_else(self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        self._add_retired_records(runner)
+        plan = [item.name for item in runner.plan()]
+        assert plan == [name for name, _ in FAKE_DAG]
+
+    def test_resume_does_not_crash_on_the_unknown_records(self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        baseline = dict(FakeStage.executions)
+        self._add_retired_records(runner)
+        result = runner.run()
+        assert result.status == "completed"
+        assert FakeStage.executions == baseline, "a retired record made live work rerun"
+
+    def test_the_legacy_file_is_left_alone(self, config, monkeypatch) -> None:
+        runner = runner_for(config, monkeypatch, Path(""))
+        runner.run()
+        self._add_retired_records(runner)
+        stale = runner.paths.dataset_dir / "speaker" / "fusion_pyannote.parquet"
+        runner.run()
+        assert stale.read_bytes() == b"legacy-bytes"

@@ -1,7 +1,7 @@
 """Stage construction, DAG execution and resume decisions for one video.
 
 Execution is strictly sequential: one video at a time, one stage at a time,
-because every GPU-heavy stage (WhisperX, Pyannote, spaCy transformers,
+because every GPU-heavy stage (WhisperX, Nemotron diarization, spaCy transformers,
 OpenPose) would otherwise contend for the single RTX 4090.
 """
 
@@ -30,6 +30,7 @@ from .stages.acoustic import AcousticStage
 from .stages.audio import AudioStage
 from .stages.base import (
     STAGE_ORDER,
+    UPSTREAM_SKIPPED,
     Stage,
     StageContext,
     StageOutcome,
@@ -37,7 +38,6 @@ from .stages.base import (
     should_reuse,
     stage_selection,
 )
-from .stages.diarization import DiarizationStage
 from .stages.diarization_nemotron import DiarizationNemotronStage
 from .stages.finalization import FinalizationStage
 from .stages.elan import ElanStage
@@ -47,7 +47,6 @@ from .stages.openpose import OpenPoseStage
 from .stages.pose_normalized import PoseNormalizedStage
 from .stages.persons import PersonsStage
 from .stages.speaker_assignment import SpeakerAssignmentStage
-from .stages.speaker_fusion import SpeakerFusionStage
 from .stages.spacy_english import SpacyEnglishStage
 from .stages.spacy_source import SpacySourceStage
 from .stages.stories import StoriesStage
@@ -62,7 +61,6 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         MetadataStage,
         AudioStage,
         WhisperXStage,
-        DiarizationStage,
         DiarizationNemotronStage,
         SpeakerAssignmentStage,
         TranslationStage,
@@ -73,7 +71,6 @@ STAGE_CLASSES: dict[str, type[Stage]] = {
         PoseNormalizedStage,
         ActiveSpeakerStage,
         PersonsStage,
-        SpeakerFusionStage,
         StoriesStage,
         FinalizationStage,
         ElanStage,
@@ -100,6 +97,11 @@ class VideoResult:
     stage_outcomes: dict[str, str] = field(default_factory=dict)
     durations: dict[str, float] = field(default_factory=dict)
     errors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Why each skipped stage skipped, quoted verbatim from its record. A completed video can
+    #: carry several: a stage whose environment is not installed does not make the video
+    #: incomplete, and that is exactly the case a reader has to be able to see from the batch
+    #: report instead of opening fifteen ``status.json`` files to find out what was not measured.
+    skipped: dict[str, str] = field(default_factory=dict)
     total_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,6 +114,7 @@ class VideoResult:
             "duration_seconds": round(self.total_seconds, 2),
             "stage_durations": self.durations,
             "errors": self.errors,
+            "skipped": dict(self.skipped),
         }
 
 
@@ -180,8 +183,35 @@ class VideoRunner:
                                          f"blocked by failed upstream: {', '.join(upstream_failed)}",
                                          config_hash, dependency_hash, forced))
                 continue
-            enabled, why_disabled = stage.enabled(context)
+            try:
+                enabled, why_disabled = stage.enabled(context)
+            except Exception as exc:  # noqa: BLE001 - a gate that raises is a per-stage defect
+                # A gate that raises used to escape the whole plan: one video's broken OpenPose
+                # install made ``status --plan`` exit 1 before it planned the six videos after
+                # it, so the plan could not even be read to find the defect. Recorded here as
+                # this stage's own failure, and its dependants are told they are blocked.
+                blocked.add(stage.name)
+                planned.append(StagePlan(stage.name, True, f"will fail: {_one_line(exc)}",
+                                         config_hash, dependency_hash, forced))
+                continue
             if not enabled:
+                # A skip caused by a missing upstream table is not a decision about this stage
+                # when that upstream is *scheduled to run in this same pass*: whisperx's
+                # transcript does not exist yet, will be written before this stage's turn, and
+                # the recorded "whisperx skipped" reason describes the previous run instead.
+                # Planning from the recorded state alone reported every transcript consumer as
+                # "disabled: upstream skipped: transcript unavailable" on a plan where whisperx
+                # was about to produce exactly that transcript.
+                pending_upstream = [name for name in dependency_chain(stage.name)
+                                    if name in pending]
+                if why_disabled.startswith(UPSTREAM_SKIPPED) and pending_upstream:
+                    counter += 1
+                    pending[stage.name] = (config_hash, counter)
+                    planned.append(StagePlan(
+                        stage.name, True,
+                        f"{why_disabled}; {', '.join(pending_upstream)} will run first in this "
+                        f"pass", config_hash, dependency_hash, forced))
+                    continue
                 planned.append(StagePlan(stage.name, False, f"disabled: {why_disabled}",
                                          config_hash, dependency_hash, forced))
                 continue
@@ -290,6 +320,10 @@ class VideoRunner:
                 result.durations[stage.name] = record.duration_seconds or 0.0
                 if record.error:
                     result.errors[stage.name] = record.error
+                if record.status == STATUS_SKIPPED:
+                    result.skipped[stage.name] = (
+                        (record.validation_result or {}).get("reason")
+                        or "skipped without a recorded reason")
                 stage_log.close()
                 if record.status == STATUS_FAILED:
                     # Record the poison and keep going: independent branches of the DAG
@@ -371,7 +405,25 @@ class VideoRunner:
 
         config_hash = self.config_hash_for(stage, context)
         dependency_hash = self.dependency_hash_for(stage, context)
-        enabled, why_disabled = stage.enabled(context)
+        try:
+            enabled, why_disabled = stage.enabled(context)
+        except Exception as exc:  # noqa: BLE001 - every failure becomes recorded state
+            # **Inside** the failure handling, which is the whole point: this call used to sit
+            # outside it, so a gate that raises — ``openpose`` discovering a binary without the
+            # execute bit is the case that was reported — aborted the entire stage loop. The run
+            # exited 2 with a traceback, the stage stayed ``pending``, and the independent stages
+            # after it (``activespeaker``, ``persons``, ``stories``) never ran although nothing
+            # they read was broken. A gate is part of the stage: its defect fails the stage, its
+            # dependants are blocked, and the rest of the DAG still executes.
+            error = {"type": type(exc).__name__, "message": str(exc)[:2000],
+                     "details": getattr(exc, "details", {}) or {},
+                     "log_file": str(self.paths.log(name)),
+                     "traceback": traceback.format_exc()[-4000:]}
+            self.state.mark_failed(name, error,
+                                   exit_code=getattr(getattr(exc, "result", None), "returncode", None))
+            self.progress(name, STATUS_FAILED, str(exc)[:80])
+            stage_log(f"failed in its own precondition: {exc}")
+            return StageOutcome(executed=False, status="failed", message=str(exc))
         if not enabled:
             self.state.mark_skipped(name, why_disabled or "disabled by configuration")
             self.progress(name, STATUS_SKIPPED, why_disabled or "disabled")
@@ -488,6 +540,16 @@ class _StageLogAdapter:
             log.warning(message)
 
 
+def _one_line(error: BaseException) -> str:
+    """A gate's exception as one plan-sized line.
+
+    The reason lands in a ``status --plan`` column, where a multi-line traceback would destroy
+    the table the reader is scanning. Truncated, never summarised away: the first 300 characters
+    of an ``UnusableOpenPose`` message name the path and the fix.
+    """
+    return " ".join(str(error).split())[:300] or type(error).__name__
+
+
 def _default_logger_factory(paths: VideoPaths):
     from .log import make_stage_logger_factory
 
@@ -507,12 +569,10 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
     """
     mapping = {
         "whisperx": config.whisperx.enabled,
-        "diarization": config.diarization.enabled,
         "translation": config.translation.enabled,
         # Default-true, so its flag has to be listed or the status table calls a stage the
         # operator switched off "enabled" (the mapping defaults to True). Same reasoning as
-        # `translation` and `elan`; unlike `persons`, a default-False stage that the
-        # precedent above keeps out of the map on purpose.
+        # `translation`, `elan` and `diarization_nemotron`.
         "stories": config.stories.enabled,
         "spacy_source": config.spacy.enabled and config.spacy.process_source,
         "spacy_english": config.spacy.enabled and config.spacy.process_english,
@@ -521,18 +581,23 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         # Its own enable check, so it has to be listed or the status table calls it
         # enabled while Stage.enabled reports a skip reason (the mapping defaults to True).
         "pose_normalized": config.pose_normalized.enabled,
-        "speaker_fusion": config.speaker_fusion.enabled,
+        # Enabled by default, but its flag can flip the map's True default, so it must be
+        # listed or the status table calls it enabled while Stage.enabled reports a skip.
+        "diarization_nemotron": config.diarization_nemotron.enabled,
         # Enabled by default, but its flag can flip the map's True default, so it must be
         # listed or the status table calls it enabled while Stage.enabled reports a skip.
         "elan": config.elan.enabled,
-        # `persons` is deliberately NOT listed, and the reason is a precedent rather than an
-        # oversight. The map's default is True, so a stage appears in it only when its flag
-        # can flip that default without lying about the pipeline's shape. `activespeaker` and
-        # `diarization_nemotron` — the two other stages that ship disabled — are absent for the
-        # same reason: adding a default-False stage here makes `enabled_stage_names` return
-        # fewer names than `STAGE_ORDER` on an untouched config, which is the invariant the
-        # status table's column layout is built on (tests/unit/test_cli_status_layout.py).
-        # The skip reason still reaches an operator, through the plan and the manifest, which
-        # is where a per-stage reason belongs; the header belongs to the stage list.
+        # Same rule, and it is why `persons` joins the map now that it defaults to true: a
+        # stage whose flag can be false has to be reported as the config states it, or the
+        # status table lists a column the run will skip. Its default only decides whether the
+        # *absent* key means enabled (map default True) or disabled; prerequisites such as a
+        # missing uv project never appear here — they are per-video skip reasons, which the
+        # plan and the manifest carry.
+        "persons": config.persons.enabled,
+        # Listed for the same rule, and it was the last stage whose flag the map ignored: with
+        # `activespeaker.enabled: false` in the config, `status` still printed it as enabled.
+        # Its TalkNet checkout is a runtime skip reason, not a config-level one, so nothing
+        # else about it belongs here.
+        "activespeaker": config.activespeaker.enabled,
     }
     return [name for name in STAGE_ORDER if mapping.get(name, True)]

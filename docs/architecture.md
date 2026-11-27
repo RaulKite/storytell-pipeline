@@ -13,7 +13,7 @@ Back to the overview: [Storytel Pipeline](../README.md).
 - [Execution and failure handling](#execution-and-failure-handling)
 - [Resume, reuse and invalidation](#resume-reuse-and-invalidation)
 - [Design decisions](#design-decisions)
-- [Why seven environments](#why-seven-environments)
+- [Why six environments](#why-six-environments)
 
 ## System boundaries
 
@@ -23,7 +23,7 @@ flowchart TB
     cfg --> disc["discovery<br/>one video_id per input file"]
     disc --> runner["VideoRunner<br/>one video and one stage at a time"]
     runner --> contract["stage contract<br/>enabled, prepare, execute, validate"]
-    contract --> inproc["in-process<br/>Arrow transforms, fusion, ELAN writer"]
+    contract --> inproc["in-process<br/>Arrow transforms, assignment, ELAN writer"]
     contract --> worker["uv worker<br/>environments/NAME project"]
     contract --> binary["external binary<br/>ffmpeg, ffprobe, OpenPose"]
     inproc --> out["preserved raw tool output<br/>and normalized Parquet tables"]
@@ -36,7 +36,7 @@ flowchart TB
 ```
 
 The columns are a boundary: a heavy model lives in a declared `uv` project and a worker,
-so the orchestrator imports no torch, pyannote, spaCy or Parselmouth.
+so the orchestrator imports no torch, spaCy or Parselmouth.
 
 | Responsibility | Source |
 |---|---|
@@ -58,29 +58,27 @@ An execution position does not imply a dependency on the preceding stage.
 ```mermaid
 flowchart TD
     metadata --> audio & openpose & activespeaker & persons
-    audio --> whisperx & diarization & diarization_nemotron & acoustic & activespeaker
+    audio --> whisperx & diarization_nemotron & acoustic & activespeaker
     openpose --> pose_normalized
     whisperx --> speaker_assignment
-    diarization --> speaker_assignment & speaker_fusion
-    diarization_nemotron --> speaker_fusion
-    activespeaker --> speaker_fusion
+    diarization_nemotron --> speaker_assignment
     speaker_assignment --> translation & spacy_source & acoustic & stories
     translation --> spacy_english
     subgraph deps["finalization depends on every stage above"]
         direction LR
-        metadata; audio; whisperx; diarization; diarization_nemotron
+        metadata; audio; whisperx; diarization_nemotron
         speaker_assignment; translation; spacy_source; spacy_english
         acoustic; openpose; pose_normalized; activespeaker; persons
-        speaker_fusion; stories
+        stories
     end
     deps --> finalization
     finalization --> elan
-    classDef optional stroke-dasharray: 6 4,color:#666
-    class diarization_nemotron,activespeaker,persons optional
 ```
 
-Dashed nodes are disabled in `config/config.example.yaml` and need an extra install or
-checkout: a shipping default, not an unimplemented feature. See the
+Every node is enabled by default, `activespeaker` and `persons` included; nothing is drawn
+as optional because nothing ships switched off. What those two need is an install — a TalkNet
+checkout and a uv environment for each — and a stage whose prerequisite is missing skips with
+a reason naming it rather than failing the video. See the
 [stage status matrix](getting-started.md#what-runs-by-default) for prerequisites.
 
 | Stage | Direct dependencies | Work |
@@ -88,9 +86,8 @@ checkout: a shipping default, not an unimplemented feature. See the
 | `metadata` | — | ffprobe, source identity and frame timestamps |
 | `audio` | `metadata` | ffmpeg extraction |
 | `whisperx` | `audio` | Transcription and word alignment |
-| `diarization` | `audio` | pyannote turns |
-| `diarization_nemotron` | `audio` | Independent Nemotron turns |
-| `speaker_assignment` | `whisperx`, `diarization` | Apply pyannote labels to segments/words |
+| `diarization_nemotron` | `audio` | Nemotron speaker turns |
+| `speaker_assignment` | `whisperx`, `diarization_nemotron` | Apply Nemotron labels, or clear foreign ones when no timeline exists |
 | `translation` | `speaker_assignment` | English translations |
 | `spacy_source` | `speaker_assignment` | Source-language annotations |
 | `spacy_english` | `translation` | English annotations |
@@ -99,7 +96,6 @@ checkout: a shipping default, not an unimplemented feature. See the
 | `pose_normalized` | `openpose` | Body-centred coordinates |
 | `activespeaker` | `metadata`, `audio` | TalkNet face activity |
 | `persons` | `metadata` | YOLO person detection/tracking |
-| `speaker_fusion` | `diarization`, `diarization_nemotron`, `activespeaker` | Audio–visual agreement |
 | `stories` | `speaker_assignment` | Storytelling events, the stories inside them, uncertain spans |
 | `finalization` | All producer stages above | Cross-modal validation, manifest and provenance |
 | `elan` | `finalization` | Annotation summary export |
@@ -133,10 +129,12 @@ flowchart TD
 an absent prerequisite, a failure an error, a zero-row table neither. Unstated details: a
 forced stage
 resets its record and skips the reuse test, and an exception in `prepare` or `execute`
-fails the stage before validation is reached. Beyond the flow, a broken required tool
-fails with its own error (only explicitly optional checks, such as Nemotron's missing
-environment directory, become skips), and `execution.stop_on_video_error` stops the batch
-only on a video whose overall result is `failed`, not on a `partial` one.
+fails the stage before validation is reached. Beyond the flow, `enabled` is where *install
+state* is separated from a defect: a missing uv environment directory, worker script,
+OpenPose binary, TalkNet checkout or configured checkpoint becomes a skip naming the fix,
+while a tool that is present and misbehaves fails with its own error.
+`execution.stop_on_video_error` stops the batch only on a video whose overall result is
+`failed`, not on a `partial` one.
 
 `finalization` excludes `elan` from its dependencies to avoid a cycle, and the runner's
 closing summary refresh includes the export after it has run: a manifest read mid-run is
@@ -171,8 +169,8 @@ not reuse an incompatible raw result. `--only-stage` expands to the dependency c
 | Raw output beside typed Parquet | Preserve evidence while providing a uniform analysis format; uses more disk |
 | Seconds from video start, explicit working grids | Cross-tool alignment without pretending every frame index names a source frame |
 | Missing / empty / imputed are distinct | Unknown evidence must not become a measured zero or a claim of absence |
-| Derived tables beside measurements | Fusion and normalized pose never silently redefine source measurements |
-| Separate diarizer outputs | Preserve comparisons; transcript assignment stays on pyannote |
+| Derived tables beside measurements | Normalized pose never silently redefines the source measurement |
+| One diarizer | Nemotron is the only speaker-timeline producer; transcript assignment reads its turns |
 | Story candidates use the source transcript | Translation and visible-face analysis are not prerequisites for narrative evidence |
 | `MidHip → Neck` pose basis | Longer torso baseline reduces jitter amplification; missing defining joints yield nulls |
 | YOLO nano + ByteTrack defaults | Small checkpoint and no re-ID download; fragmentation remains inspectable, not proof of identities |
@@ -182,7 +180,7 @@ not reuse an incompatible raw result. `--only-stage` expands to the dependency c
 Current scope excludes parallel/multi-GPU scheduling, a web UI/database, speaker
 identification, retraining, subtitles, transliteration and gaze estimation.
 
-## Why seven environments
+## Why six environments
 
 Heavy tools have incompatible torch/CUDA and dependency requirements, so each has an
 independent `uv` project under [`environments/`](../environments), launched by
@@ -192,7 +190,6 @@ are configured, not inferred from the environment name).
 ```mermaid
 flowchart LR
     wx["whisperx"] --> ewx["environments/whisperx<br/>workers/whisperx_worker.py"]
-    dia["diarization"] --> edia["environments/diarization<br/>workers/diarization_worker.py"]
     nem["diarization_nemotron"] --> enem["environments/diarization_nemotron<br/>workers/nemotron_diarization_worker.py"]
     sp["spacy_source, spacy_english"] --> esp["environments/spacy<br/>workers/spacy_worker.py"]
     ac["acoustic"] --> eac["environments/acoustic<br/>workers/acoustic_worker.py"]
@@ -200,7 +197,7 @@ flowchart LR
     pers["persons"] --> epers["environments/persons<br/>workers/persons_worker.py"]
     op["openpose"] --> eop["external binary<br/>under openpose.root"]
     meta["metadata, audio"] --> eff["ffmpeg and ffprobe on PATH"]
-    pure["speaker_assignment, translation, stories,<br/>speaker_fusion, pose_normalized,<br/>finalization, elan"] --> eroot["root project<br/>imported in-process"]
+    pure["speaker_assignment, translation, stories,<br/>pose_normalized, finalization, elan"] --> eroot["root project<br/>imported in-process"]
 ```
 
 A stage with no worker is pure Python over Parquet or HTTP: a re-read, not a model run.
@@ -208,7 +205,6 @@ A stage with no worker is pure Python over Parquet or HTTP: a re-read, not a mod
 | Environment | Constraint worth preserving |
 |---|---|
 | `whisperx` | Its transcription/alignment torch stack |
-| `diarization` | pyannote and torchcodec compatibility |
 | `diarization_nemotron` | Pinned unreleased transformers architecture; separate CUDA resolution |
 | `spacy` | Language models without importing them into the orchestrator |
 | `acoustic` | Parselmouth/Praat and numpy |
