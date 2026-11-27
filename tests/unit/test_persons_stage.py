@@ -978,8 +978,9 @@ class RenderedStage(PersonsStage):
     what the real worker does when ffmpeg exits non-zero.
     """
 
-    def __init__(self, *, render_ok: bool = True) -> None:
+    def __init__(self, *, render_ok: bool = True, write_result: bool = True) -> None:
         self.render_ok = render_ok
+        self.write_result = write_result
         self.argvs: list[list[str]] = []
 
     def run_model(self, ctx, request, raw_path, digest) -> None:
@@ -997,9 +998,12 @@ class RenderedStage(PersonsStage):
             document["render"] = render_block()
         raw_path.parent.mkdir(parents=True, exist_ok=True)
         raw_path.write_text(json.dumps(document), encoding="utf-8")
-        worker_result_path(raw_path.parent,
-                           "persons_worker_result.json").write_text(
-            json.dumps({"status": "ok"}), encoding="utf-8")
+        if self.write_result:
+            # The real worker always writes this; a test that omits it is asking what
+            # publication does when one of the six files it moves is missing.
+            worker_result_path(raw_path.parent,
+                               "persons_worker_result.json").write_text(
+                json.dumps({"status": "ok"}), encoding="utf-8")
         stamp_raw(raw_path, request=request, digest=digest, worker=None)
         if destination is not None:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1152,6 +1156,89 @@ class TestRenderedExecution:
         PersonsStage().normalize(context)
         assert video.read_bytes() == b"from an earlier render"
         assert PersonsStage().request(context)["write_video"] is False
+
+
+def _snapshot(paths) -> dict[Path, tuple[int, bytes]]:
+    """Inode and content of every published file, for a before/after comparison."""
+    return {path: (path.stat().st_ino, path.read_bytes()) for path in paths}
+
+
+class TestPublicationIsAllOrNothing:
+    """The reviewer's fourth finding: a late failure left the dataset half-published.
+
+    ``_publish_rendered`` used to discover a problem inside the move loop, so the four primary
+    artifacts were already replaced when the sidecar or the result JSON turned out missing, and
+    an ``os.replace`` onto a directory raised after the earlier renames had happened. Both now
+    fail before the first rename, and a rename that still fails is rolled back.
+    """
+
+    def _published(self, context, tmp_path):
+        """What is on disk after a completed render: identity *and* content.
+
+        The inode is in the snapshot because the second run of the same fixture produces
+        identical bytes -- two Parquet files from the same rows are the same file -- and a
+        publication that replaced a file with an identical one is exactly what a bytes-only
+        comparison cannot see. A replaced file always has a new inode.
+        """
+        rendering(context, tmp_path)
+        RenderedStage().execute(context)
+        return _snapshot(published_paths(context))
+
+    def test_a_missing_result_json_is_caught_before_anything_is_replaced(self, context,
+                                                                       tmp_path):
+        before = self._published(context, tmp_path)
+        with pytest.raises(StageError, match="produced no persons_worker_result.json"):
+            RenderedStage(write_result=False).execute(context)
+        assert _snapshot(published_paths(context)) == before
+
+    def test_a_directory_at_a_destination_stops_the_publication(self, context, tmp_path):
+        """``os.replace`` onto a directory raises IsADirectoryError.
+
+        Without a preflight that lands on the last rename, which used to leave the first four
+        files replaced and the run reported as failed.
+        """
+        before = self._published(context, tmp_path)
+        blocked = context.artifact("person_tracks")
+        blocked.unlink()
+        blocked.mkdir()
+        del before[blocked]
+        with pytest.raises(StageError, match="a directory is in the way"):
+            RenderedStage().execute(context)
+        assert _snapshot(before) == before
+        assert blocked.is_dir(), "the obstacle was removed instead of reported"
+    def test_a_rename_that_fails_in_the_middle_restores_what_it_displaced(self, context,
+                                                                         tmp_path,
+                                                                         monkeypatch):
+        """A permission or cross-device failure lands mid-list; the dataset must survive it.
+
+        ``os.replace`` is made to fail for the preview only, which is third in the publish
+        order -- after ``person_frames`` and ``person_tracks`` have already been replaced.
+        """
+        import os as os_module
+
+        before = self._published(context, tmp_path)
+        destination = context.artifact("person_track_video")
+        real_replace = os_module.replace
+        failures = {"count": 0}
+
+        def failing_replace(source, target, *args, **kwargs):
+            # One transient failure (an interrupted write, a busy mount), not a permanent one:
+            # a destination that stays unwritable cannot be restored either, and the stage says
+            # so instead of pretending. What this test is about is the rollback.
+            if Path(target) == destination and not failures["count"]:
+                failures["count"] += 1
+                raise OSError(13, "Permission denied", str(target))
+            return real_replace(source, target, *args, **kwargs)
+
+        monkeypatch.setattr(os_module, "replace", failing_replace)
+        with pytest.raises(OSError):
+            RenderedStage().execute(context)
+        monkeypatch.undo()
+        assert failures["count"] == 1
+        assert _snapshot(published_paths(context)) == before, \
+            "the dataset was left with a mix of the old run and the failed one"
+        assert not list(context.paths.dataset_dir.rglob(".previous-*")), \
+            "the backup directory was left behind"
 
 
 class TestRenderedValidation:

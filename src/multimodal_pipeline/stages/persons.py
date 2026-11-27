@@ -56,6 +56,7 @@ import logging
 import math
 import os
 import shutil
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1034,26 +1035,99 @@ class PersonsStage(WorkerStage):
             detail.setdefault("extra", {})["track_video"] = ARTIFACT_LAYOUT["person_track_video"]
             return detail
 
-    def _publish_rendered(self, staged: StageContext, ctx: StageContext) -> None:
-        """Move the validated render into the dataset, one file at a time.
+    def _publication_pairs(self, staged: StageContext,
+                            ctx: StageContext) -> list[tuple[Path, Path]]:
+        """Every (staged file, dataset destination) this render publishes, in order.
 
         The raw document's provenance sidecar and the worker's result JSON travel with the raw
-        document, so they move too: publishing a new raw over an old sidecar would leave a
-        `request_hash` on disk that describes a different run than the document beside it.
+        document, so they are in the list too: publishing a new raw over an old sidecar would
+        leave a `request_hash` on disk that describes a different run than the document beside
+        it.
         """
         staged_raw = staged.artifact("persons_raw")
         pairs = [(staged.artifact(name), ctx.artifact(name)) for name in self.PUBLISHED_OUTPUTS]
         for source in (raw_sidecar_path(staged_raw),
                        staged_raw.parent / "persons_worker_result.json"):
             pairs.append((source, ctx.artifact("persons_raw").parent / source.name))
-        for source, target in pairs:
-            if not source.is_file():
+        return pairs
+
+    def _publish_rendered(self, staged: StageContext, ctx: StageContext) -> None:
+        """Move the validated render into the dataset as one all-or-nothing step.
+
+        Two things are checked before the first rename, and both were defects the reviewer
+        reproduced:
+
+        * **every** source exists. The check used to run inside the move loop, so a missing
+          result JSON was discovered after the four primary artifacts had already been
+          replaced -- a completed-looking dataset whose files came from different runs.
+        * **every** destination can be replaced. ``os.replace`` onto a directory raises
+          ``IsADirectoryError``, and finding that out on the last rename leaves the earlier
+          ones done.
+
+        A rename that still fails (a permission, a cross-device move) is rolled back: every
+        file it displaced was moved aside first, inside the dataset's own directory and on its
+        own filesystem, and is moved back in reverse order. If even that fails, the error names
+        the files and the directory the copies are kept in -- it never claims a dataset is
+        intact when it is not.
+        """
+        pairs = self._publication_pairs(staged, ctx)
+        missing = [source.name for source, _target in pairs if not source.is_file()]
+        if missing:
+            raise StageError(
+                f"persons render validated but produced no {', '.join(sorted(missing))} to "
+                f"publish; the dataset at {pairs[0][1].parent} was left untouched rather than "
+                "published incompletely")
+        blockers: list[str] = []
+        for _source, target in pairs:
+            if target.is_dir():
+                blockers.append(f"a directory is in the way at {target}")
+            elif target.parent.exists() and not target.parent.is_dir():
+                blockers.append(f"{target.parent} exists and is not a directory")
+        if blockers:
+            raise StageError(
+                "persons render cannot be published: " + "; ".join(blockers)
+                + ". Nothing was replaced, so the dataset still holds the previous run's "
+                "files; move the obstacle and rerun")
+
+        backup_dir = Path(tempfile.mkdtemp(dir=pairs[0][1].parent, prefix=".previous-"))
+        replaced: list[tuple[Path, Path | None]] = []
+        try:
+            for index, (source, target) in enumerate(pairs):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                backup: Path | None = None
+                if target.exists() or target.is_symlink():
+                    backup = backup_dir / f"{index}-{target.name}"
+                    os.replace(target, backup)
+                replaced.append((target, backup))
+                os.replace(source, target)
+        except BaseException:
+            unrestored = self._restore_replaced(replaced)
+            if unrestored:
                 raise StageError(
-                    f"persons render validated but produced no {source.name} to publish; the "
-                    f"dataset at {target.parent} was left untouched rather than published "
-                    "incompletely")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, target)
+                    "persons render could not be published and the previous files could not "
+                    "all be put back (" + ", ".join(str(path) for path in unrestored)
+                    + f"); their copies are kept at {backup_dir}") from None
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+    def _restore_replaced(self, replaced: list[tuple[Path, Path | None]]) -> list[Path]:
+        """Put back what this publication displaced, newest first; return what could not be.
+
+        Best effort on purpose: the original error is what the operator needs to see, so a
+        restore that fails does not replace it -- the caller names the files instead and keeps
+        the copies beside the dataset.
+        """
+        unrestored: list[Path] = []
+        for target, backup in reversed(replaced):
+            try:
+                if backup is None:
+                    target.unlink()
+                else:
+                    os.replace(backup, target)
+            except OSError:
+                unrestored.append(target)
+        return unrestored
 
     def run(self, ctx: StageContext):
         """Name, once per video, the checkpoint the person counts came from.
