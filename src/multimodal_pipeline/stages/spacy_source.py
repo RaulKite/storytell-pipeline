@@ -207,7 +207,9 @@ class SpacySourceStage(WorkerStage):
         cfg = ctx.config.spacy
         if not cfg.enabled:
             return False, "spacy.enabled = false"
-        return True, ""
+        # A trained model is optional (the worker falls back to ``blank`` and says so); the
+        # environment is not, so its absence is a skip naming the project, never a failure.
+        return super().enabled(ctx)
 
     def uv_project(self, ctx: StageContext) -> Path:
         return ctx.config.resolve(ctx.config.spacy.uv_project)

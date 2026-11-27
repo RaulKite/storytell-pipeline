@@ -73,12 +73,12 @@ flowchart TD
     end
     deps --> finalization
     finalization --> elan
-    classDef optional stroke-dasharray: 6 4,color:#666
-    class activespeaker,persons optional
 ```
 
-Dashed nodes are disabled in `config/config.example.yaml` and need an extra install or
-checkout: a shipping default, not an unimplemented feature. See the
+Every node is enabled by default, `activespeaker` and `persons` included; nothing is drawn
+as optional because nothing ships switched off. What those two need is an install — a TalkNet
+checkout and a uv environment for each — and a stage whose prerequisite is missing skips with
+a reason naming it rather than failing the video. See the
 [stage status matrix](getting-started.md#what-runs-by-default) for prerequisites.
 
 | Stage | Direct dependencies | Work |
@@ -129,10 +129,12 @@ flowchart TD
 an absent prerequisite, a failure an error, a zero-row table neither. Unstated details: a
 forced stage
 resets its record and skips the reuse test, and an exception in `prepare` or `execute`
-fails the stage before validation is reached. Beyond the flow, a broken required tool
-fails with its own error (only explicitly optional checks, such as Nemotron's missing
-environment directory, become skips), and `execution.stop_on_video_error` stops the batch
-only on a video whose overall result is `failed`, not on a `partial` one.
+fails the stage before validation is reached. Beyond the flow, `enabled` is where *install
+state* is separated from a defect: a missing uv environment directory, worker script,
+OpenPose binary, TalkNet checkout or configured checkpoint becomes a skip naming the fix,
+while a tool that is present and misbehaves fails with its own error.
+`execution.stop_on_video_error` stops the batch only on a video whose overall result is
+`failed`, not on a `partial` one.
 
 `finalization` excludes `elan` from its dependencies to avoid a cycle, and the runner's
 closing summary refresh includes the export after it has run: a manifest read mid-run is

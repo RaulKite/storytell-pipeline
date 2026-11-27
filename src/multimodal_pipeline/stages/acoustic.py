@@ -76,7 +76,9 @@ class AcousticStage(WorkerStage):
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
         if not ctx.config.acoustic.enabled:
             return False, "acoustic.enabled = false"
-        return True, ""
+        # Praat lives in its own uv project, so a machine that never synced it gets a skip
+        # naming the directory instead of a failed video.
+        return super().enabled(ctx)
 
     def uv_project(self, ctx: StageContext) -> Path:
         return ctx.config.resolve(ctx.config.acoustic.uv_project)

@@ -136,8 +136,32 @@ class OpenPoseStage(Stage):
     # -------------------------------------------------------------------- run
 
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
+        """Skip when OpenPose is not installed here, exactly like a missing uv project.
+
+        OpenPose ships enabled and is a third-party binary this repository does not fetch, so
+        a machine that has not installed it is an install state, not a defect in the video.
+        Without this check ``prepare()`` raised ``StageError`` from the discovery helpers and
+        the video was marked failed — a default run on a fresh clone then reported ``failed``
+        while everything else had actually worked. ``inspect-environment`` still announces the
+        same finding before a batch starts ("OpenPose binary not found under " plus the
+        configured root), and the skip reason below names the path it looked in.
+
+        An explicit ``openpose.executable`` or ``openpose.model_folder`` that does not resolve
+        is a skip too, for the same reason ``persons.weights_dir`` is one: it is a promise
+        about a path, and the message names the path instead of leaving the operator with a
+        failed video. What is *not* screened is an installation that exists but is broken —
+        that runs and fails loudly, because there silence would hide a real defect.
+        """
         if not ctx.config.openpose.enabled:
             return False, "openpose.enabled = false"
+        try:
+            self.resolve_executable(ctx)
+        except (StageError, FileNotFoundError) as exc:
+            return False, f"OpenPose is not installed: {exc}"
+        try:
+            self.resolve_model_folder(ctx)
+        except StageError as exc:
+            return False, f"OpenPose models are missing: {exc}"
         return True, ""
 
     def resolve_executable(self, ctx: StageContext) -> Path:

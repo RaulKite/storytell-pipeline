@@ -500,6 +500,35 @@ class WorkerStage(Stage):
     def worker_script(self, ctx: StageContext) -> Path:
         raise NotImplementedError
 
+    def enabled(self, ctx: StageContext) -> tuple[bool, str]:
+        """Skip, never fail, when this stage's isolated environment is not installed.
+
+        Every stage ships enabled, so the default run of this pipeline on a machine that has
+        only some of the ``environments/*`` projects has to complete: a missing project is an
+        *install state*, not a defect in the data, and letting it through would raise
+        ``WorkerError`` from :func:`~multimodal_pipeline.uv_worker.run_worker` and mark the
+        video failed over a directory nobody created yet. The reason names the directory and
+        the remedy, because a stage that dies with "uv project not found" and no next step is
+        the number-one setup failure class in this repository.
+
+        A *present but broken* environment is deliberately not screened here: the stage runs
+        and fails loudly, because at that point silence would hide a real defect. Same
+        three-state discipline as ``diarization_nemotron`` and ``persons``, which add their own
+        gates (a checkpoint) on top of this one.
+        """
+        project = self.uv_project(ctx)
+        if not project.is_dir():
+            python = self.python_version(ctx)
+            sync = f"uv sync --python {python}" if python else "uv sync"
+            return False, (
+                f"{self.name} environment not installed at {project} — create it and run "
+                f"`{sync}` there to enable this stage"
+            )
+        worker = self.worker_script(ctx)
+        if not worker.is_file():
+            return False, f"{self.name} worker script missing at {worker}"
+        return True, ""
+
     def python_version(self, ctx: StageContext) -> str | None:
         return None
 

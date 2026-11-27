@@ -506,8 +506,7 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         "translation": config.translation.enabled,
         # Default-true, so its flag has to be listed or the status table calls a stage the
         # operator switched off "enabled" (the mapping defaults to True). Same reasoning as
-        # `translation` and `elan`; unlike `persons`, a default-False stage that the
-        # precedent above keeps out of the map on purpose.
+        # `translation`, `elan` and `diarization_nemotron`.
         "stories": config.stories.enabled,
         "spacy_source": config.spacy.enabled and config.spacy.process_source,
         "spacy_english": config.spacy.enabled and config.spacy.process_english,
@@ -522,14 +521,17 @@ def enabled_stage_names(config: PipelineConfig) -> list[str]:
         # Enabled by default, but its flag can flip the map's True default, so it must be
         # listed or the status table calls it enabled while Stage.enabled reports a skip.
         "elan": config.elan.enabled,
-        # `persons` is deliberately NOT listed, and the reason is a precedent rather than an
-        # oversight. The map's default is True, so a stage appears in it only when its flag
-        # can flip that default without lying about the pipeline's shape. `activespeaker` — the
-        # other stage that ships disabled — is absent for the same reason: adding a
-        # default-False stage here makes `enabled_stage_names` return fewer names than
-        # `STAGE_ORDER` on an untouched config, which is the invariant the status table's
-        # column layout is built on (tests/unit/test_cli_status_layout.py).
-        # The skip reason still reaches an operator, through the plan and the manifest, which
-        # is where a per-stage reason belongs; the header belongs to the stage list.
+        # Same rule, and it is why `persons` joins the map now that it defaults to true: a
+        # stage whose flag can be false has to be reported as the config states it, or the
+        # status table lists a column the run will skip. Its default only decides whether the
+        # *absent* key means enabled (map default True) or disabled; prerequisites such as a
+        # missing uv project never appear here — they are per-video skip reasons, which the
+        # plan and the manifest carry.
+        "persons": config.persons.enabled,
+        # Listed for the same rule, and it was the last stage whose flag the map ignored: with
+        # `activespeaker.enabled: false` in the config, `status` still printed it as enabled.
+        # Its TalkNet checkout is a runtime skip reason, not a config-level one, so nothing
+        # else about it belongs here.
+        "activespeaker": config.activespeaker.enabled,
     }
     return [name for name in STAGE_ORDER if mapping.get(name, True)]

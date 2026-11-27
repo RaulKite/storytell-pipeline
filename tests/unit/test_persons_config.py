@@ -80,11 +80,12 @@ TRACKS_COLUMNS: tuple[tuple[str, pa.DataType], ...] = (
 
 
 class TestConfigDefaults:
-    def test_off_by_default_with_the_measured_checkpoint(self):
+    def test_on_by_default_with_the_measured_checkpoint(self):
         cfg = PersonsConfig()
-        # Off, like the other optional GPU stages: a fresh clone must not be pushed into a
-        # sixth torch environment it did not ask for, and the corpus completes without it.
-        assert cfg.enabled is False
+        # On, like every stage of this pipeline: a default run measures every signal the
+        # pipeline can measure. What makes that safe is ``enabled()``, not the flag — the
+        # stage skips (never fails) when environments/persons is absent.
+        assert cfg.enabled is True
         assert cfg.model == "yolo11n.pt"
         assert cfg.tracker == "bytetrack"
         assert cfg.conf == 0.25
@@ -484,26 +485,25 @@ class TestDagRegistration:
         assert "persons" not in dependants_of("activespeaker")
         assert "persons" in dependants_of("metadata")
 
-    def test_it_is_not_in_the_enabled_stage_name_map_so_the_status_table_keeps_its_shape(self):
-        """A default-False stage stays out of ``enabled_stage_names``.
+    def test_the_status_name_map_follows_the_flag_in_both_directions(self):
+        """A default-true stage belongs in ``enabled_stage_names``, and its flag is honoured.
 
-        The map's default is True. Listing a stage that ships disabled makes the function
-        return fewer names than ``STAGE_ORDER`` on an untouched config, which silently drops a
-        column from every ``status`` table — the same reason ``activespeaker`` and
-        ``diarization_nemotron`` are absent. Asserted as the invariant rather than as a
-        membership list, so the next default-False stage inherits the rule instead of having
-        to rediscover it.
+        The map's default is True, so a stage is only listed when its flag can *contradict*
+        that default — that is, when it can be switched off. ``persons`` was left out while
+        it shipped disabled; now that it ships enabled it is listed, exactly like
+        ``diarization_nemotron`` and ``elan``, or ``status`` would print a column the run
+        will skip. Asserted for both flag values rather than as a membership list, so the
+        invariant survives the next default flip.
         """
         from multimodal_pipeline.orchestrator import enabled_stage_names
         from multimodal_pipeline.stages.base import STAGE_ORDER
 
-        for flag in ("true", "false"):
-            config = config_from_fragment({"persons": {"enabled": flag == "true"}})
-            names = enabled_stage_names(config)
-            assert len(names) == len(STAGE_ORDER), (
-                f"enabled_stage_names returned {len(names)} of {len(STAGE_ORDER)} stages when "
-                f"persons.enabled = {flag}: the status header lost a column")
-            assert "persons" in names
+        assert "persons" in enabled_stage_names(config_from_fragment({}))
+        assert len(enabled_stage_names(config_from_fragment({}))) == len(STAGE_ORDER)
+        disabled = enabled_stage_names(config_from_fragment({"persons": {"enabled": False}}))
+        assert "persons" not in disabled
+        assert len(disabled) == len(STAGE_ORDER) - 1, (
+            "a switched-off stage must lose its status column, not stay in the header")
 
 
 def config_from_fragment(extra: dict) -> PipelineConfig:
@@ -587,7 +587,7 @@ class TestEnvironmentInventory:
             "translation": {"enabled": False},
             "openpose": {"enabled": False}, "activespeaker": {"enabled": False},
             "spacy": {"enabled": False}, "whisperx": {"enabled": False},
-            "acoustic": {"enabled": False},
+            "acoustic": {"enabled": False}, "persons": {"enabled": False},
         })
         assert not [w for w in _environment_warnings(config) if "persons" in w]
 
@@ -605,14 +605,14 @@ class TestEnvironmentInventory:
             "environments/persons"), report["uv_projects"]["persons"]
         assert report["uv_projects"]["persons"]["exists"] is False
 
-
 class TestExampleConfig:
     def test_the_shipped_example_carries_the_section(self):
         import yaml
 
         raw = yaml.safe_load((ROOT / "config" / "config.example.yaml").read_text())
         assert "persons" in raw
-        assert raw["persons"]["enabled"] is False
+        assert raw["persons"]["enabled"] is True, (
+            "the shipped example must not disagree with the code default: every stage is on")
         assert raw["persons"]["model"] == "yolo11n.pt"
         assert raw["persons"]["classes"] == [0]
 

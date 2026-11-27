@@ -709,12 +709,15 @@ class PersonsConfig(_Model):
     when each one is on screen. Its ids live in their own namespace and are written to
     their own directory — see :data:`multimodal_pipeline.schemas.PERSON_FRAMES_SCHEMA`.
 
-    Off by default, like the other optional GPU stages. A fresh clone is not asked to sync
-    a fifth torch environment it may not want; with this off the pipeline completes and the
-    stage reports why it did not run.
+    On by default, like every other stage of the pipeline: the operator's decision is that a
+    default run measures everything the pipeline can measure, and a machine that has not
+    installed ``environments/persons`` says so per video instead of quietly producing a corpus
+    with one fewer signal. ``enabled()`` is what makes that safe — it skips (never fails) when
+    the environment, the worker or an explicitly configured checkpoint is missing, the same
+    three-state discipline ``diarization_nemotron`` uses.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     uv_project: Path = Path("environments/persons")
     worker: Path = Path("workers/persons_worker.py")
     python_version: str = "3.12"
@@ -875,14 +878,15 @@ class ElanConfig(_Model):
     corpus. That is also why it is the last stage — it summarises every producer's output, so
     running it before a producer finished would export a dataset that had not.
 
-    ``enabled`` defaults **true**, which is the opposite of the other optional late stages,
-    and the difference is what they cost rather than how risky they are. ``persons`` and
-    ``diarization_nemotron`` default false because a fresh clone that left them on would sync a
-    torch environment and download a checkpoint nobody asked for, on a machine that may have no
-    GPU. This stage does neither: it is pure Python over files already on disk, using one small
-    pure-Python library in the root dependencies, and it costs seconds per video. A default of
-    false would mean the feature was off for everyone in exchange for nothing. Reversible
-    per-config, and switching it off deletes nothing.
+    ``enabled`` defaults **true**, as every stage of this pipeline now does: a default run
+    measures everything the pipeline can measure, and a stage whose prerequisite is missing
+    skips with a reason instead of failing the video. What differs between stages is the cost a
+    default run pulls in. This one is pure Python over files already on disk, using one small
+    pure-Python library in the root dependencies, so it costs seconds per video and nothing to
+    install. ``persons`` and ``diarization_nemotron`` are on by default too, but they *skip*
+    until their own uv environment exists, so a fresh clone pays no torch sync and no checkpoint
+    download it did not ask for. Reversible per-config, and switching a stage off deletes
+    nothing.
     """
 
     enabled: bool = True

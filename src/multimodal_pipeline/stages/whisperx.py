@@ -76,7 +76,9 @@ class WhisperXStage(WorkerStage):
     def enabled(self, ctx: StageContext) -> tuple[bool, str]:
         if not ctx.config.whisperx.enabled:
             return False, "whisperx.enabled = false"
-        return True, ""
+        # Its uv environment is a prerequisite, not a defect: skip with the remedy rather
+        # than fail the video when the project was never created.
+        return super().enabled(ctx)
 
     def uv_project(self, ctx: StageContext) -> Path:
         return ctx.config.resolve(ctx.config.whisperx.uv_project)

@@ -20,7 +20,7 @@ synthetic dataset directory with no stage, no config and no output directory. Th
 reader, the writer, and the reuse guarantees around them:
 
 * per-tier absence is normal and logged, never an error — translation has no endpoint by
-  default, ``persons`` ships disabled, either diarizer may be off;
+  default, ``persons`` or OpenPose may not be installed, either diarizer may be off;
 * what the export represents and what it leaves out travels in the file and in this stage's
   record, because "that tier is missing" has two causes an opened ``.eaf`` cannot tell apart —
   see :func:`~multimodal_pipeline.elan.coverage_inventory`;

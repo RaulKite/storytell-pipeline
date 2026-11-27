@@ -48,6 +48,19 @@ from .base import StageContext, WorkerStage, raw_request_matches
 
 OUTPUT_FPS = 25
 
+#: The two checkpoints TalkNet resolves against its own working directory, mirrored from
+#: ``workers/activespeaker_worker.py`` (``PRETRAIN_MODEL`` / ``S3FD_MODEL``), which cannot be
+#: imported here: that module pulls torch at import time, and the orchestrator never imports
+#: torch. The names are the *target* names the worker copies from ``weights_dir`` into the
+#: checkout, so a pre-flight check and the worker's own refusal name the same two files.
+TALKNET_WEIGHTS = ("pretrain_TalkSet.model", "sfd_face.pth")
+
+
+def missing_weights(weights_dir: Path) -> list[str]:
+    """The configured checkpoints that are not in ``weights_dir``, in declaration order."""
+    return [name for name in TALKNET_WEIGHTS if not (weights_dir / name).is_file()]
+
+
 #: The closed set of `frame_reason` values, and the subset that carries no measurement.
 #: `unknown` is in it on purpose: it means "a row we cannot diagnose", never "probably
 #: one of the others".
@@ -138,7 +151,22 @@ class ActiveSpeakerStage(WorkerStage):
         if not (Path(cfg.talknet_root) / "run_talknet.py").is_file():
             return False, (f"activespeaker.talknet_root has no run_talknet.py: "
                            f"{cfg.talknet_root} (is it a TalkNet-ASD checkout?)")
-        return True, ""
+        if cfg.weights_dir is not None:
+            # An explicit weights_dir is a promise about two files, and the worker refuses to
+            # fall back to an unattended gdown download when the promise is broken. Reporting
+            # it here turns that refusal into a skip, which is the same reading ``persons``
+            # gives a configured checkpoint that is not on disk: an uninstalled prerequisite,
+            # not a defect in the video.
+            absent = missing_weights(ctx.config.resolve(cfg.weights_dir))
+            if absent:
+                return False, (
+                    f"activespeaker.weights_dir is set but {', '.join(absent)} is missing "
+                    f"from {ctx.config.resolve(cfg.weights_dir)} — put the checkpoint(s) "
+                    f"there, or unset activespeaker.weights_dir to let TalkNet download them"
+                )
+        # Last: the checkout above costs nothing to check, and its reason is the one an
+        # operator who has not installed TalkNet at all needs first.
+        return super().enabled(ctx)
 
     # --------------------------------------------------------------- worker
 

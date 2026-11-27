@@ -97,20 +97,14 @@ class DiarizationNemotronStage(WorkerStage):
         broken. The last one still runs and fails loudly, because at that point silence
         would hide a real defect — and the transcript stays unlabelled for a reason the
         stage record names.
+
+        The environment and worker checks are ``WorkerStage``'s own: identical prerequisites
+        deserve an identical message, and one copy cannot drift from the other.
         """
         cfg = ctx.config.diarization_nemotron
         if not cfg.enabled:
             return False, "diarization_nemotron.enabled = false"
-        project = self.uv_project(ctx)
-        if not project.is_dir():
-            return False, (
-                f"nemotron environment not installed at {project} — create it and run "
-                "`uv sync --python 3.12` there to enable diarization"
-            )
-        worker = self.worker_script(ctx)
-        if not worker.is_file():
-            return False, f"nemotron worker script missing at {worker}"
-        return True, ""
+        return super().enabled(ctx)
 
     # ------------------------------------------------------------------ worker
 

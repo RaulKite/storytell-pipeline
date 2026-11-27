@@ -2151,8 +2151,8 @@ def build_eaf(dataset_dir: Path, video_path: Path,
 
     A tier whose input file is absent is skipped with **one** logged line naming the file.
     Absent is the normal state for most of these tables — Nemotron may never have run,
-    translation has no endpoint by default, ``persons`` ships disabled, OpenPose is its own GPU
-    stage — and the pipeline's rule is that an absent artifact is reported rather than
+    translation has no endpoint by default, ``persons`` or OpenPose may not be installed — and
+    the pipeline's rule is that an absent artifact is reported rather than
     promised (``manifest.artifacts_not_generated``). The .eaf follows that rule.
 
     A file that exists but cannot be read is skipped too, with its exception named. That is a

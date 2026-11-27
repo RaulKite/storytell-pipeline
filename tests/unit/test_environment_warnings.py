@@ -45,7 +45,8 @@ def base_config(tmp_path: Path) -> PipelineConfig:
     filters by needle instead of comparing whole lists.
     """
     (tmp_path / "videos").mkdir()
-    for name in ("whisperx", "diarization_nemotron", "spacy", "acoustic", "activespeaker"):
+    for name in ("whisperx", "diarization_nemotron", "spacy", "acoustic", "activespeaker",
+                 "persons"):
         (tmp_path / "environments" / name).mkdir(parents=True)
     return PipelineConfig.model_validate(
         {
@@ -59,6 +60,10 @@ def base_config(tmp_path: Path) -> PipelineConfig:
             "spacy": {"enabled": False},
             "whisperx": {"enabled": False},
             "acoustic": {"enabled": False},
+            # Enabled by default like every stage, and it carries a `uv_project`, so it is
+            # warned about unless the test config says otherwise. Listed here so a test's
+            # needle cannot be matched by an unrelated stage's warning path.
+            "persons": {"enabled": False},
         }
     )
 

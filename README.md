@@ -28,8 +28,8 @@ tool output and stage caches, a log and provenance, times in seconds from video 
 | Speech | WhisperX transcription/alignment; Nemotron speaker diarization | `speech/words.parquet`, `speech/speaker_turns_nemotron.parquet` |
 | Language | English segment translations; spaCy source/English tokens and sentences | `translation/segments_en.parquet`, `linguistic/source/tokens.parquet`, `linguistic/english/tokens.parquet` |
 | Acoustics | Praat/Parselmouth pitch, intensity, formants and segment statistics | `acoustic/frame_features.parquet` |
-| Visual | OpenPose keypoints and body-centred coordinates; optional YOLO person tracks | `pose/body.parquet`, `persons/tracks.parquet` |
-| Speakers | Optional TalkNet visible-face activity — a separate, visual signal | `speaker/active_speaker_frames.parquet` |
+| Visual | OpenPose keypoints and body-centred coordinates; YOLO person tracks | `pose/body.parquet`, `persons/tracks.parquet` |
+| Speakers | TalkNet visible-face activity — a separate, visual signal | `speaker/active_speaker_frames.parquet` |
 | Stories | Transcript-bound LLM narrative candidates, not validated detections | `stories/stories.parquet` |
 | Inspection | ELAN `.eaf` files written with pympi-ling (requires a transcript), HTML preview, corpus-specific bundle | `elan/annotations.eaf` |
 
@@ -42,10 +42,13 @@ Heavy tools live in `uv` environments the root sync does not install ([what runs
 ## Quickstart
 
 Root sync installs the CLI, Parquet and the stages that need no model. `config.example.yaml`
-enables CUDA WhisperX, Nemotron diarization and OpenPose, whose worker environments it does
-**not** install — sync each enabled one the way [Install](docs/getting-started.md#install)
-shows (`cd environments/<name> && uv sync --python 3.12`). OpenPose, TalkNet, `HF_TOKEN` and
-an LLM endpoint are further [prerequisites](docs/getting-started.md#prerequisites).
+enables **every** stage — CUDA WhisperX, Nemotron diarization, spaCy, acoustics, OpenPose,
+pose normalization, TalkNet, YOLO and ELAN — and installs none of their worker environments,
+so sync each one you want the way [Install](docs/getting-started.md#install) shows
+(`cd environments/<name> && uv sync --python 3.12`). A stage whose environment, binary,
+checkout or checkpoint is absent **skips with a reason** instead of failing the video, so the
+first run reports what a full one would add. OpenPose, TalkNet, `HF_TOKEN` and an LLM endpoint
+are further [prerequisites](docs/getting-started.md#prerequisites).
 
 ```bash
 uv sync --python 3.12

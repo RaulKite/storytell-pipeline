@@ -47,7 +47,7 @@ The same applies independently to the `stories` section.
 | `input`, `output` | Directory, recursive discovery and accepted extensions; dataset root |
 | `execution` | Sequential mode, GPU index, stop-on-video-error policy |
 | `whisperx` | Model, language, device, compute type, batching and VAD |
-| `diarization_nemotron` | Speaker diarization on by default: model, threshold, up to eight channels |
+| `diarization_nemotron` | Speaker diarization: model, threshold, up to eight channels |
 | `translation`, `stories` | Independent endpoint/model, prompt version, retries, context and cache |
 | `spacy` | Source/English models, fallback and language-reliability policy |
 | `acoustic` | Frame step, pitch range, formant ceiling, pause policy and chunk size |
@@ -57,6 +57,11 @@ The same applies independently to the `stories` section.
 | `persons` | Model/weights, tracker, confidence, classes and input image size |
 | `elan` | Enable/disable derived annotation export |
 | `logging` | Level, console output and progress refresh interval |
+
+Every stage's `enabled` defaults to `true`, and so does every tool switch inside a stage
+(`openpose.body/hands/face.enabled`, `spacy.process_source`, `spacy.process_english`).
+Switching one off is a supported way to say "never measure this"; leaving it on with the
+prerequisite absent is not an error — the stage skips with a reason naming what to install.
 
 OpenPose renderings are opt-in: `openpose.write_images: true` adds files under
 `pose/raw_images/`. Set `openpose.image_max_side` to bound their size. Changing
@@ -111,8 +116,10 @@ responses; retained responses and cache keys are the reproducibility evidence.
 | Endpoint not configured | Replace the placeholder in that stage's YAML; supply key/model, use mock or disable |
 | `uv project not found` | Restore/correct the configured project directory, then sync it; sync cannot create a missing project definition |
 | `libnvrtc.so.13` | Check the `diarization_nemotron` torch pin and re-sync; see the environment's comments |
-| OpenPose binary not found | Fix `openpose.root` or executable/model paths; inspect the environment report |
-| TalkNet root missing / no `run_talknet.py` | Point at a valid TalkNet-ASD checkout |
+| Stage skipped: `… environment not installed at …` | Create that `environments/<name>` project and `uv sync` it; `inspect-environment` lists every missing one before a run |
+| Stage skipped: OpenPose not installed | Fix `openpose.root` or executable/model paths, or switch `openpose.enabled` off; inspect the environment report |
+| Stage skipped: TalkNet root missing / no `run_talknet.py` | Point `activespeaker.talknet_root` at a valid TalkNet-ASD checkout |
+| Stage skipped: `weights_dir` is set but a checkpoint is missing | Put the file there, or unset `weights_dir` and let the tool download it |
 | TalkNet `weights_only` / unpickling error | Preserve the torch 2.5.1 compatibility pin and re-sync its environment |
 | Stage reruns unexpectedly | Read `status --plan`; compare config/tool/source hashes, upstream sequence and validation |
 | Empty pose/person table | Inspect raw output and stage status; no detection can be a valid result, not proof nobody was present |

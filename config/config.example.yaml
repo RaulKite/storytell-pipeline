@@ -5,6 +5,13 @@
 #
 # Environment-variable interpolation is supported anywhere as ${VAR} or
 # ${VAR:-default}; that is the recommended way to keep secrets out of the file.
+#
+# Every stage is enabled here, and enabled is the code default too: a default run
+# measures everything this pipeline can measure. What a machine cannot run, it skips:
+# a stage whose uv environment, binary, checkout or checkpoint is absent reports a skip
+# reason naming the missing prerequisite, and the rest of the corpus still completes.
+# Only rendering is opt-in (openpose.write_images, openpose.write_video,
+# activespeaker.write_video): those produce no analysis, and each one reruns its stage.
 
 input:
   directory: /data/videos
@@ -226,10 +233,11 @@ openpose:
 # Needs a TalkNet-ASD checkout and its own uv environment:
 #   git clone https://github.com/RaulKite/TalkNet-ASD /path/to/TalkNet-ASD
 #   (cd environments/activespeaker && uv sync --python 3.12)
-# Disabled by default here because the checkout is external to this repository;
-# when talknet_root is unset the stage reports a skipped reason naming the setting.
+# On by default like every stage. The checkout is external to this repository, so until
+# `talknet_root` is set (or its environment, or a configured weights_dir, is missing) the
+# stage skips with a reason naming the setting, and the corpus still completes.
 activespeaker:
-  enabled: false
+  enabled: true
   uv_project: environments/activespeaker
   worker: workers/activespeaker_worker.py
   # talknet_root: /path/to/TalkNet-ASD
@@ -262,9 +270,9 @@ activespeaker:
 # own and would fight the whisperx/diarization/activespeaker pins if installed beside them:
 #   (cd environments/persons && uv sync --python 3.12)
 #
-# Off by default, like the other optional GPU stages: a fresh clone is not asked to sync a
-# fifth torch environment it did not ask for, and the corpus completes without it (the stage
-# reports a skip reason naming the setting).
+# On by default like every stage. It skips -- with a reason naming the environment, the
+# worker or a configured checkpoint that is absent -- until that environment exists, so a
+# fresh clone pays no fifth torch sync it did not ask for and the corpus still completes.
 #
 # The output has its OWN ID NAMESPACE. `person_id` is a YOLO/ByteTracker body-track id; the
 # `track_id` in speaker/active_speaker_*.parquet is a TalkNet FACE-track id. Both are small
@@ -272,7 +280,7 @@ activespeaker:
 # means nothing. They are also different kinds of thing: a person id can span a frame where
 # the face is turned away, and one talking head can produce several person ids across a cut.
 persons:
-  enabled: false
+  enabled: true
   uv_project: environments/persons
   worker: workers/persons_worker.py
   # Checkpoint name, resolved under weights_dir when set and otherwise downloaded by
@@ -372,8 +380,8 @@ persons:
 
 # ELAN export: one `.eaf` per video, fixed flat summary tiers, linked to the source
 # video. Pure python over Parquet that is already on disk -- no GPU, no uv environment, no
-# download -- so it is on by default where the GPU stages are off, and turning it off deletes
-# nothing. It runs last because every tier summarises some producer's tables.
+# download -- so it is on by default and turns nothing on that a run would not measure
+# anyway. It runs last because every tier summarises some producer's tables.
 #
 # Up to twelve fixed tiers (see docs/elan.md), including transcript, diarization-turn,
 # visual-state and acoustic-window summaries. A tier whose input file is absent is skipped with one
