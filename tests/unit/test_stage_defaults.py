@@ -289,3 +289,61 @@ def test_no_source_document_still_says_stages_ship_disabled() -> None:
                 continue
             offenders.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
     assert offenders == [], offenders
+
+
+class TestPresentButUnusableFails:
+    """Three states, three answers: absent skips, broken fails, usable runs.
+
+    A path that *exists* is not an absent prerequisite. ``openpose.executable`` pointing at
+    a file without the execute bit, or at a directory where a binary should be, is a broken
+    install: skipping it reported a working-looking batch whose pose tables silently were not
+    produced, and nothing in the run said why.
+    """
+
+    def test_an_executable_without_the_execute_bit_fails_loudly(self, context, tmp_path):
+        candidate = tmp_path / "openpose.bin"
+        candidate.write_bytes(b"not a binary")
+        candidate.chmod(0o644)
+        context.config.openpose.executable = str(candidate)
+        with pytest.raises(StageError, match="not executable"):
+            stage_named("openpose").enabled(context)
+
+    def test_a_configured_executable_path_that_is_a_directory_fails_loudly(
+            self, context, tmp_path):
+        candidate = tmp_path / "openpose.bin"
+        candidate.mkdir()
+        context.config.openpose.executable = str(candidate)
+        with pytest.raises(StageError, match="not a file"):
+            stage_named("openpose").enabled(context)
+
+    def test_a_missing_executable_still_skips(self, context, tmp_path):
+        context.config.openpose.executable = str(tmp_path / "definitely-absent.bin")
+        enabled, reason = stage_named("openpose").enabled(context)
+        assert enabled is False and "definitely-absent.bin" in reason
+
+    def test_a_model_folder_that_is_a_file_fails_loudly(self, context, tmp_path):
+        executable = tmp_path / "openpose.bin"
+        executable.write_bytes(b"stub")
+        executable.chmod(0o755)
+        model_file = tmp_path / "models"
+        model_file.write_bytes(b"not a directory")
+        context.config.openpose.executable = str(executable)
+        context.config.openpose.model_folder = str(model_file)
+        with pytest.raises(StageError, match="not a directory"):
+            stage_named("openpose").enabled(context)
+
+    def test_an_auto_discovered_binary_without_the_execute_bit_fails_loudly(
+            self, context, tmp_path, monkeypatch):
+        """Discovery answers "is it there"; the gate has to ask "can it run"."""
+        root = tmp_path / "openpose"
+        binary = root / "build/examples/openpose/openpose.bin"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"not a binary")
+        binary.chmod(0o644)
+        models = root / "models"
+        models.mkdir()
+        context.config.openpose.root = str(root)
+        context.config.openpose.executable = "auto"
+        context.config.openpose.model_folder = "auto"
+        with pytest.raises(StageError, match="not executable"):
+            stage_named("openpose").enabled(context)

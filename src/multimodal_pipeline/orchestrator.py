@@ -96,6 +96,11 @@ class VideoResult:
     stage_outcomes: dict[str, str] = field(default_factory=dict)
     durations: dict[str, float] = field(default_factory=dict)
     errors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Why each skipped stage skipped, quoted verbatim from its record. A completed video can
+    #: carry several: a stage whose environment is not installed does not make the video
+    #: incomplete, and that is exactly the case a reader has to be able to see from the batch
+    #: report instead of opening fifteen ``status.json`` files to find out what was not measured.
+    skipped: dict[str, str] = field(default_factory=dict)
     total_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,6 +113,7 @@ class VideoResult:
             "duration_seconds": round(self.total_seconds, 2),
             "stage_durations": self.durations,
             "errors": self.errors,
+            "skipped": dict(self.skipped),
         }
 
 
@@ -286,6 +292,10 @@ class VideoRunner:
                 result.durations[stage.name] = record.duration_seconds or 0.0
                 if record.error:
                     result.errors[stage.name] = record.error
+                if record.status == STATUS_SKIPPED:
+                    result.skipped[stage.name] = (
+                        (record.validation_result or {}).get("reason")
+                        or "skipped without a recorded reason")
                 stage_log.close()
                 if record.status == STATUS_FAILED:
                     # Record the poison and keep going: independent branches of the DAG

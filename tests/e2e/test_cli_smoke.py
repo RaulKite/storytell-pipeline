@@ -296,6 +296,24 @@ class TestFullRun:
         assert stages["openpose"] == "skipped"
         assert stages["metadata"] == "completed"
 
+    def test_skip_reasons_reach_the_batch_report_and_the_summary(self, fresh: Path) -> None:
+        """A skip has to be visible without opening each video's status.json.
+
+        The batch report is what a script and the closing summary are read from; a
+        completed video whose pose or diarization stage never ran is complete, and the one
+        thing a reader needs is why. Reproduced before this: entries carried `errors` only,
+        so `batch_report.json` and the CLI summary said nothing about an unmeasured stage.
+        """
+        result = cli("run", "-c", str(fresh / "config" / "config.yaml"))
+        assert result.returncode == 0, result.stderr[-3000:]
+        entry = next(video for video in load(fresh / "out" / "batch_report.json")["videos"]
+                     if video["video_id"] == "alpha")
+        assert entry["status"] == "completed"
+        assert entry["skipped"]["whisperx"] == "whisperx.enabled = false"
+        assert "openpose" in entry["skipped"]
+        # And the summary an operator actually reads, on stderr where diagnostics belong.
+        assert "skipped whisperx" in result.stderr, result.stderr[-2000:]
+
     # --- the second diarization engine must be inert until it is asked for -----------
 
     def test_second_diarizer_skips_and_is_declared_absent(self, fresh: Path) -> None:

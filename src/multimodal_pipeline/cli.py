@@ -652,11 +652,19 @@ def _finish(report: BatchReport, config: PipelineConfig) -> None:
     console.print(f"  Failed:            {report.failed}")
     console.print(f"  Total time:        {_human_duration(report.elapsed_seconds)}")
     for entry in report.entries:
-        if entry["status"] != STATUS_COMPLETED:
-            console.print(f"\n  [yellow]{entry['video_id']}[/]")
-            for stage, message in (entry.get("errors") or {}).items():
-                detail = message.get("message") if isinstance(message, dict) else message
-                console.print(f"    {stage}: {detail}")
+        # Skips are printed for *every* video that has them, including completed ones: a
+        # video whose diarizer or pose stage was skipped for a missing prerequisite is
+        # complete, and its missing measurements are the thing a reader needs without opening
+        # each ``status.json`` to find out what was not measured and why.
+        skips = entry.get("skipped") or {}
+        if entry["status"] == STATUS_COMPLETED and not skips:
+            continue
+        console.print(f"\n  [yellow]{entry['video_id']}[/] [{entry['status']}]")
+        for stage, message in (entry.get("errors") or {}).items():
+            detail = message.get("message") if isinstance(message, dict) else message
+            console.print(f"    {stage}: {detail}")
+        for stage, reason in skips.items():
+            console.print(f"    [dim]skipped {stage}: {_one_line(str(reason))}[/]")
     console.print(f"\nBatch report:\n  {report.path}")
     if report.failed or report.partial:
         raise typer.Exit(code=2)
