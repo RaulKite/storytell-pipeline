@@ -41,7 +41,7 @@ from ..elan import (ALL_INPUTS, COVERAGE_EXPORTED, COVERAGE_PRESENT_NOT_EXPORTED
                     OVERLAP_PROJECTION_PROPERTY, SECONDARY_INPUTS, TIERS, build_eaf, coverage_of,
                     drop_counts, overlap_projection, tier_counts)
 from ..exceptions import ValidationError
-from .base import Stage, StageContext
+from .base import UPSTREAM_SKIPPED, Stage, StageContext
 
 #: The artifacts whose joint absence makes the export pointless rather than partial. Every
 #: other input is optional; these two are the tiers everyone opens the file for.
@@ -160,9 +160,12 @@ class ElanStage(Stage):
             return False, "elan.enabled = false"
         if any(ctx.artifact(name).is_file() for name in TRANSCRIPT_ARTIFACTS):
             return True, ""
-        return False, ("no transcript to export: neither speech/words.parquet nor "
-                       "speech/segments.parquet exists in this dataset — run the whisperx "
-                       "stage first")
+        # The same prefix every other transcript consumer reports, so the batch report and
+        # the closing summary read as one statement about what did not arrive rather than as
+        # fourteen stages each inventing its own wording.
+        return False, (f"{UPSTREAM_SKIPPED}: transcript unavailable: neither "
+                       f"speech/words.parquet nor speech/segments.parquet exists in this "
+                       f"dataset — run the whisperx stage first")
 
     # ------------------------------------------------------------------ execution
 
