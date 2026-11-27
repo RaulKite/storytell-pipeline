@@ -38,11 +38,19 @@ bleeding, and an off-screen speaker can own a channel no face matches.
 `speaker_assignment` is the only stage that decides what `speaker_id` means, so it never
 leaves another engine's labels behind. A turn table already in the dataset is used even
 when `diarization_nemotron` was not re-run (its environment missing, or switched off);
-without one, the derived tables are rewritten with `speaker_id: null` and
+without one, `segments` and `words` are rewritten with `speaker_id: null` and
 `speaker_assignment_method: no_diarization` — a recorded fact, not a gap. Transcripts
 produced under the removed pyannote engine therefore lose their `SPEAKER_00` labels on
-the next run instead of publishing a speaker no table in the dataset contains. The
-preserved raw WhisperX document is never rewritten.
+the next run instead of publishing a speaker no table in the dataset contains. It labels
+whichever of the two transcript tables the dataset has, so a words-only dataset is not
+left publishing a foreign label. The preserved raw WhisperX document is never rewritten.
+
+That makes the turn table an input worth checking, and a damaged one **fails** the stage
+rather than clearing labels: a table that is unreadable, lacks `start_time`/`end_time`/
+`speaker_id`, holds a reversed or non-numeric interval, runs past the video's audio, names
+another `video_id`, or was diarized from a different `audio_sha256` (Nemotron's sidecar
+records it) is a defect, and labelling from it would silently mislabel or null everything.
+Only genuine absence clears.
 
 English translation is **segment-level translation**, not transliteration or
 interlinear glossing. Source and English spaCy annotations are separate. Their
