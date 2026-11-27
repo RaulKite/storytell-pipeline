@@ -551,8 +551,17 @@ class TrackVideoWriter:
         * ``offset > 0`` -- the sound starts after the first frame: ``adelay`` inserts that much
           silence, quantised to the millisecond, which is 1/40th of a frame at 25 fps;
         * ``offset < 0`` -- the sound starts before it: ``atrim`` drops the part no picture ever
-          covered, and the second reset puts what is left at zero;
+          covered, and the clock is then moved by exactly the amount that was trimmed;
         * ``offset == 0``, including "could not be measured": nothing moves.
+
+        The trim branch moves by the trimmed amount and **not** by resetting to the new first
+        packet, which is a different number whenever the source has a timestamp gap: a real MKV
+        whose first picture is at 0.400 s carries packets at 0.000 s and then nothing until
+        0.604 s, and a reset would put that 0.604 s sample at zero -- a preview playing its
+        sound 204 ms early, with the frame count, rate and streams all correct. ``aresample``
+        with ``first_pts=0`` then turns whatever gap is left into **silence samples** rather
+        than leaving it in the timestamps: a raw decode drops timestamps and would show the
+        sound arriving early again, so the hole has to exist in the samples.
 
         ``apad`` stays last in every branch: it is what makes ``-shortest`` end at the video
         rather than at whatever the audio had left (see :meth:`_mux_argv`).
@@ -561,8 +570,9 @@ class TrackVideoWriter:
             delay = f"{int(round(self.audio_offset * 1000))}"
             return f"asetpts=PTS-STARTPTS,adelay={delay}:all=1,apad"
         if self.audio_offset < 0:
-            return (f"asetpts=PTS-STARTPTS,atrim=start={abs(self.audio_offset):.6f},"
-                    "asetpts=PTS-STARTPTS,apad")
+            trim = abs(self.audio_offset)
+            return (f"asetpts=PTS-STARTPTS,atrim=start={trim:.6f},"
+                    f"asetpts=PTS-{trim:.6f}/TB,aresample=async=1:first_pts=0,apad")
         return "asetpts=PTS-STARTPTS,apad"
 
     def _mux_argv(self) -> list[str]:

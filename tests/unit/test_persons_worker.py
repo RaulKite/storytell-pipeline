@@ -1244,11 +1244,17 @@ class TestAudioIsRebasedOntoTheFirstFrame:
 
     def test_the_trim_branch_asks_ffmpeg_to_drop_the_part_before_the_picture(
             self, worker, tmp_path):
+        """Trim, then move the clock by what was trimmed -- not by a reset.
+
+        The reset that used to follow ``atrim`` is only correct when the first surviving packet
+        sits exactly at the trim point, and a source with a timestamp gap does not.
+        """
         writer = worker.TrackVideoWriter(ffmpeg="ffmpeg", destination=tmp_path / "tracks.mp4",
                                         fps=25.0, audio_source=tmp_path / "src.mp4",
                                         audio_offset=-0.2)
         assert writer._audio_filter() == (
-            "asetpts=PTS-STARTPTS,atrim=start=0.200000,asetpts=PTS-STARTPTS,apad")
+            "asetpts=PTS-STARTPTS,atrim=start=0.200000,asetpts=PTS-0.200000/TB,"
+            "aresample=async=1:first_pts=0,apad")
         writer.abort()
 
     def test_a_source_whose_streams_start_together_still_resets_the_audio_clock(
@@ -1291,7 +1297,7 @@ class TestAudioIsRebasedOntoTheFirstFrame:
         assert payload["status"] == "ok", payload.get("error")
         mux = read_calls(log)[1]
         _slice_index(mux["argv"], ["-af", "asetpts=PTS-STARTPTS,atrim=start=0.200000,"
-                                   "asetpts=PTS-STARTPTS,apad"])
+                                   "asetpts=PTS-0.200000/TB,aresample=async=1:first_pts=0,apad"])
         assert payload["_document"]["render"]["audio_offset_seconds"] == pytest.approx(-0.2)
 
 
@@ -1840,6 +1846,68 @@ class TestAgainstRealFfmpeg:
         assert payload["_document"]["render"]["audio_offset_seconds"] < -0.1
         assert ffprobe_count_frames(dest) == 10
 
+    def _gapped_audio_source(self, tmp_path) -> Path:
+        """A source whose picture starts 400 ms late and whose audio has a timestamp gap.
+
+        The state the reviewer measured on a real MKV: audio packets at 0.000 (a silent
+        preroll the trim removes), then a jump to 0.604 before the first audible sample.
+        Built rather than picked, because the gap *and* a picture that starts later than the
+        audio stream are both needed to reach the trim branch.
+        """
+        audio = tmp_path / "gapped-audio.mka"
+        # Silence up to 0.1 s, then the tone; the packets from 0.1 s on are moved 0.488 s
+        # later by ``asetpts``, which is a *timestamp* gap -- no samples are written in
+        # between, so the hole is invisible to a straight decode to PCM.
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+             r"aevalsrc=if(lt(t\,0.1)\,0\,sin(2*PI*1000*t)):s=44100:d=0.4",
+             "-af", r"asetpts=PTS+if(gte(PTS\,0.1)\,0.488\,0)/TB",
+             "-c:a", "aac", "-f", "matroska", str(audio)],
+            check=True, capture_output=True)
+        clip = tmp_path / "gapped-source.mkv"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-itsoffset", "0.4",
+             "-f", "lavfi", "-i", "testsrc=size=64x48:rate=25:duration=0.4",
+             "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-c:a", "copy", str(clip)],
+            check=True, capture_output=True)
+        return clip
+
+    def test_a_timestamp_gap_after_the_trimmed_preroll_survives_the_trim(
+            self, worker, tmp_path, fake_cv2):
+        """Trimming the preroll must not also erase the hole that follows it.
+
+        The reviewer's real MKV: the first picture is at 0.400 s, the audio stream starts at
+        0.000 s, and the first audible sample is at 0.604 s after a timestamp gap. The trim
+        drops everything before 0.400 s correctly, and then resetting the *remaining* packets
+        to zero pulled that 0.604 sample to 0.000 -- a preview that plays its sound 204 ms too
+        early while every header, frame count and rate still checks out.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        clip = self._gapped_audio_source(tmp_path)
+        assert audio_stream_start(clip) == pytest.approx(0.0, abs=0.05)
+        assert first_video_frame_pts(clip) == pytest.approx(0.4, abs=0.02)
+        index = tmp_path / "gapped_index.parquet"
+        pq.write_table(pa.table({
+            "frame_number": pa.array(list(range(10)), type=pa.int64()),
+            "pts_seconds": pa.array([0.4 + i * 0.04 for i in range(10)], type=pa.float64()),
+        }), index)
+        FakeModel.results = [FakeResult(i, [1]) for i in range(10)]
+        dest = tmp_path / "raw" / "gapped-tracks.mp4"
+        payload = run_worker(worker, tmp_path, video=clip, frame_index=index, extra=[
+            "--output-video", str(dest), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+        assert payload["status"] == "ok", payload.get("error")
+        assert payload["_document"]["render"]["audio_offset_seconds"] < -0.1, \
+            "this clip must exercise the trim branch"
+        source_offset = gap_aware_av_offset(clip)
+        preview_offset = gap_aware_av_offset(dest)
+        assert abs(preview_offset - source_offset) <= 0.03, (
+            f"the preview's sound starts {preview_offset:.3f}s after its first picture; in the "
+            f"source it starts {source_offset:.3f}s after the first picture")
+        assert ffprobe_count_frames(dest) == 10
 
     def test_an_odd_frame_size_reaches_the_encoder_as_an_even_one(self, worker, tmp_path,
                                                                  fake_cv2):
@@ -1930,6 +1998,29 @@ def first_video_frame_pts(path: Path) -> float:
          str(path)],
         check=True, capture_output=True, text=True)
     return float(json.loads(completed.stdout)["frames"][0]["pts_time"])
+
+
+def gap_aware_av_offset(path: Path) -> float:
+    """Seconds from a file's first picture to its first *audible* sample, gaps filled.
+
+    :func:`av_offset` decodes straight to PCM, and that drops timestamp gaps: ffmpeg writes
+    the decoded frames back to back, so a file whose sound resumes 200 ms after a hole looks
+    continuous. ``aresample=async=1:first_pts=0`` turns every gap into real silence first, so
+    the raw sample offset is the instant a viewer hears the sound start.
+    """
+    import array
+
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0",
+                          "-af", "aresample=async=1:first_pts=0",
+                          "-f", "s16le", "-ac", "1", "-ar", "8000", "-"],
+                         check=True, capture_output=True).stdout
+    samples = array.array("h")
+    samples.frombytes(raw)
+    assert samples, f"{path} decoded to no audio samples"
+    threshold = max(200, max(abs(value) for value in samples) // 10)
+    first = next((index for index, value in enumerate(samples) if abs(value) > threshold), None)
+    assert first is not None, f"{path} carries no audible audio"
+    return first / 8000.0 - first_video_frame_pts(path)
 
 
 def av_offset(path: Path) -> float:
