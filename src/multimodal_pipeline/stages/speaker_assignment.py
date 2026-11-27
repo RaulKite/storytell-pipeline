@@ -18,6 +18,15 @@ this stage runs whenever there is a transcript: it either labels from the cached
 table or rewrites the derived tables with ``speaker_id = null`` and an explicit
 ``no_diarization`` method. Raw WhisperX output is never touched, so the evidence survives.
 
+Two consequences of being that place, both of which used to be assumptions rather than
+checks. **The timeline is validated before it labels anything** (:meth:`_check_timeline`):
+a table that is reversed, non-numeric, past the audio, written for another ``video_id`` or
+diarized from a different ``audio_sha256`` fails the stage instead of quietly producing a
+transcript of null labels. And **the pair of transcript tables is written together**
+(:meth:`_publish`): both are read and both results built before either destination is
+replaced, so a corrupt ``words.parquet`` can no longer leave a relabelled ``segments.parquet``
+behind.
+
 Deliberately a distinct stage: raw WhisperX and raw Nemotron outputs stay untouched, so
 this normalisation can be recomputed (with different rules or a better timeline) without
 re-running either model.
