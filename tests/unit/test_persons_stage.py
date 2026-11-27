@@ -837,6 +837,13 @@ class TestRequestIsMasterIdenticalWhenTheToggleIsOff:
     the upgrade alone reruns YOLO over the whole corpus to produce output identical to what is
     already on disk. So the assertion is made against master's *own* source, extracted from Git
     and executed -- a literal copy of the dict here could drift from it silently.
+
+    What this class does **not** claim: that a dataset master produced is reused. The worker's
+    own source is part of ``digest_payload`` by design (a worker fix must invalidate cached raw
+    output), and this feature edits that worker, so a master-stamped sidecar stops matching the
+    moment the upgrade lands. That one-time YOLO rerun per clip is the deliberate price of the
+    digest covering the worker, and the last test here pins it instead of hiding it behind a
+    master digest salted with *this* worker's bytes.
     """
 
     BASE = "d266550"
@@ -861,38 +868,80 @@ class TestRequestIsMasterIdenticalWhenTheToggleIsOff:
              namespace)
         return namespace["request"](stage, ctx)
 
+    def _digest(self, request: dict[str, Any], worker_sha256: str) -> str:
+        """The request digest in plain terms: ``stable_hash`` over request + worker bytes."""
+        from multimodal_pipeline.config import stable_hash
+
+        return stable_hash({**request, "_worker_code_sha256": worker_sha256}, length=16)
+
+    @property
+    def _master_worker_sha256(self) -> str:
+        """SHA256 of master's ``workers/persons_worker.py``, read out of Git.
+
+        The same bytes ``worker_code_digest`` hashes off disk at run time, so this is what a
+        dataset completed before this branch actually carries in its sidecar.
+        """
+        blob = subprocess.run(["git", "show", f"{self.BASE}:workers/persons_worker.py"],
+                              cwd=REPO_ROOT, capture_output=True, check=True).stdout
+        return hashlib.sha256(blob).hexdigest()
+
     def test_the_request_is_byte_identical_to_masters(self, context, stage):
         assert stage.request(context) == self._master_request(stage, context)
 
     def test_the_digest_is_masters_apart_from_the_worker_it_runs(self, context, stage):
         """Only ``_worker_code_sha256`` may differ, and a worker change is meant to differ."""
-        from multimodal_pipeline.config import stable_hash
         from multimodal_pipeline.stages.base import worker_code_digest
 
-        master = dict(self._master_request(stage, context))
-        master["_worker_code_sha256"] = worker_code_digest(stage.worker_script(context))
-        assert stage.request_digest(context) == stable_hash(master, length=16)
+        ours = worker_code_digest(stage.worker_script(context))
+        assert ours != self._master_worker_sha256, \
+            "this branch did not change the worker, so this test proves nothing today"
+        assert stage.request_digest(context) == self._digest(
+            self._master_request(stage, context), ours)
 
-    def test_a_sidecar_stamped_by_masters_code_is_reused_not_rerun(self, context, stage):
-        """The end of the argument: the existing dataset is kept, the GPU pass is not paid.
+    def test_a_sidecar_stamped_by_masters_code_is_not_reused(self, context, stage):
+        """The upgrade costs one YOLO pass per clip, and that is the decision, not a bug.
 
-        The sidecar here is stamped exactly as master would have stamped it -- master's request
-        payload and the digest derived from it -- and the stage must then consider the preserved
-        raw document its own output. This is the decision ``WorkerStage.execute`` makes.
+        The sidecar here carries exactly what master would have written: master's request and
+        master's *own* worker bytes. The stage must consider it foreign, because the worker
+        this branch runs is not the worker that produced it -- the preview draws inside the
+        tracking pass, so the render cannot be derived from a preserved document afterwards.
+
+        Deliberately pinned rather than papered over: stamping the sidecar with *this* worker's
+        digest made the old version of this test claim reuse that no real dataset can have.
         """
-        from multimodal_pipeline.config import stable_hash
-        from multimodal_pipeline.stages.base import raw_request_matches, worker_code_digest
+        from multimodal_pipeline.stages.base import raw_request_matches
 
         raw = context.artifact("persons_raw")
         raw.parent.mkdir(parents=True, exist_ok=True)
         raw.write_text(json.dumps(make_document()), encoding="utf-8")
         master = dict(self._master_request(stage, context))
-        master_digest = stable_hash(
-            {**master, "_worker_code_sha256": worker_code_digest(stage.worker_script(context))},
-            length=16)
+        master_digest = self._digest(master, self._master_worker_sha256)
         stamp_raw(raw, request=master, digest=master_digest, worker=None)
-        assert raw_request_matches(raw, stage.request_digest(context)) is True, \
-            "the upgrade alone invalidated a preserved YOLO run"
+
+        assert raw_request_matches(raw, master_digest) is True, \
+            "the stamping helper does not reproduce the digest it was given"
+        assert raw_request_matches(raw, stage.request_digest(context)) is False, \
+            ("a raw document produced by master's worker is being reused by this branch; "
+             "the one-time rerun this feature costs has silently stopped happening")
+
+    def test_the_rerun_is_caused_by_the_worker_and_not_by_the_toggle(self, context, stage):
+        """With this branch's worker in the sidecar, the toggle-off dataset *is* reusable.
+
+        Otherwise the previous test would pass for the wrong reason -- a request that changed
+        shape would also invalidate master's sidecar, and then the request would no longer be
+        master's byte for byte.
+        """
+        from multimodal_pipeline.stages.base import raw_request_matches, worker_code_digest
+
+        raw = context.artifact("persons_raw")
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps(make_document()), encoding="utf-8")
+        request = dict(self._master_request(stage, context))
+        stamp_raw(raw, request=request,
+                  digest=self._digest(request,
+                                      worker_code_digest(stage.worker_script(context))),
+                  worker=None)
+        assert raw_request_matches(raw, stage.request_digest(context)) is True
 
     def test_turning_the_toggle_on_is_a_different_request(self, context, stage):
         off_digest = stage.request_digest(context)

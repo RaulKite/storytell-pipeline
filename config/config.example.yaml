@@ -382,11 +382,16 @@ persons:
   # timestamps stay in source/frame_index.parquet, and the `id=` overlay is a ByteTracker track
   # id, NOT an identity -- ids fragment within a shot and mean different people in different
   # videos. Source audio is muxed when the source has any, after the picture is finished, so a
-  # short audio track cannot shorten the video; odd frame sides are padded by one pixel to the
-  # encoder's chroma grid and the padded size is recorded. On a VARIABLE-frame-rate source a
-  # constant-rate preview drifts against the picture (and so does its audio), which is why the
-  # frame index and the tables -- not the video -- are the timing authority. Turning it off
-  # deletes nothing.
+  # short audio track cannot shorten the video, and it is rebased onto the first frame's PTS
+  # (adelay/atrim from the measured offset) so two streams that start at different instants stay
+  # in sync; odd frame sides are padded by one pixel to the encoder's chroma grid and the padded
+  # size is recorded. On a VARIABLE-frame-rate source a constant-rate preview drifts against the
+  # picture (and so does its audio), which is why the frame index and the tables -- not the video
+  # -- are the timing authority. Turning it off deletes nothing.
+  #
+  # Upgrading past this change reruns YOLO once per clip even with this toggle off: the worker's
+  # bytes are part of the raw request digest by design, and this feature edits that worker. The
+  # tables it rewrites are identical; the one-time cost buys the render.
   # write_video: false
   # timeout_seconds: null   # no default: a 4-hour recording is 720k frames and a guessed
                             # ceiling would fail a legitimate long run

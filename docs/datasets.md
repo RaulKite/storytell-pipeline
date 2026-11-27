@@ -43,21 +43,22 @@ This is the possible layout, not a promise that every file exists in every run.
 `artifacts_not_generated` declares absent outputs; never hardcode a corpus count.
 
 Set `activespeaker.write_video: true` to retain TalkNet's annotated video with audio as
-`speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest); opt-in, it requires ASD
-recomputation, preserves an existing video when turned off, and manifest presence reports files on
-disk, not the current toggle.
+`speaker/raw/video_out.avi` (`activespeaker_video_raw`): opt-in, it requires ASD recomputation,
+preserves an existing video when turned off, and manifest presence reports files, not the toggle.
 
 Set `openpose.write_video: true` to produce `pose/skeletons.mp4` (`pose_skeleton_video`): OpenPose's
 native rendering, with source audio when available, rerun when enabled and nothing deleted when
 disabled. Publication is atomic for the video, not across all pose outputs, and `extra_args` cannot
-override native video flags; native preview timing can lose trailing frames (at most three allowed).
+override native video flags; native preview timing can lose at most three trailing frames.
 
 Set `persons.write_video: true` for `persons/tracks.mp4` (`person_track_video`), drawn inside the
 YOLO pass and therefore a YOLO rerun; each `id=` is a ByteTracker track id, not an identity. Its
-files are published as one preflighted step, and validation decodes the preview to hold its frame
-count, rate and size. On a variable-frame-rate source the preview's constant-rate clock drifts
-against the picture -- a reviewer saw a gap frame move from 4.000 s to 3.026 s -- and its audio
-with it; `source/frame_index.parquet` and the tables stay the timing authority.
+files are published as one preflighted step, validation decodes the preview to hold its frame
+count, rate and size, and its audio is rebased onto the first frame's PTS. On a variable-frame-rate
+source the preview's constant-rate clock drifts against the picture (a reviewer saw a gap frame
+move from 4.000 s to 3.026 s) and its audio with it; `source/frame_index.parquet` and the tables
+stay the timing authority. Upgrading past this change reruns YOLO once per clip **even with the
+toggle off**: worker bytes are part of every raw request digest, and the tables stay identical.
 
 Each dataset folder receives an English `explanation.md` on run/resume, including reused outputs:
 contract guides, not evidence that a module produced data, excluded from artifact counts and
