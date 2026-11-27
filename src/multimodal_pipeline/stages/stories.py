@@ -39,7 +39,7 @@ from ..artifacts import atomic_write_json, atomic_write_text, read_json
 from ..config import stable_hash
 from ..exceptions import StageError, ValidationError
 from ..schemas import STORIES_SCHEMA, read_table, write_table
-from .base import Stage, StageContext
+from .base import Stage, StageContext, transcript_skip_reason
 from .translation import extract_message_content
 
 #: Decimal places a transcript boundary is compared at. The probe's endpoint echoes the
@@ -717,9 +717,14 @@ class StoriesStage(Stage):
                            "stories.api_key and stories.model in the config file)")
         segments = self._segment_rows(ctx)
         if not segments:
-            return False, ("no speech segments to read stories from "
-                           "(speech/segments.parquet is empty or missing): run whisperx "
-                           "and speaker_assignment first")
+            # One reason for two cases, because they have one answer: with no transcript there
+            # is nothing for the model to find stories in. The upstream table's absence is
+            # quoted as such — the previous wording pointed at whisperx and
+            # speaker_assignment, which reads as "run those first" to an operator whose
+            # WhisperX environment is simply not installed.
+            return False, (transcript_skip_reason(ctx, required=("speech_segments",))
+                           or "no speech segments to read stories from "
+                              "(speech/segments.parquet is empty): the transcript held no words")
         return True, ""
 
     def prepare(self, ctx: StageContext) -> None:

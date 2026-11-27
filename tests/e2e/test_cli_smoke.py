@@ -315,6 +315,35 @@ class TestFullRun:
         validate = cli("validate", "-c", config)
         assert validate.returncode == 0, validate.stdout[-2000:]
 
+    def test_a_missing_whisperx_environment_completes_the_video(self, fresh: Path) -> None:
+        """The reported failure: whisperx skips, then its readers failed and the batch exited 2.
+
+        A fresh project with only some environments is the normal state of a new clone. Here
+        `whisperx` is enabled but its uv project does not exist, `translation` has a mock
+        endpoint (so nothing about its own config excuses it) and `stories` shares that
+        endpoint. Reproduced before the fix: `translation` failed on the absent
+        `speech/segments.parquet`, `validate` reported it, and the run exited 2 over an
+        install state the first stage had already reported as a skip.
+        """
+        config_path = fresh / "config" / "config.yaml"
+        payload = yaml.safe_load(config_path.read_text())
+        payload["whisperx"] = {"enabled": True,
+                               "uv_project": str(fresh / "environments" / "whisperx")}
+        payload["translation"] = {"enabled": True, "provider": "mock", "model": "test-model"}
+        payload["stories"] = {"enabled": True, "provider": "mock", "model": "test-model"}
+        config_path.write_text(yaml.safe_dump(payload))
+
+        result = cli("run", "-c", str(config_path))
+        assert result.returncode == 0, result.stderr[-3000:]
+        manifest = load(fresh / "out" / "alpha" / "manifest.json")
+        assert manifest["processing"]["status"] == "completed", manifest["processing"]
+        assert manifest["processing"]["stages"]["whisperx"] == "skipped"
+        report = load(fresh / "out" / "batch_report.json")
+        entry = next(video for video in report["videos"] if video["video_id"] == "alpha")
+        for stage in ("speaker_assignment", "translation", "stories"):
+            assert entry["skipped"][stage].startswith("upstream skipped: transcript unavailable"), (
+                f"{stage}: {entry['skipped'][stage]}")
+
     def test_enabled_second_diarizer_without_environment_skips_with_the_fix(self, fresh: Path) -> None:
         """Enabled but not installed: skip, name the fix, and still complete the dataset."""
         config_path = fresh / "config" / "config.yaml"

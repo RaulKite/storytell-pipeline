@@ -28,7 +28,7 @@ from ..artifacts import ArtifactRegistry, VideoPaths
 from ..config import PipelineConfig, stable_hash
 from ..discovery import VideoSource
 from ..exceptions import StageError, ValidationError
-from ..state import STATUS_COMPLETED, VideoState
+from ..state import STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED, VideoState
 
 # Execution order for one video. Also the DAG's topological order.
 STAGE_ORDER: tuple[str, ...] = (
@@ -160,6 +160,51 @@ class StageContext:
     @property
     def video_id(self) -> str:
         return self.source.video_id
+
+
+#: The two tables a transcript is. Both are rewritten in place by `speaker_assignment`,
+#: so a consumer's gate is about whether the words arrived, not about which stage wrote
+#: them last.
+TRANSCRIPT_ARTIFACTS: tuple[str, ...] = ("speech_segments", "speech_words")
+
+#: Prefix every "there is nothing to read" skip reason carries. The batch report and the
+#: CLI summary quote these verbatim, so an operator can tell a prerequisite skip from a
+#: stage that decided it had no work.
+UPSTREAM_SKIPPED = "upstream skipped"
+
+
+def transcript_skip_reason(ctx: StageContext,
+                           required: Sequence[str] = TRANSCRIPT_ARTIFACTS) -> str | None:
+    """Why a transcript consumer cannot run, or ``None`` when the transcript is there.
+
+    Every stage that reads ``speech/segments.parquet`` used to find out by raising
+    ``StageError`` from ``ctx.input()`` deep inside ``execute()``. With the WhisperX
+    environment missing, ``whisperx`` skipped correctly and then ``translation`` and
+    ``spacy_source`` *failed* on the absent table -- and a failure is not a skip: the batch
+    exited 2 and ``validate`` reported two broken stages over an install state the pipeline
+    had already named. The same shape as a missing uv project: an absent prerequisite is a
+    skip with a reason, and only a present-but-broken one is a failure.
+
+    Decided from the files, matching ``elan`` and ``pose_normalized``: a dataset whose
+    transcript was deleted is described accurately rather than excused by a flag. The
+    upstream stage's own reason is quoted when there is one, because "whisperx was skipped
+    for a missing environment" is the sentence that tells an operator what to install.
+
+    ``required`` names the tables this caller actually reads, so a stage is never excused by
+    a file it does not open: ``stories`` and ``translation`` read ``speech_segments`` alone
+    and must still report an *empty* transcript as their own reason rather than claiming the
+    words table is missing.
+    """
+    absent_names = [name for name in required if not ctx.artifact(name).is_file()]
+    if not absent_names:
+        return None
+    absent = ", ".join(absent_names)
+    upstream = ctx.state.stage("whisperx")
+    recorded = (upstream.validation_result or {}).get("reason")
+    if upstream.status in {STATUS_SKIPPED, STATUS_FAILED}:
+        return (f"{UPSTREAM_SKIPPED}: transcript unavailable "
+                f"(whisperx {upstream.status}: {recorded or 'no reason recorded'})")
+    return f"{UPSTREAM_SKIPPED}: transcript unavailable ({absent} missing)"
 
 
 @dataclass

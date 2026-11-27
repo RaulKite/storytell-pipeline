@@ -236,3 +236,32 @@ class TestReuse:
         write_dataset_summary(dataset)
         assert should_reuse(stage, dataset, config_hash=config_hash,
                             dependency_hash=dependency_hash, force=False)[0]
+
+
+class TestLabelsWithoutATimeline:
+    """A speaker label with no diarization table behind it is a defect, not a detail.
+
+    Reproduced on a corpus copy: with the Nemotron environment missing and no turn table,
+    finalization and the ELAN export both succeeded while ``segments``/``words`` still cited
+    pyannote's ``SPEAKER_00`` — a speaker no table in the dataset contains. With a cached
+    turn table present the same run failed instead, on the cross-reference check below.
+    """
+
+    def test_a_label_with_no_diarization_table_fails_the_dataset(
+            self, dataset: StageContext) -> None:
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "SPEAKER_00", "language": "en", "text": "hello"}])
+        finalize(dataset)
+        with pytest.raises(ValidationError, match="no diarization timeline"):
+            stage.validate(dataset)
+
+    def test_a_cleared_transcript_passes(self, dataset: StageContext) -> None:
+        """What speaker_assignment writes when it has no timeline must validate."""
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": None, "speaker_assignment_method": "no_diarization",
+                     "language": "en", "text": "hello"}])
+        finalize(dataset)
+        assert stage.validate(dataset)["timed_tables_checked"] >= 1
+

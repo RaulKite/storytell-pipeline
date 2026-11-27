@@ -182,6 +182,64 @@ class TestMissingPrerequisitesSkip:
         assert not context.artifact("whisperx_raw").exists()
 
 
+class TestMissingTranscriptSkips:
+    """No transcript is a skip for every reader of it, not a failure.
+
+    Reproduced from a fresh project with the WhisperX environment missing: whisperx
+    skipped correctly, and then ``translation`` and ``spacy_source`` failed on the absent
+    ``speech/segments.parquet``. A failed stage poisons only its dependants, so
+    ``finalization`` still ran, ``validate`` reported the two failures and the whole batch
+    exited 2 — over an install state the pipeline had already reported as a skip.
+    """
+
+    #: Stages that read the transcript tables and had no gate for their absence.
+    CONSUMERS = ("translation", "spacy_source", "acoustic", "stories", "speaker_assignment")
+
+    @staticmethod
+    def _whisperx_skipped(context) -> None:
+        context.state.mark_skipped("whisperx", "whisperx environment not installed at /nowhere")
+
+    @pytest.mark.parametrize("stage", CONSUMERS)
+    def test_a_consumer_skips_when_the_transcript_is_absent(self, context, stage: str) -> None:
+        # `stories` shares translation's endpoint rule and the shared fixture configures only
+        # translation: a mock endpoint keeps the transcript the reason under test.
+        context.config.stories.provider = "mock"
+        # A missing environment is reported before a missing input (install first), so the
+        # stages that have one need it present for the transcript to be the gate under test.
+        section = {"spacy_source": "spacy", "acoustic": "acoustic"}.get(stage)
+        if section:
+            cfg = getattr(context.config, section)
+            project = context.config.resolve(cfg.uv_project)
+            project.mkdir(parents=True, exist_ok=True)
+            worker = context.config.resolve(cfg.worker)
+            worker.parent.mkdir(parents=True, exist_ok=True)
+            worker.write_text("# stub", encoding="utf-8")
+        self._whisperx_skipped(context)
+        assert not context.artifact("speech_segments").is_file()
+        enabled, reason = stage_named(stage).enabled(context)
+        assert enabled is False, f"{stage} ran with no transcript to read"
+        assert reason.startswith("upstream skipped: transcript unavailable"), reason
+        # The reason carries the upstream cause, so a skip is diagnosable from the record.
+        assert "whisperx" in reason
+
+    def test_english_spacy_skips_because_its_input_never_arrived(self, context) -> None:
+        """`spacy_english` reads the translation table, so the transcript gate is upstream."""
+        self._whisperx_skipped(context)
+        enabled, reason = stage_named("spacy_english").enabled(context)
+        assert enabled is False
+        assert "English translation" in reason
+
+    def test_a_present_transcript_keeps_the_stage_enabled(self, context, write_parquet) -> None:
+        """The gate is about a missing table, never about the flag that would produce it."""
+        from multimodal_pipeline.schemas import SEGMENTS_SCHEMA, WORDS_SCHEMA
+
+        self._whisperx_skipped(context)
+        write_parquet(context.artifact("speech_segments"), [], SEGMENTS_SCHEMA)
+        write_parquet(context.artifact("speech_words"), [], WORDS_SCHEMA)
+        enabled, reason = stage_named("translation").enabled(context)
+        assert enabled is True, reason
+
+
 class TestPresentButBrokenStillFails:
     """The other half of the rule: a synced environment that breaks is a defect."""
 

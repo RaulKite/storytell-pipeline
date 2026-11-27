@@ -155,8 +155,23 @@ def _translation_references(ctx: StageContext) -> list[str]:
 
 
 def _speaker_references(ctx: StageContext) -> list[str]:
-    """Every speaker the transcript cites must exist in the diarization output."""
+    """Every speaker the transcript cites must exist in the diarization output.
+
+    With no diarization table the check used to return quietly, which is how a transcript
+    still carrying pyannote labels passed finalization after the Nemotron stage was
+    skipped: there was nothing to compare against and therefore no complaint. Absence of a
+    timeline is now itself the finding — ``speaker_assignment`` clears those labels, so a
+    label with no table behind it means that stage did not run over this transcript.
+    """
     if not ctx.artifact("speaker_turns_nemotron").is_file():
+        try:
+            cited = {row["speaker_id"] for row in read_table(ctx.artifact("speech_segments")).to_pylist()
+                     if row.get("speaker_id")}
+        except Exception as exc:  # noqa: BLE001
+            return [f"segments.parquet unreadable: {exc}"]
+        if cited:
+            return [f"transcript cites {sorted(cited)[:5]} with no diarization timeline "
+                    f"(speaker_turns_nemotron.parquet is absent): re-run speaker_assignment"]
         return []
     try:
         speakers = {row["speaker_id"] for row in read_table(ctx.artifact("speaker_turns_nemotron"),
