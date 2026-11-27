@@ -234,6 +234,12 @@ class ElanStage(Stage):
             # tier dropped zero rows, so nothing here is currently answering a real question — the
             # counters exist for the day a producer starts writing null timestamps.
             "dropped_rows": drop_counts(report),
+            # Which tables were refused for being stale, and why, in the run log and this block
+            # only — the durable copy is the .eaf's own coverage property, where each entry reads
+            # `present, not exported` with this sentence as its reason and `validate` reports it
+            # as `coverage_not_exported`. Duplicating that into status.json would be a second
+            # copy of a claim the document already carries.
+            "stale_tables": dict(sorted((report or {}).get("stale", {}).items())),
             # Read back out of the document rather than recomputed here, exactly like the tier
             # counts and the projection: the record's coverage *is* the file's coverage, so the two
             # cannot disagree about whether `pose/face.parquet` is represented.

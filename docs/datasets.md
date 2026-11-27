@@ -137,10 +137,13 @@ flowchart TB
 Solid edges are id joins; dotted ones are overlap, a shared clock or a coarser-grain id.
 None is a declared foreign key; `finalization` checks that translation rows cite an
 existing `segment_id`, that transcript `speaker_id`s appear in the diarizer's turns, and
-that a transcript citing speakers at all has a diarization table to justify them. A
-translation whose `speaker_id` disagrees with its source segment is reported as **stale**:
-it is listed under `artifacts_not_generated` with the reason, kept out of `artifacts`, and
-its file is preserved. `speaker_id` is null when no diarization timeline exists.
+that a transcript citing speakers at all has a diarization table to justify them. Every
+derived table that copies a speaker out of a transcript segment — `translation_segments`,
+the four `linguistic/*` token and sentence tables, `acoustic/segment_features` — is checked
+against the transcript on its `segment_id`, and one that disagrees is reported as **stale**:
+listed under `artifacts_not_generated` with the reason, kept out of `artifacts`, file
+preserved, and left out of the ELAN export, which would otherwise quote the old speaker
+beside the new one. `speaker_id` is null when no diarization timeline exists.
 
 The families meet through overlap and one shared id: the turn table overlaps the
 transcript, and the diarizer's labels land in the transcript's `speaker_id` column. Turns

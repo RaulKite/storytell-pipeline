@@ -3996,3 +3996,65 @@ class TestDropCountsReachTheRecord:
             assert report["dropped"], root.name
             checked += 1
         assert checked, "no corpus datasets on this disk; the loop proved nothing"
+
+
+class TestAStaleTierIsNotPublished:
+    """The export may not quote a speaker the transcript no longer has.
+
+    Reproduced on a ``La-1`` corpus copy after ``speaker_assignment`` relabelled the transcript
+    from the Nemotron timeline: the new .eaf showed ``speaker_0``/``speaker_1`` on
+    ``segments_src`` and pyannote's ``SPEAKER_00`` on ``gloss_en``, in the same document, about
+    the same segments. The staleness rule is the manifest's (``staleness.speaker_staleness``);
+    this is the export applying it instead of publishing the disagreement.
+    """
+
+    def _dataset(self, tmp_path: Path, *, translated_speaker: str) -> tuple[Path, Path]:
+        root = tmp_path / "processed" / "clip"
+        video = tmp_path / "input_videos" / "clip.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"stub")
+        _write(WORDS_SCHEMA, root / "speech" / "words.parquet",
+               [_word("hola", 0.0, 0.4, speaker_id="speaker_0")])
+        _write(SEGMENTS_SCHEMA, root / "speech" / "segments.parquet",
+               [_segment("seg1", 0.0, 0.4, "hola", speaker_id="speaker_0")])
+        _write(TRANSLATION_SCHEMA, root / "translation" / "segments_en.parquet",
+               [_translation("seg1", 0.0, 0.4, "hello", speaker_id=translated_speaker)])
+        return root, video
+
+    def test_a_stale_translation_loses_its_tier(self, tmp_path: Path) -> None:
+        root, video = self._dataset(tmp_path, translated_speaker="SPEAKER_00")
+        lines: list[str] = []
+        eaf, report = build_eaf(root, video, log=lambda msg, *a, **k: lines.append(str(msg)))
+        assert "gloss_en" not in tiers_of(eaf)
+        assert "segments_src" in tiers_of(eaf)
+        # The reason travels with the run and with the document.
+        assert any("tier gloss_en skipped (stale:" in line for line in lines)
+        assert "translation_segments" in report["stale"]
+        coverage = json.loads(dict(eaf.properties)[elan_core.COVERAGE_PROPERTY])["artifacts"]
+        assert coverage["translation_segments"]["state"] == elan_core.COVERAGE_PRESENT_NOT_EXPORTED
+        assert coverage["translation_segments"]["reason"].startswith("stale:")
+
+    def test_no_bar_in_the_document_carries_the_old_speaker(self, tmp_path: Path) -> None:
+        """The whole point: the label a reader quotes cannot be the stale one."""
+        root, video = self._dataset(tmp_path, translated_speaker="SPEAKER_00")
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
+        written = [text for tier in tiers_of(eaf) for _start, _end, text in annotations(eaf, tier)]
+        assert written
+        assert not [text for text in written if "SPEAKER_00" in text]
+
+    def test_a_current_translation_keeps_its_tier(self, tmp_path: Path) -> None:
+        root, video = self._dataset(tmp_path, translated_speaker="speaker_0")
+        eaf, report = build_eaf(root, video, log=lambda *a, **k: None)
+        assert "gloss_en" in tiers_of(eaf)
+        assert report["stale"] == {}
+
+    def test_the_stale_table_is_left_on_disk(self, tmp_path: Path) -> None:
+        """Skipping a tier must never delete the work; re-running its stage reinstates it."""
+        root, video = self._dataset(tmp_path, translated_speaker="SPEAKER_00")
+        build_eaf(root, video, log=lambda *a, **k: None)
+        assert (root / ARTIFACT_LAYOUT["translation_segments"]).is_file()
+        # And the reinstated table gets its tier back on the next export.
+        _write(TRANSLATION_SCHEMA, root / "translation" / "segments_en.parquet",
+               [_translation("seg1", 0.0, 0.4, "hello", speaker_id="speaker_0")])
+        eaf, _report = build_eaf(root, video, log=lambda *a, **k: None)
+        assert "gloss_en" in tiers_of(eaf)

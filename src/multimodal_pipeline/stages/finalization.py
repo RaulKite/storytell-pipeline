@@ -13,8 +13,14 @@ from ..artifacts import ArtifactRegistry, read_json
 from ..exceptions import ValidationError
 from ..manifest import build_manifest, validate_manifest, write_manifest
 from ..provenance import git_commit, processing_report, tools_report, write_provenance
-from ..schemas import read_table
+from ..schemas import read_table, table_columns
+from ..staleness import speaker_staleness
 from .base import STAGE_ORDER, Stage, StageContext
+
+#: The two tables ``speaker_assignment`` labels. Either can be the only one a dataset has — an
+#: interrupted write, or an operator removing one table — and a check that reads only the first
+#: describes a dataset it did not look at.
+TRANSCRIPT_TABLES = ("speech_segments", "speech_words")
 
 #: Tables whose timestamps must live inside the media duration and start at t>=0.
 TIMED_TABLES = (
@@ -141,6 +147,7 @@ class FinalizationStage(Stage):
         issues: list[str] = []
         if ctx.artifact("speech_segments").is_file():
             issues.extend(_translation_references(ctx))
+        if any(ctx.artifact(name).is_file() for name in TRANSCRIPT_TABLES):
             issues.extend(_speaker_references(ctx))
         return issues
 
@@ -164,39 +171,20 @@ def _translation_references(ctx: StageContext) -> list[str]:
 def stale_artifacts(ctx: StageContext) -> dict[str, str]:
     """Artifacts on disk that no longer agree with the tables they were derived from.
 
-    The check that matters today is the translation table. Its rows carry the speaker label
-    of the source segment they translated, so when ``speaker_assignment`` labels the
-    transcript afterwards — or when a translation was written against a pyannote-labelled
-    transcript and the diarization has since changed — the English table keeps describing a
-    speaker the dataset no longer has. The joined tables then disagree segment by segment
-    while every individual table validates, and the manifest promises both.
+    Every derived table that copies a speaker label out of the transcript is checked, not just
+    the translation: see :func:`multimodal_pipeline.staleness.speaker_staleness`, which owns the
+    rule and the list. The translation was where the defect was first seen — its rows carry the
+    speaker of the segment they translated, so a transcript relabelled afterwards leaves the
+    English table describing a speaker the dataset no longer has — but the linguistic token and
+    sentence tables and the acoustic segment table are built the same way and were published the
+    same way: segments_src reading ``speaker_0`` beside a ``gloss_en`` and a spaCy table still
+    reading ``SPEAKER_00``.
 
-    Returning a reason rather than raising keeps this a statement about one artifact: the
-    translation is excluded from the manifest and reported by ``validate``, its file is
-    preserved, and re-running the translation stage is the fix.
+    Returning a reason rather than raising keeps this a statement about one artifact: it is
+    excluded from the manifest and reported by ``validate``, its file is preserved, and re-running
+    the stage that wrote it is the fix.
     """
-    reason = _translation_speaker_mismatch(ctx)
-    return {"translation_segments": reason} if reason else {}
-
-
-def _translation_speaker_mismatch(ctx: StageContext) -> str | None:
-    """Why the translated table's speaker labels contradict the transcript, if they do."""
-    if not (ctx.artifact("translation_segments").is_file()
-            and ctx.artifact("speech_segments").is_file()):
-        return None
-    try:
-        source = {row["segment_id"]: row.get("speaker_id")
-                  for row in read_table(ctx.artifact("speech_segments")).to_pylist()}
-        translated = [(row["segment_id"], row.get("speaker_id"))
-                      for row in read_table(ctx.artifact("translation_segments")).to_pylist()]
-    except Exception:  # noqa: BLE001 - an unreadable table is reported by its own stage
-        return None
-    mismatched = [segment_id for segment_id, speaker in translated
-                  if segment_id in source and source[segment_id] != speaker]
-    if not mismatched:
-        return None
-    return (f"speaker labels disagree with the transcript for {len(mismatched)} segment(s), "
-            f"e.g. {sorted(mismatched)[:3]}; re-run the translation stage")
+    return speaker_staleness(ctx.paths.dataset_dir)
 
 
 def _speaker_references(ctx: StageContext) -> list[str]:
@@ -207,13 +195,34 @@ def _speaker_references(ctx: StageContext) -> list[str]:
     skipped: there was nothing to compare against and therefore no complaint. Absence of a
     timeline is now itself the finding — ``speaker_assignment`` clears those labels, so a
     label with no table behind it means that stage did not run over this transcript.
+
+    **Both transcript tables are read**, and the pair is the reason: on a corpus copy whose
+    ``speech/segments.parquet`` had been removed, only ``words.parquet`` was left, and the
+    check keyed on segments alone found no citation to complain about — the ELAN words tier
+    published ``SPEAKER_00`` while ``validate`` exited 0. A label is a label whichever table
+    carries it.
     """
-    if not ctx.artifact("speaker_turns_nemotron").is_file():
+    cited: set[str] = set()
+    unreadable: list[str] = []
+    for artifact, label in (("speech_segments", "segments.parquet"),
+                            ("speech_words", "words.parquet")):
+        path = ctx.artifact(artifact)
+        if not path.is_file():
+            continue
         try:
-            cited = {row["speaker_id"] for row in read_table(ctx.artifact("speech_segments")).to_pylist()
-                     if row.get("speaker_id")}
+            # The column is checked before it is projected: a table written by an older
+            # transcription stage has no ``speaker_id`` at all, and that table cites no speaker
+            # rather than being unreadable.
+            if "speaker_id" not in table_columns(path):
+                continue
+            cited |= {row["speaker_id"]
+                      for row in read_table(path, columns=["speaker_id"]).to_pylist()
+                      if row.get("speaker_id")}
         except Exception as exc:  # noqa: BLE001
-            return [f"segments.parquet unreadable: {exc}"]
+            unreadable.append(f"{label} unreadable: {exc}")
+    if unreadable:
+        return unreadable
+    if not ctx.artifact("speaker_turns_nemotron").is_file():
         if cited:
             return [f"transcript cites {sorted(cited)[:5]} with no diarization timeline "
                     f"(speaker_turns_nemotron.parquet is absent): re-run speaker_assignment"]
@@ -226,11 +235,6 @@ def _speaker_references(ctx: StageContext) -> list[str]:
     speakers.discard(None)
     if not speakers:
         return []
-    try:
-        cited = {row["speaker_id"] for row in read_table(ctx.artifact("speech_segments")).to_pylist()
-                 if row.get("speaker_id")}
-    except Exception as exc:  # noqa: BLE001
-        return [f"segments.parquet unreadable: {exc}"]
     unknown = cited - speakers
     if unknown:
         return [f"transcript speakers absent from diarization: {sorted(unknown)[:5]}"]

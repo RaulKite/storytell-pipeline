@@ -124,7 +124,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1947,7 +1947,8 @@ def normalized_artifact_names() -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None) -> dict[str, Any]:
+def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None, *,
+                       stale: Mapping[str, str] | None = None) -> dict[str, Any]:
     """One state per normalised Parquet artifact: what represents it in this document, or nothing.
 
     The point is the pair a reader of an opened ``.eaf`` cannot otherwise distinguish. "This clip
@@ -1991,6 +1992,16 @@ def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None) ->
     explain, and a :data:`TIER_ABSENT_REASONS` gap there prints
     :data:`COVERAGE_REASON_UNKNOWN` rather than staying silent or borrowing a neighbouring
     artifact's wording.
+
+    ``stale`` adds the fifth thing a reader has to be able to tell apart: a table that exists and
+    *would* be exported, except that its rows no longer agree with the transcript they were
+    derived from (:func:`multimodal_pipeline.staleness.speaker_staleness`). Such a table reads
+    ``present, not exported`` with the staleness as its reason — the file is on disk and this
+    document genuinely does not represent it — and that entry *outranks* `exported`/`summarised`,
+    because those name a tier and the tier was skipped. It is a keyword argument with no default
+    of its own so an existing caller's answer cannot silently change: an inventory computed
+    without the staleness scan describes the tier declarations and the disk, not this dataset's
+    cross-table consistency.
     """
     root = Path(dataset_dir)
     # An artifact may feed several tiers (the four Praat frame tiers read one table), so the
@@ -2013,6 +2024,14 @@ def coverage_inventory(dataset_dir: Path, names: Sequence[str] | None = None) ->
             # First, and deliberately: with no file there was nothing to export, whatever the tier
             # set says about this name. See the docstring's ordering rule.
             inventory[name] = {"state": COVERAGE_ABSENT, "path": relative}
+        elif stale and name in stale:
+            # A stale table is `present, not exported` with the staleness as its reason, which is
+            # exactly what this state is for: the file is on disk, no tier of *this* document is
+            # built from it, and the reason is a decision this export made rather than a missing
+            # producer. It outranks `exported`/`summarised` because those name a tier, and the
+            # tier was skipped.
+            inventory[name] = {"state": COVERAGE_PRESENT_NOT_EXPORTED, "path": relative,
+                               "reason": f"stale: {stale[name]}"}
         elif name in exported:
             inventory[name] = {"state": COVERAGE_EXPORTED, "tiers": exported[name],
                                "path": relative}
@@ -2155,6 +2174,13 @@ def build_eaf(dataset_dir: Path, video_path: Path,
     the pipeline's rule is that an absent artifact is reported rather than
     promised (``manifest.artifacts_not_generated``). The .eaf follows that rule.
 
+    **A stale table is skipped too**, with the reason in the same logged line and in the
+    document's own coverage property. Stale means the table's rows carry a speaker label the
+    transcript no longer has (:mod:`multimodal_pipeline.staleness`), which is precisely the case
+    a bar cannot express: the tier would quote a speaker this dataset does not contain. The file
+    is left untouched beside the .eaf, so re-running its producer restores the tier on the next
+    export.
+
     A file that exists but cannot be read is skipped too, with its exception named. That is a
     deliberate asymmetry with the stage's own ``validate``: one corrupt table should cost its
     own tier and not the sixteen that were already built correctly, and a .eaf with sixteen
@@ -2217,9 +2243,17 @@ def build_eaf(dataset_dir: Path, video_path: Path,
     # Only the tiers that actually had to be re-cut, so the property names the exceptions instead
     # of restating twelve unaffected tiers.
     projections: dict[str, Any] = {}
+    # A derived table whose speaker labels no longer match the transcript is not exported: the
+    # bars would quote a speaker this dataset does not have. The rule and the table list live in
+    # `staleness.py`, which the manifest reader uses too, so the .eaf and `manifest.json` cannot
+    # disagree about which tables are current. Imported here rather than at module scope because
+    # this module is the tier algebra — a leaf that a test can drive with no pipeline around it.
+    from .staleness import speaker_staleness
+
+    stale = speaker_staleness(dataset_dir)
     # Computed before any table is opened, from the tier declarations themselves — see the
     # docstring. It is the one part of the document that describes the export rather than the clip.
-    coverage = coverage_inventory(dataset_dir)
+    coverage = coverage_inventory(dataset_dir, stale=stale)
     # Per-tier drop counters, returned with the document. Two states, two counters, never summed:
     # the run log prints them on two lines and the record has to keep them as far apart.
     drops: dict[str, dict[str, int]] = {}
@@ -2229,6 +2263,11 @@ def build_eaf(dataset_dir: Path, video_path: Path,
         path = dataset_dir / relative
         if not path.is_file():
             reason = f"{relative} not produced"
+        elif spec.artifact in stale:
+            # Skips a tier, never the export: the file stays on disk (re-running its producer is
+            # what reinstates it), its coverage entry says `present, not exported` with this same
+            # sentence, and the other tiers are built as usual.
+            reason = f"stale: {stale[spec.artifact]}"
         else:
             reason = ""
             try:
@@ -2321,7 +2360,7 @@ def build_eaf(dataset_dir: Path, video_path: Path,
     log(f"elan: {len(built)} tier(s), {sum(built.values())} annotation(s) for "
         f"{Path(video_path).name}; skipped {len(skipped)} "
         f"({', '.join(sorted(skipped)) or 'none'})")
-    return eaf, {"dropped": drops}
+    return eaf, {"dropped": drops, "stale": stale}
 
 
 def drop_counts(report: Any) -> dict[str, dict[str, int]]:
