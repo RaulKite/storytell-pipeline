@@ -42,27 +42,28 @@ This is the possible layout, not a promise that every file exists in every run.
 `manifest.artifacts` maps logical names to **dataset-relative paths** and
 `artifacts_not_generated` declares absent outputs; never hardcode a corpus count.
 
-Set `activespeaker.write_video: true` to retain TalkNet's native annotated video with
-audio as `speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest). It is
-opt-in, requires ASD recomputation, and preserves an existing video when turned off;
-manifest presence reports files on disk, not the current toggle.
+Set `activespeaker.write_video: true` to retain TalkNet's annotated video with audio as
+`speaker/raw/video_out.avi` (`activespeaker_video_raw` in the manifest); opt-in, it requires ASD
+recomputation, preserves an existing video when turned off, and manifest presence reports files on
+disk, not the current toggle.
 
-Set `openpose.write_video: true` to produce `pose/skeletons.mp4` (`pose_skeleton_video` in the
-manifest). It retains OpenPose's native rendering, muxes source audio when available, reruns
-OpenPose when enabled and deletes nothing when disabled. Publication is atomic for the video, not
-a transaction across all pose outputs: native output, normalization, mux and validation are
-staged before previous pose outputs are replaced, and `extra_args` cannot override native video
-flags. Native preview timing can lose trailing frames (validation allows at most three against
-current raw JSON counts), so use `source/frame_index.parquet` and the pose tables for measured
-source-frame timing. Set `persons.write_video: true` for `persons/tracks.mp4`, a CFR preview
-drawn in the YOLO pass (reruns YOLO); each `id=` is a ByteTracker track id, not an identity.
+Set `openpose.write_video: true` to produce `pose/skeletons.mp4` (`pose_skeleton_video`): OpenPose's
+native rendering, with source audio when available, rerun when enabled and nothing deleted when
+disabled. Publication is atomic for the video, not across all pose outputs, and `extra_args` cannot
+override native video flags; native preview timing can lose trailing frames (at most three allowed).
+
+Set `persons.write_video: true` for `persons/tracks.mp4` (`person_track_video`), drawn inside the
+YOLO pass and therefore a YOLO rerun; each `id=` is a ByteTracker track id, not an identity. Its
+files are published as one preflighted step, and validation decodes the preview to hold its frame
+count, rate and size. On a variable-frame-rate source the preview's constant-rate clock drifts
+against the picture -- a reviewer saw a gap frame move from 4.000 s to 3.026 s -- and its audio
+with it; `source/frame_index.parquet` and the tables stay the timing authority.
 
 Each dataset folder receives an English `explanation.md` on run/resume, including reused outputs:
 contract guides, not evidence that a module produced data, excluded from artifact counts and
 model fingerprints. Unmarked hand-written guides are preserved. Raw outputs remain beside
 normalized tables, with provenance in sidecars and the provenance directory rather than injected
-into raw bytes. The config snapshot masks secrets, but logs and tool provenance can still contain
-machine paths.
+into raw bytes; the config snapshot masks secrets, but logs can still name machine paths.
 
 ## Table reference
 
