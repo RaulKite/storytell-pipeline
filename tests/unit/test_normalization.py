@@ -308,5 +308,3 @@ class TestOpenposeRealFrame:
 
 def person_score(frame: dict, person_index: int, key: str, point: int) -> float:
     return float(frame["people"][person_index][key][point * 3 + 2])
-
-

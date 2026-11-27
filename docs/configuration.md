@@ -58,6 +58,12 @@ The same applies independently to the `stories` section.
 | `elan` | Enable/disable derived annotation export |
 | `logging` | Level, console output and progress refresh interval |
 
+`diarization_nemotron.fallback_to_cpu` has two readings and they are not the same knob.
+With the default `true` the worker degrades `cuda` → `cpu` and records why in its raw
+document and log; with `false` a machine that cannot see a GPU fails loudly instead of
+producing a result that took ten times longer and nobody noticed. Prefer the silent
+fallback only where a slow result is still a useful one.
+
 Every stage's `enabled` defaults to `true`, and so does every tool switch inside a stage
 (`openpose.body/hands/face.enabled`, `spacy.process_source`, `spacy.process_english`).
 Switching one off is a supported way to say "never measure this"; leaving it on with the
