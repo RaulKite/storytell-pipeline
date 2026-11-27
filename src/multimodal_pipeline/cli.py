@@ -414,6 +414,7 @@ def validate(
         context.log = logger
         problems: dict[str, str] = {}
         skipped: list[str] = []
+        stale: dict[str, str] = {}
         # Artifacts a later stage rewrote in place must not be judged against the
         # earlier stage's fingerprint.
         owners = artifact_owners(context.state)
@@ -434,12 +435,20 @@ def validate(
                 problems[stage.name] = "; ".join(changed[:3])
                 continue
             try:
-                stage.validate(context)
+                result = stage.validate(context)
             except Exception as exc:  # noqa: BLE001 - aggregated into the report
                 problems[stage.name] = str(exc)[:300]
+                continue
+            # A stage may report an artifact that exists but no longer agrees with the rest
+            # of the dataset (today: a translation whose speaker labels moved). That is not
+            # a validation failure — the stage's own outputs are sound — but it is invisible
+            # without being printed, and "validate exits 0" while two tables disagree was
+            # the defect this reports.
+            if isinstance(result, dict):
+                stale.update(result.get("stale_artifacts") or {})
         logger.close()
         results.append({"video_id": source.video_id, "ok": not problems,
-                        "problems": problems, "skipped": skipped})
+                        "problems": problems, "skipped": skipped, "stale": stale})
         if problems:
             failures += 1
             console.print(f"[red]FAIL[/] {source.video_id}")
@@ -449,6 +458,8 @@ def validate(
             console.print(f"[green]OK[/]   {source.video_id}")
         for item in skipped:
             console.print(f"    [dim]skipped:[/] {item}")
+        for name, reason in stale.items():
+            console.print(f"    [yellow]stale:[/] {name}: {reason}")
     if as_json:
         out_console.print_json(json.dumps({
             "output_directory": str(pipeline_config.output.directory),

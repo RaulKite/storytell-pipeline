@@ -119,8 +119,15 @@ class FinalizationStage(Stage):
         issues.extend(self._cross_references(ctx))
         if issues:
             raise ValidationError(self.name, issues)
+        stale = stale_artifacts(ctx)
+        if stale:
+            # Reported, never raised: the dataset is usable, one table in it is not current.
+            # "Validate exits 0 while two tables disagree" was the defect; "validate fails a
+            # corpus because the translation endpoint was unset" would be a worse one.
+            for name, reason in stale.items():
+                ctx.log(f"stale artifact {name}: {reason}", level=30)
         return {"artifacts": len(manifest.get("artifacts", {})), "timed_tables_checked": checked,
-                "status": ctx.state.overall_status}
+                "status": ctx.state.overall_status, "stale_artifacts": stale}
 
     @staticmethod
     def _cross_references(ctx: StageContext) -> list[str]:
@@ -152,6 +159,44 @@ def _translation_references(ctx: StageContext) -> list[str]:
     if missing:
         return [f"translation rows with no source segment: {sorted(missing)[:5]}"]
     return []
+
+
+def stale_artifacts(ctx: StageContext) -> dict[str, str]:
+    """Artifacts on disk that no longer agree with the tables they were derived from.
+
+    The check that matters today is the translation table. Its rows carry the speaker label
+    of the source segment they translated, so when ``speaker_assignment`` labels the
+    transcript afterwards — or when a translation was written against a pyannote-labelled
+    transcript and the diarization has since changed — the English table keeps describing a
+    speaker the dataset no longer has. The joined tables then disagree segment by segment
+    while every individual table validates, and the manifest promises both.
+
+    Returning a reason rather than raising keeps this a statement about one artifact: the
+    translation is excluded from the manifest and reported by ``validate``, its file is
+    preserved, and re-running the translation stage is the fix.
+    """
+    reason = _translation_speaker_mismatch(ctx)
+    return {"translation_segments": reason} if reason else {}
+
+
+def _translation_speaker_mismatch(ctx: StageContext) -> str | None:
+    """Why the translated table's speaker labels contradict the transcript, if they do."""
+    if not (ctx.artifact("translation_segments").is_file()
+            and ctx.artifact("speech_segments").is_file()):
+        return None
+    try:
+        source = {row["segment_id"]: row.get("speaker_id")
+                  for row in read_table(ctx.artifact("speech_segments")).to_pylist()}
+        translated = [(row["segment_id"], row.get("speaker_id"))
+                      for row in read_table(ctx.artifact("translation_segments")).to_pylist()]
+    except Exception:  # noqa: BLE001 - an unreadable table is reported by its own stage
+        return None
+    mismatched = [segment_id for segment_id, speaker in translated
+                  if segment_id in source and source[segment_id] != speaker]
+    if not mismatched:
+        return None
+    return (f"speaker labels disagree with the transcript for {len(mismatched)} segment(s), "
+            f"e.g. {sorted(mismatched)[:3]}; re-run the translation stage")
 
 
 def _speaker_references(ctx: StageContext) -> list[str]:
@@ -208,6 +253,7 @@ def write_dataset_summary(ctx: StageContext) -> dict[str, Any]:
     registry = ArtifactRegistry(ctx.paths).refresh()
     stage_statuses = {name: ctx.state.stage(name).status for name in STAGE_ORDER}
     detected_language = _detected_language(ctx, registry)
+    stale = stale_artifacts(ctx)
     manifest = build_manifest(
         video_id=ctx.video_id,
         metadata=metadata,
@@ -215,6 +261,7 @@ def write_dataset_summary(ctx: StageContext) -> dict[str, Any]:
         registry=registry,
         stage_statuses=stage_statuses,
         detected_language=detected_language,
+        stale=stale,
     )
     validate_manifest(ctx.paths, manifest)
     write_manifest(ctx.paths, manifest)
@@ -233,6 +280,7 @@ def write_dataset_summary(ctx: StageContext) -> dict[str, Any]:
         "artifacts": len(manifest["artifacts"]),
         "status": ctx.state.overall_status,
         "detected_language": detected_language,
+        "stale_artifacts": stale,
     }
 
 

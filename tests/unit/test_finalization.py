@@ -265,3 +265,45 @@ class TestLabelsWithoutATimeline:
         finalize(dataset)
         assert stage.validate(dataset)["timed_tables_checked"] >= 1
 
+
+class TestAnIncompatibleTranslation:
+    """A translation that names a different speaker than its own source is stale.
+
+    Reproduced on a corpus copy: speaker assignment gave ``speaker_0``, the translation
+    stage was skipped, and ``translation/segments_en.parquet`` still carried pyannote's
+    ``SPEAKER_00`` for the same segment. Every table validated on its own, ``validate``
+    exited 0, and the manifest promised both — leaving a consumer to join two tables that
+    disagree about who is speaking.
+    """
+
+    def _write(self, dataset: StageContext, *, translated_speaker: str) -> None:
+        # The timeline the transcript's label comes from, so the speaker cross-reference is
+        # satisfied and the only disagreement in the dataset is the translation's.
+        write_rows(dataset.artifact("speaker_turns_nemotron"),
+                   [{"speaker_id": "speaker_0", "start_time": 0.0, "end_time": 9.0}])
+        write_rows(dataset.artifact("speech_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": "speaker_0", "language": "es", "text": "hola"}])
+        write_rows(dataset.artifact("translation_segments"),
+                   [{"segment_id": "seg1", "start_time": 0.5, "end_time": 2.0,
+                     "speaker_id": translated_speaker, "english_text": "hello"}])
+
+    def test_a_disagreeing_speaker_is_reported_and_excluded_from_the_manifest(
+            self, dataset: StageContext) -> None:
+        self._write(dataset, translated_speaker="SPEAKER_00")
+        manifest = finalize(dataset)
+        assert "translation_segments" not in manifest["artifacts"]
+        reason = manifest["artifacts_not_generated"]["translation_segments"]
+        assert reason.startswith("stale:") and "speaker labels disagree" in reason
+        assert "translation_segments" not in manifest["artifact_details"]
+        # The file itself is preserved: it is real work, and re-running translation fixes it.
+        assert dataset.artifact("translation_segments").is_file()
+        # Reported by validate, not raised: one stale table must not fail the corpus.
+        result = stage.validate(dataset)
+        assert "translation_segments" in result["stale_artifacts"]
+
+    def test_matching_speakers_stay_in_the_manifest(self, dataset: StageContext) -> None:
+        self._write(dataset, translated_speaker="speaker_0")
+        manifest = finalize(dataset)
+        assert manifest["artifacts"]["translation_segments"].endswith("segments_en.parquet")
+        assert stage.validate(dataset)["stale_artifacts"] == {}
