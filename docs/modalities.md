@@ -138,7 +138,7 @@ per-frame person indices and TalkNet face tracks cannot be equated by matching d
 
 `persons.write_video` optionally keeps those boxes and `id=` labels as a constant-rate
 `persons/tracks.mp4` preview, drawn inside the tracking pass. It is a rendering of the
-tables, not another measurement: each `id=` is a ByteTracker track id, and on a
+tables, not another measurement: each `id=` comes from the configured tracker (ByteTrack by default), and on a
 variable-frame-rate source a constant-rate clock drifts against the picture, so
 `source/frame_index.parquet` stays the timing authority.
 

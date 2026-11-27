@@ -7,9 +7,10 @@
 # ${VAR:-default}; that is the recommended way to keep secrets out of the file.
 #
 # Every stage is enabled here, and enabled is the code default too: a default run
-# measures everything this pipeline can measure. What a machine cannot run, it skips:
-# a stage whose uv environment, binary, checkout or checkpoint is absent reports a skip
-# reason naming the missing prerequisite, and the rest of the corpus still completes.
+# measures everything this pipeline can measure. ffmpeg and ffprobe are required (without
+# them metadata/audio fail). Otherwise, what a machine cannot run it skips: a stage whose
+# worker project or stage-specific prerequisite (OpenPose, TalkNet checkout/checkpoints,
+# LLM endpoint) is absent reports a skip reason naming it, and the rest still completes.
 # Only rendering is opt-in (openpose.write_images, openpose.write_video,
 # activespeaker.write_video, persons.write_video): those produce no analysis, and each one
 # reruns its stage.

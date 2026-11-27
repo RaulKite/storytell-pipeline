@@ -1,9 +1,7 @@
 name: unit
 
-# What this covers, stated exactly: the unit suite (collected count asserted by
-# tests/unit/test_ci_workflow_claims.py, not remembered here) on one Linux runner, with
-# ffmpeg present so the media tests that need real ffmpeg/ffprobe actually run instead of
-# skipping. Nothing here touches a GPU, OpenPose, /opt/openpose, a Hugging Face token or
+# What this covers, stated exactly: the unit suite on one Linux runner, with ffmpeg
+# installed so the tests that need real ffmpeg/ffprobe run instead of skipping. Nothing here touches a GPU, OpenPose, /opt/openpose, a Hugging Face token or
 # the translation endpoint, so the following are NOT verified by CI and remain verified
 # separately by live tool runs (historical run notes are retained in Git):
 #
@@ -50,9 +48,8 @@ jobs:
         with:
           enable-cache: true
 
-      # 17 unit tests drive real ffmpeg/ffprobe, including the NTSC 30000/1001 frame-rate
-      # case; without ffmpeg they skip, which would quietly drop that coverage. The number
-      # is asserted by tests/unit/test_ci_workflow_claims.py, which measures it both ways.
+      # Some unit tests drive real ffmpeg/ffprobe, including the NTSC 30000/1001 frame-rate
+      # case; without ffmpeg they skip, which would quietly drop that coverage.
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 

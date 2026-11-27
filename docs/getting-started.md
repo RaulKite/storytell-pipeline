@@ -20,9 +20,9 @@ Commands use repository-relative paths: run them from the repository root.
 
 Every stage below is implemented at this commit, none is experimental, and **every stage is
 enabled by default** — in the code and in the shipped example, so a config naming only its
-input and output directories runs all of them. What differs is what a fresh clone can *do*: a
-stage whose prerequisite is missing skips with a reason naming what to install, and the rest
-of the corpus completes.
+input and output directories runs all of them. What differs is what a fresh clone can *do*:
+`ffmpeg`/`ffprobe` are required, but a stage whose worker project or stage-specific prerequisite
+is missing skips with a reason naming what to install, and the rest of the corpus completes.
 
 | Stage | Shipped example | Also needs | Main outputs | Read |
 |---|---|---|---|---|

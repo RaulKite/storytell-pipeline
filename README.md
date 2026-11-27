@@ -38,9 +38,9 @@ tool output and stage caches, a log and provenance, times in seconds from video 
   <img alt="Five steps, run sequentially for one video: probe with ffprobe and ffmpeg; run each tool in its own uv environment or the OpenPose binary; normalize to Parquet and retain tool output; validate and record status, manifest and provenance so valid results are reused; export an ELAN summary, with an HTML preview helper." src="docs/assets/brand/flow-light.svg" width="100%"></picture>
 
 In order: `metadata` → `audio` → `whisperx` → `diarization_nemotron` (the only diarizer) → `speaker_assignment` →
-`translation` / `spacy_source` → `spacy_english` → `acoustic` → `openpose` → `pose_normalized` → `activespeaker`
-(TalkNet) → `persons` (YOLO) → `stories` → `finalization` → `elan` ([dependencies](docs/architecture.md#stage-dependencies)),
-run from `uv` environments the root sync does not install ([what runs by default](docs/getting-started.md#what-runs-by-default)).
+`translation` → `spacy_source` → `spacy_english` → `acoustic` → `openpose` → `pose_normalized` → `activespeaker`
+(TalkNet) → `persons` (YOLO) → `stories` → `finalization` → `elan` ([dependencies](docs/architecture.md#stage-dependencies)).
+Heavy workers use six isolated `uv` projects; OpenPose is a separate binary ([defaults](docs/getting-started.md#what-runs-by-default)).
 Every stage ships enabled; only preview rendering ships off: `openpose.write_images`, `openpose.write_video`,
 `activespeaker.write_video` and `persons.write_video`, because each is a picture of a measurement, not a measurement.
 
@@ -50,10 +50,10 @@ Root sync installs the CLI, Parquet and the stages that need no model. `config.e
 enables **every** stage — CUDA WhisperX, Nemotron diarization, spaCy, acoustics, OpenPose,
 pose normalization, TalkNet, YOLO and ELAN — and installs none of their worker environments,
 so sync each one you want the way [Install](docs/getting-started.md#install) shows
-(`cd environments/<name> && uv sync --python 3.12`). A stage whose environment, binary,
-checkout or checkpoint is absent **skips with a reason** instead of failing the video, so the
-first run reports what a full one would add; OpenPose, TalkNet, `HF_TOKEN` and an LLM endpoint
-are further [prerequisites](docs/getting-started.md#prerequisites).
+(`cd environments/<name> && uv sync --python 3.12`). `ffmpeg` and `ffprobe` are required. A stage
+whose worker project or own prerequisite (OpenPose, TalkNet, an LLM endpoint) is missing **skips
+with a reason** instead of failing the video ([prerequisites](docs/getting-started.md#prerequisites));
+`HF_TOKEN` is optional for Nemotron.
 
 ```bash
 uv sync --python 3.12
